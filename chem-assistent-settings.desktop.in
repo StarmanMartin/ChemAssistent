@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=ChemAssistent Settings
+Comment=Configure the Chemotion server and AI model of ChemAssistent
+Exec=@APP_DIR@/.venv/bin/python @APP_DIR@/settings.py
+Icon=chem-assistent
+Categories=Settings;Utility;
+Terminal=false
+StartupWMClass=chem-assistent-settings

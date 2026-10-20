@@ -1,0 +1,9 @@
+{
+  "url": "https://chemotion.example.com",
+  "user": "",
+  "password": "",
+  "verify_tls": true,
+  "ai_model": "",
+  "execution_timeout": 300,
+  "prompt_width": 640
+}

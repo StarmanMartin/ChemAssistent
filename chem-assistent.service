@@ -1,0 +1,16 @@
+[Unit]
+Description=ChemAssistent: Chemotion assistant in the top bar
+# Start with the desktop session so DISPLAY/WAYLAND_DISPLAY and the
+# AppIndicator host are available, and stop when it ends.
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/share/chem-assistent/.venv/bin/python %h/.local/share/chem-assistent/app.py
+Restart=on-failure
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=graphical-session.target
