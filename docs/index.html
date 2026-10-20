@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ChemAssistent</title>
+<meta name="description" content="ChemAssistent: talk to your Chemotion ELN in plain language through an opencode AI agent. Every change runs only after you confirm it.">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+  :root {
+    --dark: #1b1d21;
+    --dark-2: #25282d;
+    --light: #f4f4ef;
+    --card: #ffffff;
+    --ink: #22252a;
+    --ink-soft: #4a5260;
+    --on-dark: #f2f3ef;
+    --on-dark-soft: #c9ccd1;
+    --line: #dfe1dc;
+    --blue: #3db0ea;
+    --blue-ink: #1a6fa0;
+    --yellow: #e2e62a;
+    --yellow-soft: #f7f8d6;
+    --red: #ff7f8a;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: #0f1012;
+    font-family: 'IBM Plex Sans', Arial, sans-serif;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* The deck: every slide is a fixed 1920x1080 canvas, scaled to the window. */
+  .stage { position: fixed; inset: 0; display: grid; place-items: center; }
+  .slide {
+    position: absolute;
+    width: 1920px;
+    height: 1080px;
+    padding: 128px;
+    display: flex;
+    flex-direction: column;
+    gap: 56px;
+    transform-origin: center center;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.35s ease, visibility 0.35s;
+    overflow: hidden;
+  }
+  .slide.active { opacity: 1; visibility: visible; }
+  .slide.dark { background: var(--dark); color: var(--on-dark); }
+  .slide.light { background: var(--light); color: var(--ink); }
+  .slide.accent { background: var(--yellow); color: var(--dark); }
+
+  .eyebrow { font-size: 28px; font-weight: 600; letter-spacing: 3px; text-transform: uppercase; }
+  .dark .eyebrow { color: var(--blue); }
+  .light .eyebrow { color: var(--blue-ink); }
+  h1 { font-size: 144px; font-weight: 700; line-height: 1.05; }
+  h2 { font-size: 72px; font-weight: 600; line-height: 1.1; }
+  h3 { font-size: 32px; font-weight: 600; line-height: 1.2; }
+  p { font-size: 26px; line-height: 1.4; }
+  .head { display: flex; flex-direction: column; gap: 16px; }
+  .soft { color: var(--ink-soft); }
+  .dark .soft { color: var(--on-dark-soft); }
+  .row { display: flex; gap: 32px; }
+  .col { display: flex; flex-direction: column; gap: 12px; }
+  .card { flex: 1; display: flex; flex-direction: column; gap: 16px; background: var(--card); padding: 40px; border: 1px solid var(--line); border-radius: 16px; }
+  .shot { border-radius: 12px; object-fit: contain; display: block; }
+  code, .mono { font-family: 'JetBrains Mono', 'Courier New', monospace; }
+
+  /* Cover */
+  .cover { justify-content: center; gap: 40px; }
+  .cover .logo { position: absolute; right: 160px; top: 270px; width: 540px; height: 540px; }
+  .cover .eyebrow { font-size: 32px; letter-spacing: 4px; }
+
+  /* Steps */
+  .num { font-size: 44px; font-weight: 700; color: var(--blue-ink); }
+
+  /* Workspace / confirm */
+  .split { display: flex; gap: 56px; align-items: flex-start; }
+  .side { flex: 1; display: flex; flex-direction: column; gap: 40px; }
+  .rule-list { flex: 1; display: flex; flex-direction: column; }
+  .rule-list > div { display: flex; flex-direction: column; gap: 8px; padding: 28px 0; border-top: 1px solid #c9cbc4; }
+  .rule-list > div:first-child { border-top: 2px solid var(--ink); }
+
+  /* What you can ask */
+  .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 28px; }
+  .grid3 > div { display: flex; flex-direction: column; gap: 12px; background: var(--yellow-soft); padding: 32px; border-radius: 16px; }
+
+  /* Flow */
+  .flow { display: flex; align-items: stretch; gap: 16px; }
+  .flow > svg { align-self: center; }
+  .flow .box { flex: 1; display: flex; flex-direction: column; gap: 10px; background: var(--card); padding: 28px; border: 1px solid var(--line); border-radius: 16px; }
+  .flow .box h3 { font-size: 28px; }
+  .flow .box p { font-size: 24px; line-height: 1.35; }
+  .flow .box.key { background: var(--dark); border-color: var(--dark); }
+  .flow .box.key h3 { color: var(--yellow); }
+  .flow .box.key p { color: var(--on-dark-soft); }
+  .flow svg { width: 56px; height: 24px; flex: none; }
+
+  /* Safety */
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; }
+  .grid2 > div { display: flex; gap: 28px; background: var(--dark-2); padding: 40px; border-radius: 16px; }
+  .grid2 svg { width: 56px; height: 56px; flex: none; }
+
+  /* Get started */
+  .cmd { font-family: 'JetBrains Mono', 'Courier New', monospace; font-size: 28px; background: var(--dark); color: var(--yellow); padding: 20px 24px; border-radius: 10px; }
+  .footer { position: absolute; left: 128px; bottom: 64px; width: 1664px; font-size: 24px; }
+  .footer a { color: inherit; }
+
+  /* Controls */
+  .controls {
+    position: fixed; right: 16px; bottom: 16px;
+    display: flex; align-items: center; gap: 12px;
+    background: rgba(20, 21, 24, 0.82); color: #e6e7e3;
+    padding: 6px 10px; border-radius: 999px;
+    font: 500 14px 'IBM Plex Sans', Arial, sans-serif;
+    opacity: 0.25; transition: opacity 0.2s; z-index: 10;
+  }
+  .controls:hover, .controls:focus-within { opacity: 1; }
+  .controls button {
+    background: transparent; border: 0; color: inherit; cursor: pointer;
+    width: 36px; height: 36px; border-radius: 50%; font-size: 18px;
+  }
+  .controls button:hover { background: rgba(255, 255, 255, 0.12); }
+  .controls button:focus-visible { outline: 2px solid var(--blue); }
+  .progress { position: fixed; left: 0; top: 0; height: 4px; background: var(--blue); transition: width 0.3s; z-index: 10; }
+
+  /* Print / PDF: one slide per page */
+  @page { size: 1920px 1080px; margin: 0; }
+  @media print {
+    body { overflow: visible; background: none; }
+    .stage { position: static; display: block; }
+    .slide { position: relative; opacity: 1; visibility: visible; transform: none !important; page-break-after: always; break-after: page; }
+    .controls, .progress { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) { .slide, .progress { transition: none; } }
+</style>
+</head>
+<body>
+<div class="progress" id="progress"></div>
+<main class="stage" id="stage" aria-live="polite">
+
+  <!-- 1 Cover -->
+  <section class="slide dark cover" aria-label="Slide 1: ChemAssistent">
+    <svg class="logo" viewBox="0 0 64 64" role="img" aria-label="Chemotion logo: three nested C-shaped arcs in blue, yellow and red inside a light ring">
+      <circle cx="32" cy="32" r="28.5" fill="none" stroke="#e6e6e6" stroke-width="5"/>
+      <g fill="none" stroke-width="5" stroke-linecap="round">
+        <path d="M44.04 14.8 A21 21 0 1 0 44.04 49.2" stroke="#3db0ea"/>
+        <path d="M23.4 19.71 A15 15 0 1 1 23.4 44.29" stroke="#e2e62a"/>
+        <path d="M37.46 25.49 A8.5 8.5 0 1 0 37.46 38.51" stroke="#ff7f8a"/>
+      </g>
+    </svg>
+    <p class="eyebrow">Chemotion ELN · opencode</p>
+    <h1 style="width:1000px">ChemAssistent</h1>
+    <p class="soft" style="font-size:44px;line-height:1.3;width:960px">Talk to your electronic lab notebook in plain language. Every change runs only after you confirm it.</p>
+  </section>
+
+  <!-- 2 How it starts -->
+  <section class="slide light" aria-label="Slide 2: How it starts">
+    <div class="head">
+      <p class="eyebrow">How it starts</p>
+      <h2>From the top bar to your data in one step</h2>
+    </div>
+    <div class="row">
+      <div class="card"><p class="num">1</p><h3>Click the Chemotion icon</h3><p class="soft">“Ask Chemotion…” in the top bar menu, or a middle click on the icon.</p></div>
+      <div class="card"><p class="num">2</p><h3>Type your question</h3><p class="soft">A prompt opens in the middle of the screen. Press Enter.</p></div>
+      <div class="card"><p class="num">3</p><h3>The window grows</h3><p class="soft">Chat with the agent on the left, results of each request on the right.</p></div>
+    </div>
+    <img class="shot" src="assets/prompt.png" alt="The ChemAssistent prompt: a dark input box titled “Ask Chemotion” with the hint “Enter starts the assistant”" style="width:1000px;height:212px;align-self:center">
+  </section>
+
+  <!-- 3 Workspace -->
+  <section class="slide dark" aria-label="Slide 3: The workspace" style="gap:48px">
+    <div class="head">
+      <p class="eyebrow">The workspace</p>
+      <h2>Chat on the left, results on the right</h2>
+    </div>
+    <div class="split">
+      <img class="shot" src="assets/workspace.png" alt="ChemAssistent full window: the opencode chat with a question about collections and a table answer on the left, a result card with the executed code and a result table on the right" style="width:1040px;height:656px;border:1px solid #3a3d44">
+      <div class="side">
+        <div class="col"><h3 style="color:var(--blue)">opencode chat</h3><p class="soft">Ask follow-up questions, interrupt with Esc, use any model opencode supports.</p></div>
+        <div class="col"><h3 style="color:var(--yellow)">Result panel</h3><p class="soft">Each request becomes a card: purpose, code, and the result as a table or text.</p></div>
+        <div class="col"><h3 style="color:var(--red)">Always reachable</h3><p class="soft">Minimize it; the top-bar icon brings the conversation back.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4 Confirm -->
+  <section class="slide light" aria-label="Slide 4: Nothing runs without your confirmation" style="gap:48px">
+    <div class="head">
+      <p class="eyebrow">You stay in control</p>
+      <h2>Nothing runs without your confirmation</h2>
+    </div>
+    <div class="split">
+      <img class="shot" src="assets/confirm.png" alt="A result card waiting for confirmation: the purpose, the proposed Python code, a reason field and the buttons Reject and Run" style="width:1000px;height:630px;background:var(--dark)">
+      <div class="rule-list">
+        <div><h3>Read</h3><p class="soft">See the purpose and the exact Python code first.</p></div>
+        <div><h3>Edit</h3><p class="soft">Change the code; the agent is told what really ran.</p></div>
+        <div><h3>Run or Reject</h3><p class="soft">A rejection reason goes back to the agent.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5 What you can ask -->
+  <section class="slide accent" aria-label="Slide 5: What you can ask" style="gap:48px">
+    <div class="head">
+      <p class="eyebrow">What you can ask</p>
+      <h2>Everything the Chemotion API can do</h2>
+    </div>
+    <div class="grid3">
+      <div><h3>Collections</h3><p>“Create a collection for project X and share it with my group.”</p></div>
+      <div><h3>Samples</h3><p>“Add a sample from SMILES N.O with the label Ammonium hydroxide.”</p></div>
+      <div><h3>Reactions</h3><p>“Build a reaction from these samples, heated to 100 °C for one hour.”</p></div>
+      <div><h3>Find and list</h3><p>“Which samples in Main Test have no analyses yet?”</p></div>
+      <div><h3>Files and analyses</h3><p>“Attach this file to research plan 12 and list its datasets.”</p></div>
+      <div><h3>More elements</h3><p>Research plans, wellplates and generic LabIMotion elements.</p></div>
+    </div>
+  </section>
+
+  <!-- 6 How it works -->
+  <section class="slide light" aria-label="Slide 6: How it works" style="gap:64px">
+    <div class="head">
+      <p class="eyebrow">How it works</p>
+      <h2>One request, five steps</h2>
+    </div>
+    <div class="flow">
+      <div class="box"><h3>You ask</h3><p class="soft">in the opencode chat</p></div>
+      <svg viewBox="0 0 56 24" aria-hidden="true"><path d="M2 12h44" stroke="#1a6fa0" stroke-width="4"/><path d="M40 4l12 8-12 8" fill="none" stroke="#1a6fa0" stroke-width="4" stroke-linejoin="round"/></svg>
+      <div class="box"><h3>Agent codes</h3><p class="soft">from the API docs</p></div>
+      <svg viewBox="0 0 56 24" aria-hidden="true"><path d="M2 12h44" stroke="#1a6fa0" stroke-width="4"/><path d="M40 4l12 8-12 8" fill="none" stroke="#1a6fa0" stroke-width="4" stroke-linejoin="round"/></svg>
+      <div class="box key"><h3>You confirm</h3><p>in the result card</p></div>
+      <svg viewBox="0 0 56 24" aria-hidden="true"><path d="M2 12h44" stroke="#1a6fa0" stroke-width="4"/><path d="M40 4l12 8-12 8" fill="none" stroke="#1a6fa0" stroke-width="4" stroke-linejoin="round"/></svg>
+      <div class="box"><h3>Code runs</h3><p class="soft">with chemotion_api</p></div>
+      <svg viewBox="0 0 56 24" aria-hidden="true"><path d="M2 12h44" stroke="#1a6fa0" stroke-width="4"/><path d="M40 4l12 8-12 8" fill="none" stroke="#1a6fa0" stroke-width="4" stroke-linejoin="round"/></svg>
+      <div class="box"><h3>Result</h3><p class="soft">table to you, summary to the agent</p></div>
+    </div>
+    <p class="soft" style="font-size:32px;line-height:1.45;width:1400px">The agent knows the API from a reference generated out of the documentation of <b>chemotion_api, branch version-3</b>, and can read the package source when it needs more detail.</p>
+  </section>
+
+  <!-- 7 Safety -->
+  <section class="slide dark" aria-label="Slide 7: Safe by design">
+    <div class="head">
+      <p class="eyebrow">Safe by design</p>
+      <h2>Powerful, but on a short leash</h2>
+    </div>
+    <div class="grid2">
+      <div>
+        <svg viewBox="0 0 24 24" fill="none" stroke="#3db0ea" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+        <div class="col"><h3>One tool only</h3><p class="soft">No shell, no file edits, no web access. Chemotion is reached only through confirmed code.</p></div>
+      </div>
+      <div>
+        <svg viewBox="0 0 24 24" fill="none" stroke="#e2e62a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M16 7l3 3M14 9l2 2"/></svg>
+        <div class="col"><h3>Password stays local</h3><p class="soft">The login happens in the app; the AI model never sees your credentials.</p></div>
+      </div>
+      <div>
+        <svg viewBox="0 0 24 24" fill="none" stroke="#ff7f8a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+        <div class="col"><h3>Limited and cancellable</h3><p class="soft">Each snippet runs in its own process, with a time limit and a Cancel button.</p></div>
+      </div>
+      <div>
+        <svg viewBox="0 0 24 24" fill="none" stroke="#3db0ea" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 18h10a4 4 0 0 0 .5-7.97A6 6 0 0 0 6.1 9.5 4.25 4.25 0 0 0 7 18z"/></svg>
+        <div class="col"><h3>Your choice of model</h3><p class="soft">Any opencode model, including local KI-Toolbox models for sensitive data.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 8 Get started -->
+  <section class="slide light" aria-label="Slide 8: Get started" style="padding-bottom:160px">
+    <div class="head">
+      <p class="eyebrow">Get started</p>
+      <h2>Install once, ask from the top bar</h2>
+    </div>
+    <div class="row">
+      <div class="card" style="gap:20px"><h3>Ubuntu</h3><p class="cmd">./install.sh</p><p class="soft">Installs everything, starts the app at login.</p></div>
+      <div class="card" style="gap:20px"><h3>Windows</h3><p class="cmd">install.ps1</p><p class="soft">Via MSYS2, with a tray icon.</p></div>
+      <div class="card" style="gap:20px"><h3>Then</h3><p class="soft">Open <b>ChemAssistent Settings</b>: Chemotion URL, user, password and AI model. Click the icon and ask.</p></div>
+    </div>
+    <p class="footer soft"><a href="https://github.com/StarmanMartin/ChemAssistent">github.com/StarmanMartin/ChemAssistent</a> · built on <a href="https://github.com/Chemotion/chemotionapi/tree/version-3">chemotion_api (version-3)</a> and <a href="https://opencode.ai">opencode</a></p>
+  </section>
+
+</main>
+
+<nav class="controls" aria-label="Slide navigation">
+  <button id="prev" aria-label="Previous slide">‹</button>
+  <span id="counter">1 / 8</span>
+  <button id="next" aria-label="Next slide">›</button>
+  <button id="full" aria-label="Full screen" title="Full screen (F)">⛶</button>
+</nav>
+
+<script>
+(function () {
+  var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+  var counter = document.getElementById('counter');
+  var progress = document.getElementById('progress');
+  var current = 0;
+
+  function fit() {
+    var scale = Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
+    slides.forEach(function (s) { s.style.transform = 'scale(' + scale + ')'; });
+  }
+
+  function show(index, push) {
+    current = Math.max(0, Math.min(slides.length - 1, index));
+    slides.forEach(function (s, i) {
+      s.classList.toggle('active', i === current);
+      s.setAttribute('aria-hidden', i === current ? 'false' : 'true');
+    });
+    counter.textContent = (current + 1) + ' / ' + slides.length;
+    progress.style.width = ((current + 1) / slides.length * 100) + '%';
+    if (push !== false) history.replaceState(null, '', '#' + (current + 1));
+  }
+
+  function fromHash() {
+    var n = parseInt(location.hash.slice(1), 10);
+    return isNaN(n) ? 0 : n - 1;
+  }
+
+  function toggleFull() {
+    if (!document.fullscreenElement) {
+      if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen();
+    } else if (document.exitFullscreen) {
+      document.exitFullscreen();
+    }
+  }
+
+  document.getElementById('prev').addEventListener('click', function () { show(current - 1); });
+  document.getElementById('next').addEventListener('click', function () { show(current + 1); });
+  document.getElementById('full').addEventListener('click', toggleFull);
+
+  document.addEventListener('keydown', function (e) {
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
+    switch (e.key) {
+      case 'ArrowRight': case 'PageDown': case ' ': case 'Enter': show(current + 1); break;
+      case 'ArrowLeft': case 'PageUp': case 'Backspace': show(current - 1); break;
+      case 'Home': show(0); break;
+      case 'End': show(slides.length - 1); break;
+      case 'f': case 'F': toggleFull(); break;
+      default: return;
+    }
+    e.preventDefault();
+  });
+
+  // Click on the right two thirds = next, left third = previous (links still work).
+  document.getElementById('stage').addEventListener('click', function (e) {
+    if (e.target.closest('a')) return;
+    show(e.clientX > window.innerWidth / 3 ? current + 1 : current - 1);
+  });
+
+  var touchX = null;
+  document.addEventListener('touchstart', function (e) { touchX = e.touches[0].clientX; }, { passive: true });
+  document.addEventListener('touchend', function (e) {
+    if (touchX === null) return;
+    var dx = e.changedTouches[0].clientX - touchX;
+    if (Math.abs(dx) > 40) show(dx < 0 ? current + 1 : current - 1);
+    touchX = null;
+  });
+
+  window.addEventListener('resize', fit);
+  window.addEventListener('hashchange', function () { show(fromHash(), false); });
+  fit();
+  show(fromHash(), false);
+})();
+</script>
+</body>
+</html>
