@@ -147,10 +147,14 @@ if ($LASTEXITCODE -ne 0) {
     Write-Error "GTK 3 bindings are not importable from $VenvPython"
 }
 
-# chemotionapi (branch version-3) and the API reference for the agent. sed
-# drops carriage returns in case git checked the script out with CRLF.
+# chemotionapi (branch version-3), the API reference for the agent and
+# chemotionapi's skills for opencode, which reads ~/.config/opencode on
+# Windows too. sed drops carriage returns in case git checked the script out
+# with CRLF.
+$OpencodeConfigDir = if ($env:XDG_CONFIG_HOME) { $env:XDG_CONFIG_HOME } else { Join-Path $env:USERPROFILE ".config" }
+$SkillsDir = Join-Path $OpencodeConfigDir "opencode\skills"
 $script = Quote-Msys2 (Join-Path $AppDir "setup_workspace.sh")
-if ((Invoke-Msys2 "sed 's/\r$//' $script | bash -s -- $(Quote-Msys2 $AppDir) $(Quote-Msys2 $VenvPython)") -ne 0) {
+if ((Invoke-Msys2 "sed 's/\r$//' $script | bash -s -- $(Quote-Msys2 $AppDir) $(Quote-Msys2 $VenvPython) $(Quote-Msys2 $SkillsDir)") -ne 0) {
     Write-Error "Setting up the workspace (chemotionapi) failed."
 }
 
@@ -199,8 +203,6 @@ if ($opencodeVersion -and [int]($opencodeVersion.Split(".")[0]) -ge 2) {
     }
 }
 
-# opencode reads ~/.config/opencode on Windows too.
-$OpencodeConfigDir = if ($env:XDG_CONFIG_HOME) { $env:XDG_CONFIG_HOME } else { Join-Path $env:USERPROFILE ".config" }
 $OpencodeConfig = Join-Path $OpencodeConfigDir "opencode\opencode.json"
 & $Python (Join-Path $SourceDir "setup_opencode.py") $OpencodeConfig $ConfigFile
 if ($LASTEXITCODE -ne 0) { Write-Warning "Could not set up the KI-Toolbox provider in $OpencodeConfig." }

@@ -97,8 +97,9 @@ if ! "$venv_python" -c 'import gi; gi.require_version("Gtk", "3.0"); gi.require_
   exit 1
 fi
 
-# chemotionapi (branch version-3) and the API reference for the agent.
-"$APP_DIR/setup_workspace.sh" "$APP_DIR" "$venv_python"
+# chemotionapi (branch version-3), the API reference for the agent and
+# chemotionapi's skills for opencode.
+"$APP_DIR/setup_workspace.sh" "$APP_DIR" "$venv_python" "${XDG_CONFIG_HOME:-$HOME/.config}/opencode/skills"
 
 # --- Configuration ----------------------------------------------------------
 if [[ ! -f "$CONFIG_DIR/config.json" ]]; then

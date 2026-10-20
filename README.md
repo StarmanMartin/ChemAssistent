@@ -62,7 +62,9 @@ Run it as your normal user (it calls `sudo` only when Ubuntu packages are
 missing: GTK 3, VTE, the AppIndicator library, GtkSourceView, libmagic, git).
 It copies the app to `~/.local/share/chem-assistent/` with its own virtual
 environment, clones **chemotionapi** (branch `version-3`) into the app's
-workspace, installs it, generates the API reference for the agent, and
+workspace, installs it, generates the API reference for the agent, copies
+chemotionapi's opencode skills (`skills/`, e.g. `chemotion-api`) into
+`~/.config/opencode/skills/` for your other opencode sessions, and
 installs and starts the systemd user service, so the icon appears in the top
 bar now and at every login.
 
@@ -100,7 +102,8 @@ Options: `-Msys2Root D:\msys64` if MSYS2 is elsewhere, `-NoAutostart` to not
 start the app at login. The script installs GTK 3, PyGObject, GtkSourceView,
 git and the compiled Python packages chemotion_api needs with `pacman`,
 copies the app to `%LOCALAPPDATA%\Programs\chem-assistent` with its own
-virtual environment, sets up chemotionapi as on Linux, installs opencode 2 into
+virtual environment, sets up chemotionapi as on Linux (including the skills in
+`%USERPROFILE%\.config\opencode\skills`), installs opencode 2 into
 `%USERPROFILE%\.opencode\bin` if missing, adds the KI-Toolbox provider to
 `%USERPROFILE%\.config\opencode\opencode.json`, asks for the API key (saved as
 the user environment variable `KI_TOOLBOX_API_KEY`), creates Start-menu
