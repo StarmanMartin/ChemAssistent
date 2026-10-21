@@ -116,6 +116,38 @@ KI-Toolbox API key (saved in the config), creates Start-menu shortcuts
 (“ChemAssistent”, “ChemAssistent Settings”) plus a Startup shortcut, and
 starts the app.
 
+Re-run `install.ps1` to update the app and chemotionapi; the configuration is
+kept. It stops a running instance first and starts the app again afterwards.
+
+Requirements:
+
+- [MSYS2](https://www.msys2.org) in `C:\msys64` (or `-Msys2Root`). It provides
+  GTK 3, PyGObject and the Python 3.13/3.14 that chemotion_api needs; the
+  script installs the missing packages itself.
+- [Git for Windows](https://gitforwindows.org) with a GitHub login that can
+  read the chemotionapi repository: it is not public, so cloning it needs
+  your credentials. Git for Windows keeps them in Git Credential Manager and
+  the script makes MSYS2's git use them. Check with
+  `git ls-remote https://github.com/Chemotion/chemotionapi.git`.
+- **Smart App Control off.** It blocks the unsigned MSYS2 binaries (Python
+  modules, GTK libraries) and has no way to exclude them. Turn it off in
+  Settings > Privacy & security > Windows Security > App & browser control >
+  Smart App Control settings (Windows keeps this setting permanently; it can
+  only be re-enabled by resetting Windows).
+- An API key of the [KIT KI-Toolbox](https://ki-toolbox.scc.kit.edu), or
+  the URL and token of another OpenAI-compatible API.
+
+If the installation fails:
+
+- `DLL load failed while importing …` with “an application control policy has
+  blocked this file” (on German Windows: „Eine Anwendungssteuerungsrichtlinie
+  hat diese Datei blockiert“): Smart App Control is still on, see above.
+- `could not read Username for 'https://github.com'` during the chemotionapi
+  clone: the GitHub credentials are missing, see Git for Windows above.
+- `Could not delete the old virtual environment`: an instance of the app is
+  still running from it. Close it (right-click the tray icon) and run the
+  script again.
+
 On Windows the files live in other places:
 
 - configuration: `%APPDATA%\chem-assistent\config.json`

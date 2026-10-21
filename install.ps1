@@ -114,6 +114,10 @@ if ((Invoke-Msys2 "pacman -Q $packageList >/dev/null 2>&1") -ne 0) {
     Write-Host "MSYS2 packages already installed."
 }
 
+# Refresh the gdk-pixbuf loader cache: a stale one does not know the SVG
+# loader from librsvg, which makes the app's SVG icons fail.
+Invoke-Msys2 "gdk-pixbuf-query-loaders --update-cache >/dev/null 2>&1" | Out-Null
+
 & $Python -c "import sys; sys.exit(not (3, 13) <= sys.version_info[:2] < (3, 15))"
 if ($LASTEXITCODE -ne 0) {
     Write-Error "chemotion_api needs Python 3.13 or 3.14; $Python is $(& $Python --version)."
@@ -130,6 +134,17 @@ if (Test-Path $PidFile) {
         $wasRunning = $true
     }
     Remove-Item $PidFile -Force -ErrorAction SilentlyContinue
+}
+# Also stop instances whose pid file is missing or stale: everything running
+# from the app directory blocks the update below.
+Get-Process -ErrorAction SilentlyContinue | Where-Object {
+    try { $_.Path -and $_.Path.StartsWith($AppDir, [System.StringComparison]::OrdinalIgnoreCase) }
+    catch { $false }
+} | ForEach-Object {
+    Write-Host "Stopping running ChemAssistent (pid $($_.Id)) ..."
+    Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+    $_.WaitForExit(5000) | Out-Null
+    $wasRunning = $true
 }
 
 # --- Application ---------------------------------------------------------------
@@ -168,7 +183,18 @@ if ($venvVersion -and $venvVersion -eq $baseVersion) {
 } else {
     Write-Host "Creating virtual environment..."
     Remove-Item $Venv -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path $Venv) {
+        Write-Error ("Could not delete the old virtual environment at $Venv - an instance of " +
+            "ChemAssistent is probably still running from it. Close it and run this script again.")
+    }
     & $Python -m venv --system-site-packages $Venv
+    if ($LASTEXITCODE -ne 0) {
+        # The freshly copied python.exe can be held briefly by antivirus;
+        # start from a clean slate and try once more.
+        Start-Sleep -Seconds 3
+        Remove-Item $Venv -Recurse -Force -ErrorAction SilentlyContinue
+        & $Python -m venv --system-site-packages $Venv
+    }
     if ($LASTEXITCODE -ne 0) { Write-Error "Creating the virtual environment failed." }
     $VenvPython = Find-VenvExe "python.exe"
 }
@@ -186,9 +212,36 @@ if ($LASTEXITCODE -ne 0) {
 # chemotionapi (branch version-3) with its skills, and the API reference for
 # the agent. sed drops carriage returns in case git checked the script out
 # with CRLF.
+#
+# The chemotionapi repository is not public: git needs GitHub credentials.
+# Git for Windows keeps them in Git Credential Manager, MSYS2's git knows
+# nothing about it, so put the GCM directory on PATH and select it as the
+# credential helper when Git for Windows is installed. GIT_TERMINAL_PROMPT=0
+# makes git fail instead of waiting forever for a username nobody can enter
+# here.
+$env:GIT_TERMINAL_PROMPT = "0"
+$GcmExe = $null
+$gitExe = (Get-Command git.exe -ErrorAction SilentlyContinue).Source
+foreach ($candidate in @($gitExe, (Join-Path $env:ProgramFiles "Git\cmd\git.exe"))) {
+    if ($candidate -and (Test-Path $candidate)) {
+        $maybe = Join-Path (Split-Path (Split-Path $candidate)) "mingw64\bin\git-credential-manager.exe"
+        if (Test-Path $maybe) { $GcmExe = $maybe; break }
+    }
+}
+if ($GcmExe) {
+    $env:PATH = (Split-Path $GcmExe) + ";" + $env:PATH
+    $env:GIT_CONFIG_COUNT = "1"
+    $env:GIT_CONFIG_KEY_0 = "credential.helper"
+    $env:GIT_CONFIG_VALUE_0 = "manager"
+} else {
+    Write-Warning "Git for Windows was not found; cloning chemotionapi needs GitHub credentials."
+}
 $script = Quote-Msys2 (Join-Path $AppDir "setup_workspace.sh")
 if ((Invoke-Msys2 "sed 's/\r$//' $script | bash -s -- $(Quote-Msys2 $AppDir) $(Quote-Msys2 $VenvPython)") -ne 0) {
-    Write-Error "Setting up the workspace (chemotionapi) failed."
+    Write-Error ("Setting up the workspace (chemotionapi) failed. The clone of " +
+        "https://github.com/Chemotion/chemotionapi.git needs GitHub credentials - see the " +
+        "output above. With Git for Windows installed, check that 'git ls-remote " +
+        "https://github.com/Chemotion/chemotionapi.git' succeeds, then run this script again.")
 }
 
 # chemotion_api finds libmagic through PATH (the app extends it at start).
