@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
 Name=ChemAssistent
-Comment=Ask the Chemotion ELN through an opencode AI agent
+Comment=Ask the Chemotion ELN through an AI agent
 Exec=@APP_DIR@/.venv/bin/python @APP_DIR@/app.py --show
 Icon=chem-assistent
 Categories=Science;Chemistry;Utility;

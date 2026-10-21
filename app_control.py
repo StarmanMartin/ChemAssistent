@@ -133,7 +133,7 @@ def stop() -> None:
     pid = _recorded_pid()
     if pid is not None:
         try:
-            # TerminateProcess on Windows. An open opencode console stays open.
+            # TerminateProcess on Windows.
             os.kill(pid, 15)
         except OSError as exc:
             raise ControlError(str(exc)) from exc

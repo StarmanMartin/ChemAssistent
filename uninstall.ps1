@@ -30,9 +30,8 @@ foreach ($link in @(
 }
 Remove-Item $AppDir -Recurse -Force -ErrorAction SilentlyContinue
 
-Write-Host "Application removed. MSYS2, its packages and opencode were left installed."
+Write-Host "Application removed. MSYS2 and its packages were left installed."
 Write-Host "Configuration was kept at:"
 Write-Host "  $ConfigDir"
-Write-Host "opencode state of the app and the log (may be deleted):"
+Write-Host "The log (may be deleted):"
 Write-Host "  $StateDir"
-Write-Host "The KI-Toolbox key stays in the user environment variable KI_TOOLBOX_API_KEY."

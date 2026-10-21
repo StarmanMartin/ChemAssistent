@@ -27,11 +27,13 @@ $Startup = Join-Path $Programs "Startup"
 
 # The same files as APP_FILES in install.sh.
 $AppFiles = @(
-    "app.py", "app_control.py", "chemotion_runner.py", "config.py", "console_win.py",
-    "gen_api_reference.py", "ipc.py", "mcp_server.py", "opencode_models.py", "settings.py",
+    "agent.py", "app.py", "app_control.py", "chemotion_runner.py", "config.py",
+    "gen_api_reference.py", "ipc.py", "settings.py",
     "workspace.py", "setup_workspace.sh", "requirements.txt",
     "chem-assistent.svg", "chem-assistent-panel.svg"
 )
+# Files of older versions (the opencode era) that an update removes.
+$OldFiles = @("console_win.py", "mcp_server.py", "opencode_models.py", "workspace\opencode.json")
 # GTK 3, PyGObject, GtkSourceView, the SVG loader, git for chemotionapi, and
 # the chemotion_api dependencies that need a compiler (pip cannot build them
 # for MSYS2's Python) or a DLL (libmagic from "file").
@@ -41,7 +43,7 @@ $Packages = @(
     "$Prefix-python", "$Prefix-python-pip", "$Prefix-python-requests", "$Prefix-python-jsonschema",
     "$Prefix-python-yaml", "$Prefix-python-dateutil", "$Prefix-python-pytz", "$Prefix-python-jinja",
     "$Prefix-python-click", "$Prefix-python-rdflib", "$Prefix-file",
-    "git", "curl", "tar"
+    "git"
 )
 
 # --- MSYS2 packages ----------------------------------------------------------
@@ -105,6 +107,9 @@ New-Item -ItemType Directory -Force -Path $AppDir, $ConfigDir, $StateDir | Out-N
 foreach ($file in $AppFiles) {
     Copy-Item (Join-Path $SourceDir $file) (Join-Path $AppDir $file) -Force
 }
+foreach ($file in $OldFiles) {
+    Remove-Item (Join-Path $AppDir $file) -Force -ErrorAction SilentlyContinue
+}
 Remove-Item (Join-Path $AppDir "__pycache__") -Recurse -Force -ErrorAction SilentlyContinue
 
 # --system-site-packages makes the pacman packages visible in the venv.
@@ -147,14 +152,11 @@ if ($LASTEXITCODE -ne 0) {
     Write-Error "GTK 3 bindings are not importable from $VenvPython"
 }
 
-# chemotionapi (branch version-3), the API reference for the agent and
-# chemotionapi's skills for opencode, which reads ~/.config/opencode on
-# Windows too. sed drops carriage returns in case git checked the script out
+# chemotionapi (branch version-3) with its skills, and the API reference for
+# the agent. sed drops carriage returns in case git checked the script out
 # with CRLF.
-$OpencodeConfigDir = if ($env:XDG_CONFIG_HOME) { $env:XDG_CONFIG_HOME } else { Join-Path $env:USERPROFILE ".config" }
-$SkillsDir = Join-Path $OpencodeConfigDir "opencode\skills"
 $script = Quote-Msys2 (Join-Path $AppDir "setup_workspace.sh")
-if ((Invoke-Msys2 "sed 's/\r$//' $script | bash -s -- $(Quote-Msys2 $AppDir) $(Quote-Msys2 $VenvPython) $(Quote-Msys2 $SkillsDir)") -ne 0) {
+if ((Invoke-Msys2 "sed 's/\r$//' $script | bash -s -- $(Quote-Msys2 $AppDir) $(Quote-Msys2 $VenvPython)") -ne 0) {
     Write-Error "Setting up the workspace (chemotionapi) failed."
 }
 
@@ -182,52 +184,15 @@ if (-not (Test-Path $ConfigFile)) {
     $createdConfig = $true
 }
 
-# --- opencode and the KIT KI-Toolbox -----------------------------------------------
-# The app needs opencode 2. Its official installer runs in MSYS2's bash and
-# puts opencode.exe into %USERPROFILE%\.opencode\bin, where the app looks.
-$OpencodeExe = Join-Path $env:USERPROFILE ".opencode\bin\opencode.exe"
-$found = Get-Command "opencode.exe" -ErrorAction SilentlyContinue
-if (-not (Test-Path $OpencodeExe) -and $found) { $OpencodeExe = $found.Source }
-$opencodeVersion = ""
-if (Test-Path $OpencodeExe) {
-    $output = Invoke-Probe { & $OpencodeExe --version 2>$null }
-    $opencodeVersion = ($output | Select-String -Pattern '\d+\.[\d.]+' | Select-Object -First 1).Matches.Value
-}
-if ($opencodeVersion -and [int]($opencodeVersion.Split(".")[0]) -ge 2) {
-    Write-Host "opencode $opencodeVersion already installed."
-} else {
-    Write-Host "Installing opencode 2 ..."
-    $userHome = Quote-Msys2 $env:USERPROFILE
-    if ((Invoke-Msys2 "export HOME=`$(cygpath -u $userHome); curl -fsSL https://opencode.ai/v2/install | bash") -ne 0) {
-        Write-Warning "Installing opencode failed. Install opencode 2 from https://opencode.ai and run this script again."
-    }
-}
-
-$OpencodeConfig = Join-Path $OpencodeConfigDir "opencode\opencode.json"
-& $Python (Join-Path $SourceDir "setup_opencode.py") $OpencodeConfig $ConfigFile
-if ($LASTEXITCODE -ne 0) { Write-Warning "Could not set up the KI-Toolbox provider in $OpencodeConfig." }
-
-# The API key is a user environment variable, which new processes get.
+# --- The KIT KI-Toolbox --------------------------------------------------------------
+# The AI endpoint (default: the KI-Toolbox) and its token live in the app
+# config. setup_ai.py takes KI_TOOLBOX_API_KEY (where older installs put it)
+# or asks for the key.
 $key = [Environment]::GetEnvironmentVariable("KI_TOOLBOX_API_KEY", "User")
-if ($key -or $env:KI_TOOLBOX_API_KEY) {
-    Write-Host "KI-Toolbox API key already set."
-    if (-not $env:KI_TOOLBOX_API_KEY) { $env:KI_TOOLBOX_API_KEY = $key }
-} elseif ([Environment]::UserInteractive) {
-    $secure = Read-Host "Enter your KI-Toolbox API key (https://ki-toolbox.scc.kit.edu), or leave it empty to skip" -AsSecureString
-    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
-    try {
-        $key = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
-    } finally {
-        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
-    }
-    if ($key) {
-        [Environment]::SetEnvironmentVariable("KI_TOOLBOX_API_KEY", $key, "User")
-        # The app started below inherits it from this process.
-        $env:KI_TOOLBOX_API_KEY = $key
-        Write-Host "Saved the key as the user environment variable KI_TOOLBOX_API_KEY."
-    }
-    Remove-Variable key
-}
+if ($key -and -not $env:KI_TOOLBOX_API_KEY) { $env:KI_TOOLBOX_API_KEY = $key }
+Remove-Variable key
+& $Python (Join-Path $SourceDir "setup_ai.py")
+if ($LASTEXITCODE -ne 0) { Write-Warning "Could not set up the AI endpoint in $ConfigFile." }
 
 # --- Shortcuts ---------------------------------------------------------------------
 $Shell = New-Object -ComObject WScript.Shell
@@ -260,9 +225,6 @@ Write-Host ""
 Write-Host "Installed."
 if ($createdConfig) {
     Write-Host "Created $ConfigFile - set URL, user and password in the settings."
-}
-if (-not $env:KI_TOOLBOX_API_KEY) {
-    Write-Warning "No KI-Toolbox API key set. Set the user environment variable KI_TOOLBOX_API_KEY and run this script again."
 }
 Write-Host "Settings:  'ChemAssistent Settings' in the Start menu"
 Write-Host "Use:       click the Chemotion icon in the tray, or 'ChemAssistent' in the Start menu$(if (-not $NoAutostart) { ' (starts at login)' })"

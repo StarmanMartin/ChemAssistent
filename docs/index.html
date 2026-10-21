@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ChemAssistent</title>
-<meta name="description" content="ChemAssistent: talk to your Chemotion ELN in plain language through an opencode AI agent. Every change runs only after you confirm it.">
+<meta name="description" content="ChemAssistent: talk to your Chemotion ELN in plain language through an AI agent. Every change runs only after you confirm it.">
 <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -155,7 +155,7 @@
         <path d="M37.46 25.49 A8.5 8.5 0 1 0 37.46 38.51" stroke="#ff7f8a"/>
       </g>
     </svg>
-    <p class="eyebrow">Chemotion ELN · opencode</p>
+    <p class="eyebrow">Chemotion ELN · AI agent</p>
     <h1 style="width:1000px">ChemAssistent</h1>
     <p class="soft" style="font-size:44px;line-height:1.3;width:960px">Talk to your electronic lab notebook in plain language. Every change runs only after you confirm it.</p>
   </section>
@@ -181,9 +181,9 @@
       <h2>Chat on the left, results on the right</h2>
     </div>
     <div class="split">
-      <img class="shot" src="assets/workspace.png" alt="ChemAssistent full window: the opencode chat with a question about collections and a table answer on the left, a result card with the executed code and a result table on the right" style="width:1040px;height:656px;border:1px solid #3a3d44">
+      <img class="shot" src="assets/workspace.png" alt="ChemAssistent full window: the chat with a question about reactions and a table answer on the left, a result card with the executed code and a result table on the right" style="width:1040px;height:656px;border:1px solid #3a3d44">
       <div class="side">
-        <div class="col"><h3 style="color:var(--blue)">opencode chat</h3><p class="soft">Ask follow-up questions, interrupt with Esc, use any model opencode supports.</p></div>
+        <div class="col"><h3 style="color:var(--blue)">Chat</h3><p class="soft">Ask follow-up questions, stop with Esc, use any OpenAI-compatible model.</p></div>
         <div class="col"><h3 style="color:var(--yellow)">Result panel</h3><p class="soft">Each request becomes a card: purpose, code, and the result as a table or text.</p></div>
         <div class="col"><h3 style="color:var(--red)">Always reachable</h3><p class="soft">Minimize it; the top-bar icon brings the conversation back.</p></div>
       </div>
@@ -229,7 +229,7 @@
       <h2>One request, five steps</h2>
     </div>
     <div class="flow">
-      <div class="box"><h3>You ask</h3><p class="soft">in the opencode chat</p></div>
+      <div class="box"><h3>You ask</h3><p class="soft">in the chat</p></div>
       <svg viewBox="0 0 56 24" aria-hidden="true"><path d="M2 12h44" stroke="#1a6fa0" stroke-width="4"/><path d="M40 4l12 8-12 8" fill="none" stroke="#1a6fa0" stroke-width="4" stroke-linejoin="round"/></svg>
       <div class="box"><h3>Agent codes</h3><p class="soft">from the API docs</p></div>
       <svg viewBox="0 0 56 24" aria-hidden="true"><path d="M2 12h44" stroke="#1a6fa0" stroke-width="4"/><path d="M40 4l12 8-12 8" fill="none" stroke="#1a6fa0" stroke-width="4" stroke-linejoin="round"/></svg>
@@ -263,7 +263,7 @@
       </div>
       <div>
         <svg viewBox="0 0 24 24" fill="none" stroke="#3db0ea" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 18h10a4 4 0 0 0 .5-7.97A6 6 0 0 0 6.1 9.5 4.25 4.25 0 0 0 7 18z"/></svg>
-        <div class="col"><h3>Your choice of model</h3><p class="soft">Any opencode model, including local KI-Toolbox models for sensitive data.</p></div>
+        <div class="col"><h3>Your choice of model</h3><p class="soft">KIT KI-Toolbox by default, or any OpenAI-compatible API; local models for sensitive data.</p></div>
       </div>
     </div>
   </section>
@@ -277,9 +277,9 @@
     <div class="row">
       <div class="card" style="gap:20px"><h3>Ubuntu</h3><p class="cmd">./install.sh</p><p class="soft">Installs everything, starts the app at login.</p></div>
       <div class="card" style="gap:20px"><h3>Windows</h3><p class="cmd">install.ps1</p><p class="soft">Via MSYS2, with a tray icon.</p></div>
-      <div class="card" style="gap:20px"><h3>Then</h3><p class="soft">Open <b>ChemAssistent Settings</b>: Chemotion URL, user, password and AI model. Click the icon and ask.</p></div>
+      <div class="card" style="gap:20px"><h3>Then</h3><p class="soft">Open <b>ChemAssistent Settings</b>: Chemotion URL, user, password, AI token and model. Click the icon and ask.</p></div>
     </div>
-    <p class="footer soft"><a href="https://github.com/StarmanMartin/ChemAssistent">github.com/StarmanMartin/ChemAssistent</a> · built on <a href="https://github.com/Chemotion/chemotionapi/tree/version-3">chemotion_api (version-3)</a> and <a href="https://opencode.ai">opencode</a></p>
+    <p class="footer soft"><a href="https://github.com/StarmanMartin/ChemAssistent">github.com/StarmanMartin/ChemAssistent</a> · built on <a href="https://github.com/Chemotion/chemotionapi/tree/version-3">chemotion_api (version-3)</a> and the <a href="https://ki-toolbox.scc.kit.edu">KIT KI-Toolbox</a></p>
   </section>
 
 </main>

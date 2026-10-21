@@ -15,9 +15,11 @@ DESKTOP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 DESKTOP_FILES=("${APP_NAME}.desktop" "${APP_NAME}-settings.desktop")
 ICON_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps"
 
-APP_FILES=(app.py app_control.py chemotion_runner.py config.py console_win.py gen_api_reference.py ipc.py mcp_server.py
-  opencode_models.py settings.py workspace.py setup_workspace.sh requirements.txt
+APP_FILES=(agent.py app.py app_control.py chemotion_runner.py config.py gen_api_reference.py ipc.py
+  settings.py workspace.py setup_workspace.sh requirements.txt
   chem-assistent.svg chem-assistent-panel.svg)
+# Files of older versions (the opencode era) that an update removes.
+OLD_FILES=(console_win.py mcp_server.py opencode_models.py workspace/opencode.json)
 
 # The system Python, which has PyGObject from apt (a python3 from pyenv/asdf
 # on the PATH does not).
@@ -30,10 +32,10 @@ if [[ "${EUID}" -eq 0 ]]; then
 fi
 
 # --- System packages --------------------------------------------------------
-# PyGObject, GTK, VTE and the AppIndicator come from apt; pip installs
+# PyGObject, GTK and the AppIndicator come from apt; pip installs
 # requests and chemotion_api.
-packages=(python3 python3-gi gir1.2-gtk-3.0 gir1.2-vte-2.91 gir1.2-ayatanaappindicator3-0.1
-  gir1.2-gtksource-4 git curl)
+packages=(python3 python3-gi gir1.2-gtk-3.0 gir1.2-ayatanaappindicator3-0.1
+  gir1.2-gtksource-4 git)
 
 # venv needs ensurepip, which may come from python3-venv or python3.X-venv.
 if ! "$PYTHON" -c 'import ensurepip' 2>/dev/null; then
@@ -75,6 +77,9 @@ for file in "${APP_FILES[@]}"; do
   install -m 0644 "$SOURCE_DIR/$file" "$APP_DIR/$file"
 done
 chmod 0755 "$APP_DIR/setup_workspace.sh"
+for file in "${OLD_FILES[@]}"; do
+  rm -f "$APP_DIR/$file"
+done
 rm -rf "$APP_DIR/__pycache__"
 
 # --system-site-packages makes the apt-installed PyGObject visible in the venv.
@@ -92,14 +97,13 @@ fi
 "$APP_DIR/.venv/bin/pip" install --quiet --disable-pip-version-check \
   -r "$APP_DIR/requirements.txt"
 
-if ! "$venv_python" -c 'import gi; gi.require_version("Gtk", "3.0"); gi.require_version("Vte", "2.91"); from gi.repository import Gtk, Vte' 2>/dev/null; then
-  echo "Error: GTK 3 / VTE bindings are not importable from $venv_python" >&2
+if ! "$venv_python" -c 'import gi; gi.require_version("Gtk", "3.0"); from gi.repository import Gtk' 2>/dev/null; then
+  echo "Error: GTK 3 bindings are not importable from $venv_python" >&2
   exit 1
 fi
 
-# chemotionapi (branch version-3), the API reference for the agent and
-# chemotionapi's skills for opencode.
-"$APP_DIR/setup_workspace.sh" "$APP_DIR" "$venv_python" "${XDG_CONFIG_HOME:-$HOME/.config}/opencode/skills"
+# chemotionapi (branch version-3) with its skills, and the API reference for the agent.
+"$APP_DIR/setup_workspace.sh" "$APP_DIR" "$venv_python"
 
 # --- Configuration ----------------------------------------------------------
 if [[ ! -f "$CONFIG_DIR/config.json" ]]; then
@@ -110,53 +114,15 @@ else
   created_config=0
 fi
 
-# --- opencode and the KIT KI-Toolbox ----------------------------------------
-# The app needs opencode 2 (its config format). The official v2 installer
-# puts it into ~/.opencode/bin, where the app looks for it too.
-OPENCODE_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/opencode/opencode.json"
+# --- The KIT KI-Toolbox -------------------------------------------------------
+# The AI endpoint (default: the KI-Toolbox) and its token live in the app
+# config. An older install kept the key in environment.d; take it from there.
 KEY_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/environment.d/50-ki-toolbox.conf"
-
-opencode_bin="$(command -v opencode || true)"
-if [[ -z "$opencode_bin" && -x "$HOME/.opencode/bin/opencode" ]]; then
-  opencode_bin="$HOME/.opencode/bin/opencode"
-fi
-opencode_version="$([[ -n "$opencode_bin" ]] && "$opencode_bin" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9.]+' | head -n 1 || true)"
-if [[ "$opencode_version" =~ ^([0-9]+)\. ]] && ((BASH_REMATCH[1] >= 2)); then
-  echo "opencode $opencode_version already installed."
-else
-  echo "Installing opencode 2 ${opencode_version:+(found $opencode_version) }..."
-  curl -fsSL https://opencode.ai/v2/install | bash
-fi
-
-# Add the KI-Toolbox provider to the user's opencode config (unless it is
-# there) and use it in ChemAssistent unless a model is chosen already.
-"$PYTHON" "$SOURCE_DIR/setup_opencode.py" "$OPENCODE_CONFIG" "$CONFIG_DIR/config.json"
-
-# The API key goes into environment.d, which systemd reads for the user
-# session, so the service (and the opencode it starts) gets it.
-if [[ -n "${KI_TOOLBOX_API_KEY:-}" ]] || grep -qs '^KI_TOOLBOX_API_KEY=.' "$KEY_FILE"; then
-  echo "KI-Toolbox API key already set."
-elif [[ -t 0 ]]; then
-  echo "Enter your KI-Toolbox API key (https://ki-toolbox.scc.kit.edu), or leave it empty to skip:"
-  read -rs key
-  echo
-  if [[ -n "$key" ]]; then
-    mkdir -p "$(dirname "$KEY_FILE")"
-    (umask 077 && printf 'KI_TOOLBOX_API_KEY=%s\n' "$key" > "$KEY_FILE")
-    echo "Saved the key to $KEY_FILE (mode 0600)."
-  fi
-  unset key
-fi
-# Hand the key to the running systemd user manager, so the service restarted
-# below has it without logging out (import-environment keeps it off the
-# command line).
 if [[ -z "${KI_TOOLBOX_API_KEY:-}" ]] && grep -qs '^KI_TOOLBOX_API_KEY=.' "$KEY_FILE"; then
   KI_TOOLBOX_API_KEY="$(sed -n 's/^KI_TOOLBOX_API_KEY=//p' "$KEY_FILE" | tail -n 1)"
-fi
-if [[ -n "${KI_TOOLBOX_API_KEY:-}" ]]; then
   export KI_TOOLBOX_API_KEY
-  systemctl --user import-environment KI_TOOLBOX_API_KEY
 fi
+"$PYTHON" "$SOURCE_DIR/setup_ai.py"
 
 
 # --- Menu entries and icons -------------------------------------------------
@@ -199,12 +165,6 @@ echo
 echo "Installed."
 if ((created_config)); then
   echo "Created $CONFIG_DIR/config.json (mode 0600): set URL, user and password in the settings."
-fi
-if ! command -v opencode >/dev/null 2>&1 && [[ ! -x "$HOME/.opencode/bin/opencode" ]]; then
-  echo "Warning: opencode was not found. Install it from https://opencode.ai and log in to a provider."
-fi
-if [[ -z "${KI_TOOLBOX_API_KEY:-}" ]]; then
-  echo "Warning: no KI-Toolbox API key set. Put KI_TOOLBOX_API_KEY=<key> into $KEY_FILE and log in again."
 fi
 echo "Settings:  open \"ChemAssistent Settings\" from the application menu"
 echo "Use:       click the Chemotion icon in the top bar -> \"Ask Chemotion…\" (middle click opens it directly)"

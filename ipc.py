@@ -1,12 +1,10 @@
-"""How mcp_server.py and a second start of the app reach the running app (no GTK).
+"""How a second start of the app reaches the running app (no GTK).
 
 Linux: a Unix socket at SOCKET_PATH (mode 0600). Python has no AF_UNIX on
 Windows, so there the app listens on 127.0.0.1 with a random port, and every
-request must carry a random token; address and token are in ENDPOINT_FILE
-(for a second start) and in the MCP server's environment.
+request must carry a random token; address and token are in ENDPOINT_FILE.
 
-A request is one JSON object plus a newline; the answer is one JSON object,
-after which the app closes the connection.
+A request is one JSON object plus a newline, e.g. {"type": "show", "token"}.
 """
 from __future__ import annotations
 
@@ -17,10 +15,6 @@ import socket
 from pathlib import Path
 
 from config import ENDPOINT_FILE, SOCKET_PATH, WINDOWS, write_private_json
-
-
-ADDRESS_ENV = "CHEM_ASSISTENT_SOCKET"
-TOKEN_ENV = "CHEM_ASSISTENT_TOKEN"
 
 
 def connect(address: str, timeout: float | None = None) -> socket.socket:
@@ -80,10 +74,6 @@ class Listener:
             self.address = str(SOCKET_PATH)
         self.sock.listen()
         return self.sock
-
-    def environment(self) -> dict[str, str]:
-        """What the MCP server needs to reach this listener."""
-        return {ADDRESS_ENV: self.address, TOKEN_ENV: self.token}
 
     def close(self) -> None:
         if self.sock is not None:

@@ -12,5 +12,5 @@ rm -f "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps/chem-ass
 echo "Application removed."
 echo "Configuration was kept at:"
 echo "  ${XDG_CONFIG_HOME:-$HOME/.config}/chem-assistent"
-echo "opencode state of the app (may be deleted):"
+echo "State of older versions (may be deleted):"
 echo "  ${XDG_STATE_HOME:-$HOME/.local/state}/chem-assistent"
