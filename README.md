@@ -24,7 +24,10 @@ only after you click **Run**.
 3. The window grows to the full screen:
    - **left**: the chat with the agent. Ask follow-up questions (Enter sends,
      Shift+Enter starts a new line); **Stop** or Esc interrupts the agent.
-     Short notes show what it read in the documentation;
+     Short notes show what it read in the documentation. The paperclip button
+     (or dropping files on the chat) attaches files or folders to your next
+     message: the agent may read them and use them in its code, e.g. to
+     upload a measurement file to a sample;
    - **right**: the results. Each time the agent wants to call the Chemotion
      API, a card appears with its purpose and the Python code. **Run** executes
      it (Ctrl+Enter in the code also works), **Reject** refuses it; the optional
@@ -43,7 +46,8 @@ window (the top-bar icon brings it back) or end the conversation.
 - The agent has exactly four tools: `execute_python`, which waits for your
   confirmation in the result panel and is its only way to reach Chemotion,
   and `read_file`, `grep` and `list_files`, which only read the API reference
-  and the chemotionapi checkout in its workspace. It cannot run shell
+  and the chemotionapi checkout in its workspace plus the files and folders
+  you attached. It cannot run shell
   commands, edit files or fetch web pages.
 - Confirmed code runs in its own process with an already logged-in
   `instance`; your password is never shown to the AI model. It is stopped

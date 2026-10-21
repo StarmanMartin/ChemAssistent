@@ -29,7 +29,7 @@ gi.require_version("Gdk", "3.0")
 if sys.platform.startswith("linux") and os.environ.get("DISPLAY"):
     os.environ["GDK_BACKEND"] = "x11"
 
-from gi.repository import Gdk, GLib, Gtk, Pango  # type: ignore  # noqa: E402
+from gi.repository import Gdk, Gio, GLib, Gtk, Pango  # type: ignore  # noqa: E402
 
 try:
     gi.require_version("GdkX11", "3.0")
@@ -160,6 +160,12 @@ CSS = b"""
 }
 .chat-assistant {
     color: #e6e6e6;
+}
+.attachment-chip {
+    background: #2a2c30;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 12px;
+    padding: 0 0 0 8px;
 }
 .chat-input text {
     background: #2a2c30;
@@ -837,11 +843,13 @@ def markdown_markup(text: str) -> str:
 
 
 class ChatPanel(Gtk.Box):
-    """The conversation with the agent: messages, a status line, the input."""
+    """The conversation with the agent: messages, a status line, the input
+    with attached files and folders (button or drag and drop)."""
 
     def __init__(self, on_send, on_stop) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        self.on_send = on_send
+        self.on_send = on_send  # on_send(text, attachments)
+        self.attachments: list[str] = []
         self.answer: Gtk.Label | None = None  # the assistant message being streamed
         self.answer_text = ""
         self.render_pending = False
@@ -862,8 +870,27 @@ class ChatPanel(Gtk.Box):
         status_row.pack_start(self.status, True, True, 0)
         self.pack_start(status_row, False, False, 0)
 
+        self.chips = Gtk.FlowBox()
+        self.chips.set_selection_mode(Gtk.SelectionMode.NONE)
+        self.chips.set_max_children_per_line(20)
+        self.chips.set_margin_start(10)
+        self.chips.set_margin_end(10)
+        self.pack_start(self.chips, False, False, 0)
+
         input_row = Gtk.Box(spacing=8, border_width=10)
         input_row.set_margin_top(0)
+        attach = Gtk.MenuButton()
+        attach.set_image(Gtk.Image.new_from_icon_name("mail-attachment-symbolic", Gtk.IconSize.BUTTON))
+        attach.set_tooltip_text("Attach a file or a folder (or drop it here)")
+        attach.set_valign(Gtk.Align.END)
+        menu = Gtk.Menu()
+        for text, folder in (("File…", False), ("Folder…", True)):
+            item = Gtk.MenuItem(label=text)
+            item.connect("activate", lambda _item, folder=folder: self._choose(folder))
+            menu.append(item)
+        menu.show_all()
+        attach.set_popup(menu)
+        input_row.pack_start(attach, False, False, 0)
         self.input = Gtk.TextView()
         self.input.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
         self.input.set_left_margin(8)
@@ -896,6 +923,12 @@ class ChatPanel(Gtk.Box):
         self.pack_start(input_row, False, False, 0)
         self.busy = False
 
+        self.drag_dest_set(Gtk.DestDefaults.ALL, [], Gdk.DragAction.COPY)
+        self.drag_dest_add_uri_targets()
+        self.connect("drag-data-received", self._on_drop)
+        # The text view has its own drop handling (it inserts the URIs as text).
+        self.input.drag_dest_unset()
+
     def focus_input(self) -> None:
         self.input.grab_focus()
 
@@ -908,22 +941,80 @@ class ChatPanel(Gtk.Box):
     def _send(self) -> None:
         buffer = self.input.get_buffer()
         text = buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), False).strip()
-        if not text or self.busy:
+        if not (text or self.attachments) or self.busy:
             return
         buffer.set_text("")
-        self.on_send(text)
+        attachments, self.attachments = self.attachments, []
+        self._update_chips()
+        self.on_send(text or "Have a look at the attachments.", attachments)
+
+    # --- attachments ----------------------------------------------------------
+    def _choose(self, folder: bool) -> None:
+        dialog = Gtk.FileChooserNative.new(
+            "Attach a folder" if folder else "Attach files",
+            self.get_toplevel(),
+            Gtk.FileChooserAction.SELECT_FOLDER if folder else Gtk.FileChooserAction.OPEN,
+            "Attach",
+            "Cancel",
+        )
+        dialog.set_select_multiple(not folder)
+        if dialog.run() == Gtk.ResponseType.ACCEPT:
+            self.attach([path for path in (file.get_path() for file in dialog.get_files()) if path])
+        dialog.destroy()
+        self.focus_input()
+
+    def _on_drop(self, _widget, context, _x, _y, data, _info, time_) -> None:
+        paths = [Gio.File.new_for_uri(uri).get_path() for uri in data.get_uris() or []]
+        self.attach([path for path in paths if path])
+        Gtk.drag_finish(context, True, False, time_)
+
+    def attach(self, paths: list[str]) -> None:
+        for path in paths:
+            if path not in self.attachments and os.path.exists(path):
+                self.attachments.append(path)
+        self._update_chips()
+
+    def _update_chips(self) -> None:
+        for child in self.chips.get_children():
+            self.chips.remove(child)
+        for path in self.attachments:
+            chip = Gtk.Box(spacing=4)
+            chip.get_style_context().add_class("attachment-chip")
+            folder = os.path.isdir(path)
+            chip.pack_start(Gtk.Image.new_from_icon_name(
+                "folder-symbolic" if folder else "text-x-generic-symbolic", Gtk.IconSize.MENU), False, False, 0)
+            name = label(os.path.basename(path.rstrip("/\\")) + ("/" if folder else ""), wrap=False)
+            name.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
+            name.set_max_width_chars(30)
+            chip.pack_start(name, False, False, 0)
+            chip.pack_start(icon_button("window-close-symbolic", "Remove",
+                                        lambda path=path: self._detach(path)), False, False, 0)
+            chip.set_tooltip_text(path)
+            self.chips.add(chip)
+        self.chips.show_all()
+
+    def _detach(self, path: str) -> None:
+        self.attachments.remove(path)
+        self._update_chips()
 
     def _add(self, widget: Gtk.Widget) -> None:
         self.list.pack_start(widget, False, False, 0)
         widget.show_all()
 
-    def add_user(self, text: str) -> None:
+    def add_user(self, text: str, attachments: list[str] | tuple[str, ...] = ()) -> None:
         self.answer = None
         bubble = label(text, "chat-user", selectable=True)
         bubble.set_halign(Gtk.Align.END)
         bubble.set_margin_start(60)
         self.follower.active = True
         self._add(bubble)
+        if attachments:
+            names = ", ".join(os.path.basename(path.rstrip("/\\")) + ("/" if os.path.isdir(path) else "")
+                              for path in attachments)
+            note = label(f"Attached: {names}", "dim", selectable=True)
+            note.set_halign(Gtk.Align.END)
+            note.set_tooltip_text("\n".join(attachments))
+            self._add(note)
 
     def append_text(self, delta: str) -> None:
         if self.answer is None:
@@ -1141,13 +1232,13 @@ class AssistantWindow(Gtk.Window):
         self._grow()
         self._send(text)
 
-    def _send(self, text: str) -> None:
+    def _send(self, text: str, attachments: list[str] | tuple[str, ...] = ()) -> None:
         if self.agent is None or self.agent.busy:
             return
-        self.chat.add_user(text)
+        self.chat.add_user(text, attachments)
         self.chat.set_busy(True, "Working…")
         self.agent.busy = True  # before the thread starts: no second send meanwhile
-        threading.Thread(target=self.agent.send, args=(text,), daemon=True).start()
+        threading.Thread(target=self.agent.send, args=(text, attachments), daemon=True).start()
 
     def _stop(self) -> None:
         if self.agent is not None and self.agent.busy:

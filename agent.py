@@ -8,11 +8,13 @@ KIT KI-Toolbox, OpenAI, Ollama, vLLM, LiteLLM, ... all work.
 The model gets exactly four tools: `execute_python` (runs only after the
 user confirmed it in the result panel; the app provides it as a callback)
 and read-only `read_file`, `grep` and `list_files`, which cannot leave the
-workspace (the API reference and the chemotionapi checkout).
+workspace (the API reference and the chemotionapi checkout) and the files
+and folders the user attached.
 """
 from __future__ import annotations
 
 import json
+import os
 import re
 import ssl
 import threading
@@ -30,6 +32,8 @@ MAX_READ_LINES = 400
 MAX_TOOL_CHARS = 40000
 MAX_GREP_MATCHES = 100
 MAX_LIST_ENTRIES = 300
+# Files grep looks at below one directory (an attached folder may be huge).
+MAX_GREP_FILES = 5000
 SKIP_DIRS = {".git", "__pycache__", ".venv", "node_modules"}
 
 TOOLS = [
@@ -63,12 +67,13 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": f"Read a text file of the workspace with line numbers, at most "
-                           f"{MAX_READ_LINES} lines per call.",
+            "description": f"Read a text file of the workspace or one the user attached, with line "
+                           f"numbers, at most {MAX_READ_LINES} lines per call.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Path relative to the workspace."},
+                    "path": {"type": "string", "description": "Path relative to the workspace, or the "
+                                                              "absolute path of an attachment."},
                     "offset": {"type": "integer", "description": "First line (1-based), default 1."},
                     "limit": {"type": "integer", "description": f"Number of lines, default {MAX_READ_LINES}."},
                 },
@@ -80,13 +85,14 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "grep",
-            "description": "Search the workspace files with a regular expression (Python syntax, "
-                           "case-insensitive). Returns path:line: text.",
+            "description": "Search the workspace or an attachment with a regular expression (Python "
+                           "syntax, case-insensitive). Returns path:line: text.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "pattern": {"type": "string"},
-                    "path": {"type": "string", "description": "File or directory, default the whole workspace."},
+                    "path": {"type": "string", "description": "File or directory, default the whole workspace. "
+                                                              "Attachments by absolute path."},
                     "glob": {"type": "string", "description": "File name filter, e.g. *.py"},
                 },
                 "required": ["pattern"],
@@ -97,10 +103,11 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "list_files",
-            "description": "List a directory of the workspace (directories end with /).",
+            "description": "List a directory of the workspace or an attached folder (directories end with /).",
             "parameters": {
                 "type": "object",
-                "properties": {"path": {"type": "string", "description": "Default: the workspace root."}},
+                "properties": {"path": {"type": "string", "description": "Default: the workspace root. "
+                                                                         "Attachments by absolute path."}},
             },
         },
     },
@@ -154,24 +161,48 @@ def list_models(config: Config) -> list[str]:
 
 
 # --- tools without the user ----------------------------------------------------
-def _workspace_path(path: str | None) -> Path:
-    root = WORKSPACE_DIR.resolve()
-    target = (root / (path or ".").lstrip("/\\")).resolve()
-    if target != root and root not in target.parents:
-        raise AgentError(f"{path} is outside the workspace.")
+# They read only below `roots`: the workspace and what the user attached.
+def _allowed(target: Path, roots: list[Path]) -> bool:
+    return any(target == root or root in target.parents for root in roots)
+
+
+def _resolve(path: str | None, roots: list[Path]) -> Path:
+    """An absolute path inside one of `roots`, or a path relative to the workspace."""
+    workspace = WORKSPACE_DIR.resolve()
+    text = (path or ".").strip()
+    absolute = Path(text).expanduser().is_absolute()
+    if absolute and _allowed(Path(text).expanduser().resolve(), roots):
+        target = Path(text).expanduser().resolve()
+    else:
+        # Relative paths, and "/CHEMOTION_API.md"-style ones, are workspace paths.
+        target = (workspace / text.lstrip("/\\")).resolve()
+        if not _allowed(target, roots) or (absolute and not target.exists()):
+            raise AgentError(f"{path} is outside the workspace and the user's attachments.")
     if not target.exists():
-        raise AgentError(f"{path} does not exist in the workspace.")
+        raise AgentError(f"{path} does not exist.")
     return target
 
 
-def _relative(path: Path) -> str:
-    return path.relative_to(WORKSPACE_DIR.resolve()).as_posix() or "."
+def _shown(path: Path) -> str:
+    """Workspace files relative, attachments with their absolute path."""
+    workspace = WORKSPACE_DIR.resolve()
+    if path == workspace or workspace in path.parents:
+        return path.relative_to(workspace).as_posix() or "."
+    return str(path)
 
 
-def read_file(path: str, offset: int = 1, limit: int = MAX_READ_LINES) -> str:
-    target = _workspace_path(path)
+def _is_binary(path: Path) -> bool:
+    with path.open("rb") as handle:
+        return b"\0" in handle.read(8192)
+
+
+def read_file(path: str, roots: list[Path], offset: int = 1, limit: int = MAX_READ_LINES) -> str:
+    target = _resolve(path, roots)
     if target.is_dir():
         raise AgentError(f"{path} is a directory; use list_files.")
+    if _is_binary(target):
+        return (f"{_shown(target)} is a binary file ({target.stat().st_size} bytes). It cannot be shown "
+                f"as text; execute_python code can open it by its absolute path {target}.")
     lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
     start = max(1, int(offset or 1))
     count = max(1, min(int(limit or MAX_READ_LINES), MAX_READ_LINES))
@@ -179,45 +210,56 @@ def read_file(path: str, offset: int = 1, limit: int = MAX_READ_LINES) -> str:
     text = "\n".join(chunk)[:MAX_TOOL_CHARS]
     end = start + len(chunk) - 1
     more = f"\n... lines {end + 1}-{len(lines)} not shown (read_file with offset {end + 1})" if end < len(lines) else ""
-    return f"{_relative(target)}, lines {start}-{end} of {len(lines)}:\n{text}{more}"
+    return f"{_shown(target)}, lines {start}-{end} of {len(lines)}:\n{text}{more}"
 
 
 def _files(root: Path, glob: str | None):
     if root.is_file():
         yield root
         return
-    for path in sorted(root.rglob(glob or "*")):
+    for index, path in enumerate(sorted(root.rglob(glob or "*"))):
+        if index >= MAX_GREP_FILES:
+            return
         if path.is_file() and not SKIP_DIRS.intersection(path.relative_to(root).parts):
             yield path
 
 
-def grep(pattern: str, path: str | None = None, glob: str | None = None) -> str:
+def grep(pattern: str, roots: list[Path], path: str | None = None, glob: str | None = None) -> str:
     try:
         regex = re.compile(pattern, re.IGNORECASE)
     except re.error as exc:
         raise AgentError(f"Invalid regular expression: {exc}") from None
     matches = []
-    for file in _files(_workspace_path(path), glob):
+    for file in _files(_resolve(path, roots), glob):
         try:
             text = file.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
             continue  # binary
         for number, line in enumerate(text.splitlines(), 1):
             if regex.search(line):
-                matches.append(f"{_relative(file)}:{number}: {line.strip()[:300]}")
+                matches.append(f"{_shown(file)}:{number}: {line.strip()[:300]}")
                 if len(matches) >= MAX_GREP_MATCHES:
                     return "\n".join(matches) + f"\n... more than {MAX_GREP_MATCHES} matches; narrow the search."
     return "\n".join(matches) or "No matches."
 
 
-def list_files(path: str | None = None) -> str:
-    target = _workspace_path(path)
+def list_files(roots: list[Path], path: str | None = None) -> str:
+    target = _resolve(path, roots)
     if not target.is_dir():
-        return _relative(target)
+        return f"{_shown(target)} ({target.stat().st_size} bytes)"
     entries = [f"{entry.name}/" if entry.is_dir() else entry.name
                for entry in sorted(target.iterdir()) if entry.name not in SKIP_DIRS]
     more = f"\n... {len(entries) - MAX_LIST_ENTRIES} more" if len(entries) > MAX_LIST_ENTRIES else ""
     return "\n".join(entries[:MAX_LIST_ENTRIES]) + more
+
+
+def describe_attachment(path: Path) -> str:
+    if path.is_dir():
+        count = sum(1 for _ in _files(path, None))
+        return f"- {path}{os.sep} (folder, {count}{'+' if count >= MAX_GREP_FILES else ''} files)"
+    size = path.stat().st_size
+    kind = "binary file" if _is_binary(path) else "text file"
+    return f"- {path} ({kind}, {size / 1024:.1f} kB)"
 
 
 # --- the conversation ------------------------------------------------------------
@@ -239,6 +281,8 @@ class Agent:
         self.execute = execute
         self.on_event = on_event
         self.messages: list[dict] = [{"role": "system", "content": system_prompt}]
+        # What the read-only tools may read: the workspace and every attachment.
+        self.roots: list[Path] = [WORKSPACE_DIR.resolve()]
         self.cancelled = threading.Event()
         self.busy = False
         self._response = None
@@ -253,9 +297,21 @@ class Agent:
             except Exception:
                 pass
 
-    def send(self, text: str) -> None:
+    def send(self, text: str, attachments: list[str] | tuple[str, ...] = ()) -> None:
+        """`attachments`: files and folders the user attached to this message."""
         self.busy = True
         self.cancelled.clear()
+        lines = []
+        for item in attachments:
+            path = Path(item).resolve()
+            if path.exists():
+                if path not in self.roots:
+                    self.roots.append(path)
+                lines.append(describe_attachment(path))
+        if lines:
+            text += ("\n\nAttached by the user (read them with read_file / list_files / grep by these "
+                     "absolute paths; execute_python code can open them, e.g. to upload a file to "
+                     "Chemotion):\n" + "\n".join(lines))
         self.messages.append({"role": "user", "content": text})
         try:
             for _ in range(MAX_ROUNDS):
@@ -419,17 +475,18 @@ class Agent:
                     return "No code given."
                 return self.execute(str(arguments.get("purpose") or ""), code, self.cancelled)
             if name == "read_file":
-                text = read_file(str(arguments.get("path") or ""), arguments.get("offset") or 1,
+                text = read_file(str(arguments.get("path") or ""), self.roots, arguments.get("offset") or 1,
                                  arguments.get("limit") or MAX_READ_LINES)
                 self.on_event("tool", f"Read {arguments.get('path')}")
                 return text
             if name == "grep":
-                text = grep(str(arguments.get("pattern") or ""), arguments.get("path"), arguments.get("glob"))
+                text = grep(str(arguments.get("pattern") or ""), self.roots, arguments.get("path"),
+                            arguments.get("glob"))
                 where = f" in {arguments['path']}" if arguments.get("path") else ""
                 self.on_event("tool", f"Searched “{arguments.get('pattern')}”{where}")
                 return text
             if name == "list_files":
-                text = list_files(arguments.get("path"))
+                text = list_files(self.roots, arguments.get("path"))
                 self.on_event("tool", f"Listed {arguments.get('path') or 'the workspace'}")
                 return text
         except AgentError as exc:
