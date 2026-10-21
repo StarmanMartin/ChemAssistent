@@ -66,6 +66,8 @@ APP_ID = "chem-assistent"
 HERE = Path(__file__).resolve().parent
 ICON_FILE = HERE / "chem-assistent.svg"
 PANEL_ICON = "chem-assistent-panel"  # chem-assistent-panel.svg next to this file
+# The light variant of the mark, for the app's own dark prompt and header.
+DARK_UI_ICON_FILE = HERE / f"{PANEL_ICON}.svg"
 RUNNER = HERE / "chemotion_runner.py"
 SETTINGS = HERE / "settings.py"
 
@@ -1107,7 +1109,7 @@ class AssistantWindow(Gtk.Window):
         try:
             from gi.repository import GdkPixbuf  # type: ignore
 
-            pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_size(str(ICON_FILE), 28, 28)
+            pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_size(str(DARK_UI_ICON_FILE), 28, 28)
             head.pack_start(Gtk.Image.new_from_pixbuf(pixbuf), False, False, 0)
         except GLib.Error:
             pass
@@ -1190,7 +1192,7 @@ class AssistantWindow(Gtk.Window):
         try:
             from gi.repository import GdkPixbuf  # type: ignore
 
-            pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_size(str(ICON_FILE), 22, 22)
+            pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_size(str(DARK_UI_ICON_FILE), 22, 22)
             header.pack_start(Gtk.Image.new_from_pixbuf(pixbuf), False, False, 0)
         except GLib.Error:
             pass
