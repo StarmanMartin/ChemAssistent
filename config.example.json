@@ -7,5 +7,6 @@
   "ai_token": "",
   "ai_model": "alias.complex-local",
   "execution_timeout": 300,
-  "prompt_width": 640
+  "prompt_width": 640,
+  "hotkey": "<Control>space"
 }

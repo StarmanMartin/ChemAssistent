@@ -52,6 +52,7 @@ except (ValueError, ImportError):
     GtkSource = None
 
 import app_control  # noqa: E402
+import hotkey  # noqa: E402
 import ipc  # noqa: E402
 import workspace  # noqa: E402
 from agent import Agent  # noqa: E402
@@ -78,6 +79,8 @@ GROW_STEPS = 14
 GROW_STEP_MS = 16
 # The chat's share of the window width; the results get the rest.
 CHAT_SHARE = 0.45
+# Two presses of the global hotkey within this time open the prompt.
+HOTKEY_DOUBLE_S = 0.6
 # What the agent gets back from one snippet; the panel shows everything.
 MAX_ANSWER_CHARS = 20000
 MAX_TABLE_COLUMNS = 12
@@ -304,9 +307,12 @@ class RequestServer:
                 request = json.loads(data.decode("utf-8"))
             except (OSError, ValueError):
                 return
-            if isinstance(request, dict) and ipc.token_ok(request, self.listener.token) \
-                    and request.get("type") == "show":
+            if not isinstance(request, dict) or not ipc.token_ok(request, self.listener.token):
+                return
+            if request.get("type") == "show":
                 GLib.idle_add(self.app.open_prompt)
+            elif request.get("type") == "hotkey":  # hotkey.py, run by the GNOME shortcut
+                GLib.idle_add(self.app.hotkey_pressed)
 
 
 # --- running confirmed code ---------------------------------------------------
@@ -1365,6 +1371,7 @@ class ChemAssistentApp:
         self.server = RequestServer(self)
         self.show_prompt = show_prompt
         self.indicator = None
+        self.last_hotkey = 0.0
 
         provider = Gtk.CssProvider()
         provider.load_from_data(CSS)
@@ -1453,6 +1460,43 @@ class ChemAssistentApp:
         if self.window is window:
             self.window = None
 
+    def hotkey_pressed(self) -> bool:
+        now = time.monotonic()
+        if now - self.last_hotkey <= HOTKEY_DOUBLE_S:
+            self.last_hotkey = 0.0
+            self.open_prompt()
+        else:
+            self.last_hotkey = now
+        return False
+
+    def _register_hotkey(self) -> None:
+        """GNOME: (re)write the custom shortcut, so it runs this copy's hotkey.py.
+        Windows: RegisterHotKey (a change in the settings needs a restart)."""
+        accelerator = str(read_raw_config().get("hotkey") or "").strip()
+        if not WINDOWS:
+            try:
+                problem = hotkey.register_gnome(accelerator)
+            except Exception as exc:  # dconf/D-Bus trouble must not stop the app
+                problem = f"Could not set the GNOME shortcut: {exc}"
+            if problem:
+                LOG.warning(problem)
+            return
+        if not accelerator:
+            return
+        keyval, modifiers = Gtk.accelerator_parse(accelerator)
+        key = hotkey.virtual_key(Gdk.keyval_name(keyval) or "") if keyval else None
+        if key is None:
+            LOG.warning("Hotkey %r is not supported on Windows (use space, a-z, 0-9 or F1-F12)", accelerator)
+            return
+        flags = 0
+        for mask, flag in ((Gdk.ModifierType.CONTROL_MASK, hotkey.MOD_CONTROL),
+                           (Gdk.ModifierType.SHIFT_MASK, hotkey.MOD_SHIFT),
+                           (Gdk.ModifierType.MOD1_MASK, hotkey.MOD_ALT),
+                           (Gdk.ModifierType.SUPER_MASK, hotkey.MOD_WIN)):
+            if modifiers & mask:
+                flags |= flag
+        hotkey.listen_windows(flags, key, lambda: GLib.idle_add(self.hotkey_pressed))
+
     def quit(self) -> bool:
         if self.window is not None:
             self.window.close_conversation()
@@ -1463,6 +1507,7 @@ class ChemAssistentApp:
     def run(self) -> None:
         self.server.start()
         self._build_indicator()
+        self._register_hotkey()
         if signal_add is not None:
             for signum in (signal.SIGINT, signal.SIGTERM):
                 signal_add(GLib.PRIORITY_DEFAULT, signum, self.quit)

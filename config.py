@@ -30,6 +30,8 @@ WORKSPACE_DIR = Path(__file__).resolve().with_name("workspace")
 # any other OpenAI-compatible URL works too.
 KI_TOOLBOX_URL = "https://ki-toolbox.scc.kit.edu/api/v1"
 DEFAULT_AI_MODEL = "alias.complex-local"
+# Pressed twice, opens the prompt from anywhere (GTK accelerator syntax; "" = off).
+DEFAULT_HOTKEY = "<Control>space"
 # Used when ai_token is empty (older installs put the key there).
 AI_TOKEN_ENV = "KI_TOOLBOX_API_KEY"
 # ai_model ids of the opencode era ("<provider>/<model>") -> KI-Toolbox ids.
@@ -57,6 +59,7 @@ class Config:
     ai_model: str = DEFAULT_AI_MODEL
     execution_timeout: int = 300
     prompt_width: int = 640
+    hotkey: str = DEFAULT_HOTKEY
 
 
 EXAMPLE = {
@@ -69,6 +72,7 @@ EXAMPLE = {
     "ai_model": DEFAULT_AI_MODEL,
     "execution_timeout": 300,
     "prompt_width": 640,
+    "hotkey": DEFAULT_HOTKEY,
 }
 
 
@@ -159,4 +163,5 @@ def load_config() -> Config:
         ai_model=str(data.get("ai_model") or "").strip(),
         execution_timeout=max(10, timeout),
         prompt_width=max(360, width),
+        hotkey=str(data.get("hotkey") or "").strip(),
     )

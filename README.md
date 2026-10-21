@@ -16,9 +16,9 @@ only after you click **Run**.
 
 ## How it works
 
-1. Click the Chemotion icon in the top bar and choose **Ask Chemotion…**
-   (a middle click on the icon opens it directly). A prompt opens in the
-   middle of the screen.
+1. Press **Ctrl+Space twice** quickly, or click the Chemotion icon in the
+   top bar and choose **Ask Chemotion…** (a middle click on the icon opens it
+   directly). A prompt opens in the middle of the screen.
 2. Type what you want, e.g. “Which samples are in my collection Main Test?”,
    and press Enter.
 3. The window grows to the full screen:
@@ -174,7 +174,8 @@ Remove: `powershell -ExecutionPolicy Bypass -File "%LOCALAPPDATA%\Programs\chem-
   "ai_token": "",
   "ai_model": "alias.complex-local",
   "execution_timeout": 300,
-  "prompt_width": 640
+  "prompt_width": 640,
+  "hotkey": "<Control>space"
 }
 ```
 
@@ -194,6 +195,12 @@ Remove: `powershell -ExecutionPolicy Bypass -File "%LOCALAPPDATA%\Programs\chem-
   support tool calls.
 - `execution_timeout`: maximum run time of one confirmed snippet, in seconds.
 - `prompt_width`: width of the prompt window.
+- `hotkey`: the global hotkey; pressed twice within 0.6 s it opens the
+  prompt. GTK syntax (`<Control>space`, `<Super>c`, `<Control><Alt>k`), empty
+  turns it off. On GNOME it is a custom keyboard shortcut (Settings → Keyboard
+  → Custom Shortcuts, “ChemAssistent”), so a single press no longer reaches
+  other programs, e.g. completion in editors; pick another key if you need
+  Ctrl+Space there. On Windows a change applies after restarting the app.
 
 Changes apply to the next conversation; no restart needed.
 

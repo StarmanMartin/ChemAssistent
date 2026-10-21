@@ -1,10 +1,10 @@
-"""How a second start of the app reaches the running app (no GTK).
+"""How a second start of the app and hotkey.py reach the running app (no GTK).
 
 Linux: a Unix socket at SOCKET_PATH (mode 0600). Python has no AF_UNIX on
 Windows, so there the app listens on 127.0.0.1 with a random port, and every
 request must carry a random token; address and token are in ENDPOINT_FILE.
 
-A request is one JSON object plus a newline, e.g. {"type": "show", "token"}.
+A request is one JSON object plus a newline: {"type": "show" | "hotkey", "token"}.
 """
 from __future__ import annotations
 

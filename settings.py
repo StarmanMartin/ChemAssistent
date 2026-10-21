@@ -12,10 +12,11 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import GLib, Gtk  # type: ignore  # noqa: E402
 
 import app_control  # noqa: E402
+import hotkey  # noqa: E402
 from agent import AgentError, list_models  # noqa: E402
 from config import (  # noqa: E402
     AI_TOKEN_ENV, CONFIG_FILE, EXAMPLE, KI_TOOLBOX_URL, Config, ai_problem, ai_token, config_problem,
-    read_raw_config, save_raw_config,
+    WINDOWS, read_raw_config, save_raw_config,
 )
 
 
@@ -114,6 +115,20 @@ class SettingsWindow(Gtk.Window):
         row += 1
         self.loading_models = False
 
+        self.hotkey = Gtk.Entry(hexpand=True)
+        self.hotkey.set_placeholder_text("Off (e.g. <Control>space)")
+        self.hotkey.set_text(str(self.data.get("hotkey") or ""))
+        row = self._add_row(grid, row, "Global hotkey", self.hotkey)
+        note = Gtk.Label(
+            label="Press it twice quickly to open the prompt from anywhere. While it is set, "
+                  "a single press no longer reaches other programs (e.g. completion in editors). "
+                  "Empty turns it off." + (" Applies after restarting the app." if WINDOWS else ""),
+            xalign=0, wrap=True, max_width_chars=60,
+        )
+        note.get_style_context().add_class("dim-label")
+        grid.attach(note, 1, row, 1, 1)
+        row += 1
+
         self.spins: dict[str, Gtk.SpinButton] = {}
         for key, label, lower, upper in NUMBER_FIELDS:
             spin = Gtk.SpinButton.new_with_range(lower, upper, 1)
@@ -197,6 +212,7 @@ class SettingsWindow(Gtk.Window):
             "ai_url": self.ai_url.get_child().get_text().strip().rstrip("/"),
             "ai_token": self.ai_token.get_text().strip(),
             "ai_model": self.ai_model.get_child().get_text().strip(),
+            "hotkey": self.hotkey.get_text().strip(),
         }
         for key, spin in self.spins.items():
             values[key] = spin.get_value_as_int()
@@ -281,6 +297,9 @@ class SettingsWindow(Gtk.Window):
 
     def _on_save(self, _button: Gtk.Button) -> None:
         values = self._form_values()
+        if values["hotkey"] and not Gtk.accelerator_parse(values["hotkey"])[0]:
+            self._set_status(f"“{values['hotkey']}” is not a key: write it like <Control>space or <Super>c.")
+            return
         # Update the dict that was read, so keys unknown to this form are kept.
         self.data.update(values)
         try:
@@ -289,6 +308,12 @@ class SettingsWindow(Gtk.Window):
             self._set_status(f"Could not save: {exc}")
             return
         problem = config_problem(values) or ai_problem(values)
+        if not WINDOWS:
+            # The GNOME shortcut is the hotkey; the app needs no restart.
+            try:
+                problem = hotkey.register_gnome(values["hotkey"]) or problem
+            except Exception as exc:
+                problem = f"Could not set the GNOME shortcut: {exc}"
         # The app reads the config at the start of every conversation.
         self._set_status(f"Saved. {problem or 'Applies to the next conversation.'}")
 

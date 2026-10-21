@@ -2,6 +2,9 @@
 set -euo pipefail
 
 systemctl --user disable --now chem-assistent.service 2>/dev/null || true
+# The global hotkey is a GNOME custom shortcut that runs the app's hotkey.py.
+"$HOME/.local/share/chem-assistent/.venv/bin/python" "$HOME/.local/share/chem-assistent/hotkey.py" --unregister \
+  2>/dev/null || true
 rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/chem-assistent.service"
 systemctl --user daemon-reload
 rm -rf "$HOME/.local/share/chem-assistent"
