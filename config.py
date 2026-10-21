@@ -14,7 +14,7 @@ if WINDOWS:
     STATE_DIR = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / APP_NAME
 else:
     CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / APP_NAME
-    # Runtime state (the opencode workspace config), not configuration.
+    # Runtime state (Windows: the log and the PID file), not configuration.
     STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / APP_NAME
 CONFIG_FILE = CONFIG_DIR / "config.json"
 # AF_UNIX paths are limited to ~100 bytes, so the socket lives in the short
@@ -22,10 +22,28 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 SOCKET_PATH = Path(os.environ.get("XDG_RUNTIME_DIR") or STATE_DIR) / f"{APP_NAME}.sock"
 # Windows (no AF_UNIX in Python): port and token of the app's localhost server.
 ENDPOINT_FILE = STATE_DIR / "endpoint.json"
-# The directory opencode works in: CHEMOTION_API.md, the chemotionapi checkout
-# and the generated opencode.json. install.sh fills it; from the source tree
-# setup_workspace.sh does.
+# What the agent may read: CHEMOTION_API.md and the chemotionapi checkout.
+# install.sh fills it; from the source tree setup_workspace.sh does.
 WORKSPACE_DIR = Path(__file__).resolve().with_name("workspace")
+
+# The KIT KI-Toolbox (Open WebUI, OpenAI-compatible) is the default AI endpoint;
+# any other OpenAI-compatible URL works too.
+KI_TOOLBOX_URL = "https://ki-toolbox.scc.kit.edu/api/v1"
+DEFAULT_AI_MODEL = "alias.complex-local"
+# Used when ai_token is empty (older installs put the key there).
+AI_TOKEN_ENV = "KI_TOOLBOX_API_KEY"
+# ai_model ids of the opencode era ("<provider>/<model>") -> KI-Toolbox ids.
+LEGACY_MODELS = {
+    "complex-local": "alias.complex-local",
+    "medium-local": "alias.medium-local",
+    "simple-local": "alias.simple-local",
+    "complex-gpt": "alias.complex-gpt",
+    "medium-gpt": "alias.medium-gpt",
+    "simple-gpt": "alias.simple-gpt",
+    "claude-opus-5": "google.claude-opus-5",
+    "claude-sonnet-5": "google.claude-sonnet-5",
+    "gemini-3.8-flash": "google.gemini-3.8-flash",
+}
 
 
 @dataclass(frozen=True)
@@ -34,7 +52,9 @@ class Config:
     user: str
     password: str
     verify_tls: bool = True
-    ai_model: str = ""
+    ai_url: str = KI_TOOLBOX_URL
+    ai_token: str = ""
+    ai_model: str = DEFAULT_AI_MODEL
     execution_timeout: int = 300
     prompt_width: int = 640
 
@@ -44,7 +64,9 @@ EXAMPLE = {
     "user": "",
     "password": "",
     "verify_tls": True,
-    "ai_model": "",
+    "ai_url": KI_TOOLBOX_URL,
+    "ai_token": "",
+    "ai_model": DEFAULT_AI_MODEL,
     "execution_timeout": 300,
     "prompt_width": 640,
 }
@@ -65,7 +87,27 @@ def read_raw_config() -> dict:
         data = {}
     if not isinstance(data, dict):
         data = {}
-    return {**EXAMPLE, **data}
+    data = {**EXAMPLE, **data}
+    model = str(data.get("ai_model") or "")
+    if model.startswith("ki-toolbox/"):
+        model = model.split("/", 1)[1]
+        data["ai_model"] = LEGACY_MODELS.get(model, model)
+    return data
+
+
+def ai_token(data: dict) -> str:
+    return str(data.get("ai_token") or "").strip() or os.environ.get(AI_TOKEN_ENV, "").strip()
+
+
+def ai_problem(data: dict) -> str | None:
+    """Why `data` cannot be used to talk to the AI model, or None."""
+    if not str(data.get("ai_url", "")).strip():
+        return "Set the AI URL in the settings."
+    if not str(data.get("ai_model", "")).strip():
+        return "Set the AI model in the settings."
+    if not ai_token(data) and str(data.get("ai_url", "")).strip().rstrip("/") == KI_TOOLBOX_URL:
+        return f"Set the KI-Toolbox token in the settings (or {AI_TOKEN_ENV})."
+    return None
 
 
 def write_private_json(path: Path, data: object) -> None:
@@ -112,6 +154,8 @@ def load_config() -> Config:
         user=str(data["user"]).strip(),
         password=os.environ.get("CHEMOTION_PASSWORD") or str(data["password"]),
         verify_tls=bool(data.get("verify_tls", True)),
+        ai_url=str(data.get("ai_url") or "").strip().rstrip("/"),
+        ai_token=ai_token(data),
         ai_model=str(data.get("ai_model") or "").strip(),
         execution_timeout=max(10, timeout),
         prompt_width=max(360, width),

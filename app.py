@@ -1,13 +1,14 @@
 """ChemAssistent: a Chemotion icon in the top bar (the tray on Windows) that
-opens an opencode chat with the Chemotion ELN. Code the agent wants to run is
-shown on the right and runs only after the user confirmed it."""
+opens a chat with an AI agent (agent.py) about the Chemotion ELN. Code the
+agent wants to run is shown on the right and runs only after the user
+confirmed it."""
 from __future__ import annotations
 
 import importlib
 import json
 import logging
 import os
-import select
+import re
 import signal
 import socket
 import subprocess
@@ -28,13 +29,7 @@ gi.require_version("Gdk", "3.0")
 if sys.platform.startswith("linux") and os.environ.get("DISPLAY"):
     os.environ["GDK_BACKEND"] = "x11"
 
-from gi.repository import Gdk, GLib, Gtk, Pango  # type: ignore  # noqa: E402
-
-try:
-    gi.require_version("Vte", "2.91")
-    from gi.repository import Vte  # type: ignore  # noqa: E402
-except (ValueError, ImportError):
-    Vte = None  # Windows: opencode runs in its own console (console_win.py)
+from gi.repository import Gdk, Gio, GLib, Gtk, Pango  # type: ignore  # noqa: E402
 
 try:
     gi.require_version("GdkX11", "3.0")
@@ -59,11 +54,10 @@ except (ValueError, ImportError):
 import app_control  # noqa: E402
 import ipc  # noqa: E402
 import workspace  # noqa: E402
-from config import CONFIG_FILE, STATE_DIR, WINDOWS, WORKSPACE_DIR, load_config  # noqa: E402
-from opencode_models import NO_WINDOW, find_opencode  # noqa: E402
-
-if WINDOWS:
-    import console_win  # noqa: E402
+from agent import Agent  # noqa: E402
+from config import (  # noqa: E402
+    CONFIG_FILE, STATE_DIR, WINDOWS, WORKSPACE_DIR, Config, ai_problem, load_config, read_raw_config,
+)
 
 
 LOG = logging.getLogger("chem-assistent")
@@ -72,27 +66,25 @@ APP_ID = "chem-assistent"
 HERE = Path(__file__).resolve().parent
 ICON_FILE = HERE / "chem-assistent.svg"
 PANEL_ICON = "chem-assistent-panel"  # chem-assistent-panel.svg next to this file
+# The light variant of the mark, for the app's own dark prompt and header.
+DARK_UI_ICON_FILE = HERE / f"{PANEL_ICON}.svg"
 RUNNER = HERE / "chemotion_runner.py"
 SETTINGS = HERE / "settings.py"
 
-# The prompt is typed into the TUI once its footer shows our agent (sending it
-# earlier lands in opencode's fallback agent and model); give up waiting after
-# READY_TIMEOUT_S and send it anyway.
-READY_POLL_MS = 200
-READY_TIMEOUT_S = 30
+# Keeps the runner from opening a console window when the app runs under
+# pythonw on Windows. 0 elsewhere (creationflags must be 0 there).
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 GROW_STEPS = 14
 GROW_STEP_MS = 16
-# Windows: the share of the work area the result window takes on the right;
-# the opencode console goes to the left of it.
-RESULTS_SHARE = 0.45
-CONSOLE_PLACE_TIMEOUT_S = 10
+# The chat's share of the window width; the results get the rest.
+CHAT_SHARE = 0.45
 # What the agent gets back from one snippet; the panel shows everything.
 MAX_ANSWER_CHARS = 20000
 MAX_TABLE_COLUMNS = 12
 MAX_CELL_CHARS = 120
 # Result tabs kept in the panel; older ones are dropped.
 MAX_RESULT_TABS = 10
-MAX_REQUEST_BYTES = 10 * 1024 * 1024
+MAX_REQUEST_BYTES = 65536
 
 
 CSS = b"""
@@ -162,6 +154,25 @@ CSS = b"""
     color: #d0d4d8;
     font-size: 11px;
 }
+.chat-user {
+    background: #2f4f63;
+    color: #ffffff;
+    border-radius: 10px;
+    padding: 8px 12px;
+}
+.chat-assistant {
+    color: #e6e6e6;
+}
+.attachment-chip {
+    background: #2a2c30;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 12px;
+    padding: 0 0 0 8px;
+}
+.chat-input text {
+    background: #2a2c30;
+    color: #ffffff;
+}
 """
 
 
@@ -222,7 +233,7 @@ def open_settings() -> None:
 
 # --- requests from the agent -------------------------------------------------
 class PendingRequest:
-    """One execute_python call, waiting in a server thread for the user."""
+    """One execute_python call, waiting in the agent's thread for the user."""
 
     def __init__(self, purpose: str, code: str) -> None:
         self.purpose = purpose
@@ -244,22 +255,8 @@ class PendingRequest:
         return False
 
 
-def peer_hung_up(conn: socket.socket) -> bool:
-    # The MCP server sends nothing after its request, so a readable socket
-    # means EOF or an error: it closed the connection because opencode
-    # cancelled the tool call or ended.
-    readable, _, _ = select.select([conn], [], [], 0)
-    if not readable:
-        return False
-    try:
-        return conn.recv(1, socket.MSG_PEEK) == b""
-    except OSError:
-        return True
-
-
 class RequestServer:
-    """The app's end of ipc.py, for mcp_server.py (execute requests) and for
-    a second start of the app (which asks this one to show the prompt)."""
+    """The app's end of ipc.py: a second start of the app asks this one to show the prompt."""
 
     def __init__(self, app: ChemAssistentApp) -> None:
         self.app = app
@@ -296,36 +293,20 @@ class RequestServer:
     def _serve(self, conn: socket.socket) -> None:
         # Runs in a thread: GTK only through GLib.idle_add.
         with conn:
+            conn.settimeout(5)
             data = b""
-            while len(data) < MAX_REQUEST_BYTES:
-                chunk = conn.recv(65536)
-                if not chunk:
-                    break
-                data += chunk
-                if data.endswith(b"\n"):
-                    break
             try:
+                while len(data) < MAX_REQUEST_BYTES and not data.endswith(b"\n"):
+                    chunk = conn.recv(4096)
+                    if not chunk:
+                        break
+                    data += chunk
                 request = json.loads(data.decode("utf-8"))
-            except ValueError:
+            except (OSError, ValueError):
                 return
-            if not isinstance(request, dict) or not ipc.token_ok(request, self.listener.token):
-                return
-            if request.get("type") == "show":
+            if isinstance(request, dict) and ipc.token_ok(request, self.listener.token) \
+                    and request.get("type") == "show":
                 GLib.idle_add(self.app.open_prompt)
-                return
-            if request.get("type") != "execute":
-                return
-            pending = PendingRequest(str(request.get("purpose") or ""), str(request.get("code") or ""))
-            GLib.idle_add(self.app.handle_request, pending)
-            while not pending.done.wait(0.5):
-                if peer_hung_up(conn):
-                    GLib.idle_add(pending.abandoned)
-                    return
-            if pending.reply is not None:
-                try:
-                    conn.sendall(json.dumps(pending.reply).encode("utf-8"))
-                except OSError:
-                    pass
 
 
 # --- running confirmed code ---------------------------------------------------
@@ -675,7 +656,7 @@ class RequestCard(Gtk.Box):
     def _on_abandoned(self) -> None:
         if self.state == "waiting":
             self._lock()
-            self._set_state("failed", "Cancelled by the assistant before it ran.")
+            self._set_state("failed", "Not run: the assistant was stopped.")
 
     def close(self) -> None:
         """The conversation ends: answer the agent if it still waits."""
@@ -683,6 +664,24 @@ class RequestCard(Gtk.Box):
             self.reject("The user closed the conversation.")
         elif self.execution is not None:
             self.execution.cancel()
+
+
+class BottomFollower:
+    """Keeps a scrolled window at the bottom while content arrives, unless the
+    user scrolled up. "changed" fires once new content is allocated."""
+
+    def __init__(self, scroller: Gtk.ScrolledWindow) -> None:
+        self.active = True
+        adjustment = scroller.get_vadjustment()
+        adjustment.connect("changed", self._on_changed)
+        adjustment.connect("value-changed", self._on_scrolled)
+
+    def _on_changed(self, adjustment: Gtk.Adjustment) -> None:
+        if self.active:
+            adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size())
+
+    def _on_scrolled(self, adjustment: Gtk.Adjustment) -> None:
+        self.active = adjustment.get_value() >= adjustment.get_upper() - adjustment.get_page_size() - 20
 
 
 class ResultsPanel(Gtk.Box):
@@ -710,6 +709,7 @@ class ResultsPanel(Gtk.Box):
         self.empty.set_margin_top(20)
         self.list.pack_start(self.empty, False, False, 0)
         self.scroller.add(self.list)
+        self.follower = BottomFollower(self.scroller)
 
         self.tabs = Gtk.Notebook()
         self.tabs.set_scrollable(True)
@@ -719,12 +719,6 @@ class ResultsPanel(Gtk.Box):
         self.paned.pack2(self.tabs, True, False)
         self.pack_start(self.paned, True, True, 0)
 
-        # Stay at the bottom while new cards and output arrive, unless the
-        # user scrolled up. "changed" fires once the new content is allocated.
-        self.follow = True
-        adjustment = self.scroller.get_vadjustment()
-        adjustment.connect("changed", self._on_content_changed)
-        adjustment.connect("value-changed", self._on_scrolled)
 
     def add_request(self, pending: PendingRequest) -> RequestCard:
         self.empty.hide()
@@ -734,7 +728,7 @@ class ResultsPanel(Gtk.Box):
         self.list.pack_start(card, False, False, 0)
         card.show_all()
         self._update_counter()
-        self.follow = True
+        self.follower.active = True
         card.focus_code()
         return card
 
@@ -765,13 +759,6 @@ class ResultsPanel(Gtk.Box):
         while self.tabs.get_n_pages() > MAX_RESULT_TABS:
             self.tabs.remove_page(0)
 
-    def _on_content_changed(self, adjustment: Gtk.Adjustment) -> None:
-        if self.follow:
-            adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size())
-
-    def _on_scrolled(self, adjustment: Gtk.Adjustment) -> None:
-        self.follow = adjustment.get_value() >= adjustment.get_upper() - adjustment.get_page_size() - 20
-
     def waiting(self) -> int:
         return sum(card.state == "waiting" for card in self.cards)
 
@@ -788,22 +775,303 @@ class ResultsPanel(Gtk.Box):
             card.close()
 
 
+# --- the chat --------------------------------------------------------------------
+def inline_markup(text: str) -> str:
+    """`code`, **bold** and [links](https://...) of one Markdown line as Pango markup."""
+    parts = []
+    for index, part in enumerate(re.split(r"(`[^`]+`)", text)):
+        if index % 2:
+            parts.append(f"<tt>{GLib.markup_escape_text(part[1:-1])}</tt>")
+            continue
+        part = GLib.markup_escape_text(part)
+        part = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", part)
+        part = re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", r'<a href="\2">\1</a>', part)
+        parts.append(part)
+    return "".join(parts)
+
+
+def table_markup(lines: list[str]) -> str:
+    """A Markdown table as aligned monospace text."""
+    rows = [[re.sub(r"\*\*|`", "", cell).strip() for cell in line.strip().strip("|").split("|")] for line in lines]
+    rows = [row for row in rows if not all(re.fullmatch(r":?-{2,}:?", cell) for cell in row)]
+    if not rows:
+        return ""
+    widths = [max(len(row[column]) if column < len(row) else 0 for row in rows)
+              for column in range(max(len(row) for row in rows))]
+    text = ["  ".join(cell.ljust(widths[column]) for column, cell in enumerate(row)).rstrip() for row in rows]
+    return f"<tt><b>{GLib.markup_escape_text(text[0])}</b>\n{GLib.markup_escape_text(chr(10).join(text[1:]))}</tt>"
+
+
+def markdown_markup(text: str) -> str:
+    """The Markdown models write (code blocks, tables, headings, lists, inline
+    code, bold, links) as Pango markup. Unclosed blocks (while the answer
+    streams in) are closed."""
+    out: list[str] = []
+    code: list[str] | None = None
+    table: list[str] = []
+    for line in text.split("\n"):
+        if line.strip().startswith("```"):
+            if table:
+                out.append(table_markup(table))
+                table = []
+            if code is None:
+                code = []
+            else:
+                out.append(f"<tt>{GLib.markup_escape_text(chr(10).join(code))}</tt>")
+                code = None
+            continue
+        if code is not None:
+            code.append(line)
+            continue
+        if line.lstrip().startswith("|"):
+            table.append(line)
+            continue
+        if table:
+            out.append(table_markup(table))
+            table = []
+        heading = re.match(r"#{1,6}\s+(.*)", line)
+        item = re.match(r"(\s*)[-*+]\s+(.*)", line)
+        if heading:
+            out.append(f"<b>{inline_markup(heading.group(1))}</b>")
+        elif item:
+            out.append(f"{item.group(1)}• {inline_markup(item.group(2))}")
+        else:
+            out.append(inline_markup(line))
+    if code is not None:
+        out.append(f"<tt>{GLib.markup_escape_text(chr(10).join(code))}</tt>")
+    if table:
+        out.append(table_markup(table))
+    return "\n".join(out).strip()
+
+
+class ChatPanel(Gtk.Box):
+    """The conversation with the agent: messages, a status line, the input
+    with attached files and folders (button or drag and drop)."""
+
+    def __init__(self, on_send, on_stop) -> None:
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self.on_send = on_send  # on_send(text, attachments)
+        self.attachments: list[str] = []
+        self.answer: Gtk.Label | None = None  # the assistant message being streamed
+        self.answer_text = ""
+        self.render_pending = False
+
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self.list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, border_width=14)
+        scroller.add(self.list)
+        self.follower = BottomFollower(scroller)
+        self.pack_start(scroller, True, True, 0)
+
+        status_row = Gtk.Box(spacing=8, border_width=6)
+        status_row.set_margin_start(8)
+        self.spinner = Gtk.Spinner()
+        status_row.pack_start(self.spinner, False, False, 0)
+        self.status = label("", "dim", wrap=False)
+        self.status.set_ellipsize(Pango.EllipsizeMode.END)
+        status_row.pack_start(self.status, True, True, 0)
+        self.pack_start(status_row, False, False, 0)
+
+        self.chips = Gtk.FlowBox()
+        self.chips.set_selection_mode(Gtk.SelectionMode.NONE)
+        self.chips.set_max_children_per_line(20)
+        self.chips.set_margin_start(10)
+        self.chips.set_margin_end(10)
+        self.pack_start(self.chips, False, False, 0)
+
+        input_row = Gtk.Box(spacing=8, border_width=10)
+        input_row.set_margin_top(0)
+        attach = Gtk.MenuButton()
+        attach.set_image(Gtk.Image.new_from_icon_name("mail-attachment-symbolic", Gtk.IconSize.BUTTON))
+        attach.set_tooltip_text("Attach a file or a folder (or drop it here)")
+        attach.set_valign(Gtk.Align.END)
+        menu = Gtk.Menu()
+        for text, folder in (("File…", False), ("Folder…", True)):
+            item = Gtk.MenuItem(label=text)
+            item.connect("activate", lambda _item, folder=folder: self._choose(folder))
+            menu.append(item)
+        menu.show_all()
+        attach.set_popup(menu)
+        input_row.pack_start(attach, False, False, 0)
+        self.input = Gtk.TextView()
+        self.input.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        self.input.set_left_margin(8)
+        self.input.set_right_margin(8)
+        self.input.set_top_margin(6)
+        self.input.set_bottom_margin(6)
+        self.input.get_style_context().add_class("chat-input")
+        self.input.connect("key-press-event", self._on_input_key)
+        input_scroller = Gtk.ScrolledWindow()
+        input_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        input_scroller.set_shadow_type(Gtk.ShadowType.IN)
+        input_scroller.set_min_content_height(56)
+        input_scroller.set_max_content_height(180)
+        input_scroller.set_propagate_natural_height(True)
+        input_scroller.add(self.input)
+        input_row.pack_start(input_scroller, True, True, 0)
+        self.send_button = Gtk.Button(label="Send")
+        self.send_button.get_style_context().add_class("suggested-action")
+        self.send_button.set_tooltip_text("Send (Enter; Shift+Enter for a new line)")
+        self.send_button.set_valign(Gtk.Align.END)
+        self.send_button.connect("clicked", lambda *_: self._send())
+        input_row.pack_start(self.send_button, False, False, 0)
+        self.stop_button = Gtk.Button(label="Stop")
+        self.stop_button.get_style_context().add_class("destructive-action")
+        self.stop_button.set_tooltip_text("Stop the assistant (Esc)")
+        self.stop_button.set_valign(Gtk.Align.END)
+        self.stop_button.set_no_show_all(True)
+        self.stop_button.connect("clicked", lambda *_: on_stop())
+        input_row.pack_start(self.stop_button, False, False, 0)
+        self.pack_start(input_row, False, False, 0)
+        self.busy = False
+
+        self.drag_dest_set(Gtk.DestDefaults.ALL, [], Gdk.DragAction.COPY)
+        self.drag_dest_add_uri_targets()
+        self.connect("drag-data-received", self._on_drop)
+        # The text view has its own drop handling (it inserts the URIs as text).
+        self.input.drag_dest_unset()
+
+    def focus_input(self) -> None:
+        self.input.grab_focus()
+
+    def _on_input_key(self, _widget, event) -> bool:
+        if event.keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter) and not event.state & Gdk.ModifierType.SHIFT_MASK:
+            self._send()
+            return True
+        return False
+
+    def _send(self) -> None:
+        buffer = self.input.get_buffer()
+        text = buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), False).strip()
+        if not (text or self.attachments) or self.busy:
+            return
+        buffer.set_text("")
+        attachments, self.attachments = self.attachments, []
+        self._update_chips()
+        self.on_send(text or "Have a look at the attachments.", attachments)
+
+    # --- attachments ----------------------------------------------------------
+    def _choose(self, folder: bool) -> None:
+        dialog = Gtk.FileChooserNative.new(
+            "Attach a folder" if folder else "Attach files",
+            self.get_toplevel(),
+            Gtk.FileChooserAction.SELECT_FOLDER if folder else Gtk.FileChooserAction.OPEN,
+            "Attach",
+            "Cancel",
+        )
+        dialog.set_select_multiple(not folder)
+        if dialog.run() == Gtk.ResponseType.ACCEPT:
+            self.attach([path for path in (file.get_path() for file in dialog.get_files()) if path])
+        dialog.destroy()
+        self.focus_input()
+
+    def _on_drop(self, _widget, context, _x, _y, data, _info, time_) -> None:
+        paths = [Gio.File.new_for_uri(uri).get_path() for uri in data.get_uris() or []]
+        self.attach([path for path in paths if path])
+        Gtk.drag_finish(context, True, False, time_)
+
+    def attach(self, paths: list[str]) -> None:
+        for path in paths:
+            if path not in self.attachments and os.path.exists(path):
+                self.attachments.append(path)
+        self._update_chips()
+
+    def _update_chips(self) -> None:
+        for child in self.chips.get_children():
+            self.chips.remove(child)
+        for path in self.attachments:
+            chip = Gtk.Box(spacing=4)
+            chip.get_style_context().add_class("attachment-chip")
+            folder = os.path.isdir(path)
+            chip.pack_start(Gtk.Image.new_from_icon_name(
+                "folder-symbolic" if folder else "text-x-generic-symbolic", Gtk.IconSize.MENU), False, False, 0)
+            name = label(os.path.basename(path.rstrip("/\\")) + ("/" if folder else ""), wrap=False)
+            name.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
+            name.set_max_width_chars(30)
+            chip.pack_start(name, False, False, 0)
+            chip.pack_start(icon_button("window-close-symbolic", "Remove",
+                                        lambda path=path: self._detach(path)), False, False, 0)
+            chip.set_tooltip_text(path)
+            self.chips.add(chip)
+        self.chips.show_all()
+
+    def _detach(self, path: str) -> None:
+        self.attachments.remove(path)
+        self._update_chips()
+
+    def _add(self, widget: Gtk.Widget) -> None:
+        self.list.pack_start(widget, False, False, 0)
+        widget.show_all()
+
+    def add_user(self, text: str, attachments: list[str] | tuple[str, ...] = ()) -> None:
+        self.answer = None
+        bubble = label(text, "chat-user", selectable=True)
+        bubble.set_halign(Gtk.Align.END)
+        bubble.set_margin_start(60)
+        self.follower.active = True
+        self._add(bubble)
+        if attachments:
+            names = ", ".join(os.path.basename(path.rstrip("/\\")) + ("/" if os.path.isdir(path) else "")
+                              for path in attachments)
+            note = label(f"Attached: {names}", "dim", selectable=True)
+            note.set_halign(Gtk.Align.END)
+            note.set_tooltip_text("\n".join(attachments))
+            self._add(note)
+
+    def append_text(self, delta: str) -> None:
+        if self.answer is None:
+            self.answer = label("", "chat-assistant", selectable=True)
+            self.answer.connect("activate-link", lambda _label, uri: open_url(uri) or True)
+            self.answer_text = ""
+            self._add(self.answer)
+        self.answer_text += delta
+        if not self.render_pending:
+            self.render_pending = True
+            GLib.timeout_add(60, self._render)
+
+    def _render(self) -> bool:
+        self.render_pending = False
+        if self.answer is None:
+            return False
+        markup = markdown_markup(self.answer_text)
+        try:
+            Pango.parse_markup(markup, -1, "\0")
+            self.answer.set_markup(markup)
+        except GLib.Error:
+            self.answer.set_text(self.answer_text.strip())
+        return False
+
+    def add_note(self, text: str, icon: str = "document-open-symbolic", css: str = "dim") -> None:
+        if self.answer is not None:
+            self._render()
+        self.answer = None
+        row = Gtk.Box(spacing=6)
+        row.pack_start(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.MENU), False, False, 0)
+        row.pack_start(label(text, css, selectable=True), True, True, 0)
+        self._add(row)
+
+    def set_busy(self, busy: bool, status: str = "") -> None:
+        self.busy = busy
+        self.spinner.start() if busy else self.spinner.stop()
+        self.status.set_text(status)
+        self.send_button.set_visible(not busy)
+        self.stop_button.set_visible(busy)
+
+
 # --- the window ----------------------------------------------------------------
 class AssistantWindow(Gtk.Window):
-    """Starts as a centered prompt; grows to the work area with the opencode
-    terminal on the left and the results on the right. Without VTE (Windows)
-    opencode runs in its own console on the left and this window takes only
-    the right part of the work area, with the results."""
+    """Starts as a centered prompt; grows to the work area with the chat on
+    the left and the results on the right."""
 
     def __init__(self, app: ChemAssistentApp) -> None:
         super().__init__(type=Gtk.WindowType.TOPLEVEL, title="ChemAssistent")
         self.app = app
-        self.terminal = None  # Vte.Terminal
         self.paned: Gtk.Paned | None = None
-        self.console: subprocess.Popen | None = None  # Windows
+        self.chat: ChatPanel | None = None
         self.results: ResultsPanel | None = None
-        self.child_pid: int | None = None
+        self.agent: Agent | None = None
         self.expanded = False
+        self.closed = False
 
         self.set_decorated(False)
         self.set_resizable(False)
@@ -841,7 +1109,7 @@ class AssistantWindow(Gtk.Window):
         try:
             from gi.repository import GdkPixbuf  # type: ignore
 
-            pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_size(str(ICON_FILE), 28, 28)
+            pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_size(str(DARK_UI_ICON_FILE), 28, 28)
             head.pack_start(Gtk.Image.new_from_pixbuf(pixbuf), False, False, 0)
         except GLib.Error:
             pass
@@ -868,8 +1136,7 @@ class AssistantWindow(Gtk.Window):
     def open_prompt(self) -> None:
         try:
             config = load_config()
-            model = config.ai_model or "opencode's default model"
-            self.hint.set_text(f"Enter starts the assistant · Esc closes · Model: {model}")
+            self.hint.set_text(f"Enter starts the assistant · Esc closes · Model: {config.ai_model}")
             self.set_default_size(config.prompt_width, -1)
             self.entry.set_width_chars(max(30, config.prompt_width // 11))
         except ValueError:
@@ -901,29 +1168,15 @@ class AssistantWindow(Gtk.Window):
         except ValueError as exc:
             self.show_error(f"{exc}\nOpen the settings with the gear button.")
             return
-        opencode = find_opencode()
-        if opencode is None:
-            self.show_error("opencode was not found (looked in PATH and ~/.opencode/bin).")
-            return
-        if WINDOWS and opencode.lower().endswith((".cmd", ".bat")):
-            # cmd.exe would interpret the prompt on the command line.
-            self.show_error(f"{opencode} is a script, not opencode.exe. Run install.ps1 to install opencode.exe.")
+        problem = ai_problem(read_raw_config())
+        if problem:
+            self.show_error(f"{problem}\nOpen the settings with the gear button.")
             return
         if not workspace.reference_ready():
             self.show_error(f"The Chemotion API reference is missing in {WORKSPACE_DIR}. Run install.sh "
                             "(or setup_workspace.sh in the source tree).")
             return
-        try:
-            workspace.write_opencode_config(config, self.app.server.listener.environment())
-        except OSError as exc:
-            self.show_error(f"Could not write the opencode config: {exc}")
-            return
-        try:
-            extra_env = workspace.tui_environment(config)
-        except OSError as exc:
-            self.show_error(f"Could not prepare the opencode state: {exc}")
-            return
-        self._start_conversation(opencode, text, config.ai_model, extra_env)
+        self._start_conversation(config, text)
 
     # --- conversation ---------------------------------------------------------
     def _build_conversation(self, model: str) -> Gtk.Widget:
@@ -939,12 +1192,12 @@ class AssistantWindow(Gtk.Window):
         try:
             from gi.repository import GdkPixbuf  # type: ignore
 
-            pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_size(str(ICON_FILE), 22, 22)
+            pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_size(str(DARK_UI_ICON_FILE), 22, 22)
             header.pack_start(Gtk.Image.new_from_pixbuf(pixbuf), False, False, 0)
         except GLib.Error:
             pass
         header.pack_start(label("ChemAssistent", "assistant-title", wrap=False), False, False, 0)
-        header.pack_start(label(f"· {model or 'default model'}", "dim", wrap=False), False, False, 0)
+        header.pack_start(label(f"· {model}", "dim", wrap=False), False, False, 0)
         header.pack_end(icon_button("window-close-symbolic", "End the conversation and close", self.close_conversation),
                         False, False, 0)
         header.pack_end(icon_button("window-minimize-symbolic", "Minimize (the Chemotion icon brings it back)",
@@ -954,45 +1207,23 @@ class AssistantWindow(Gtk.Window):
                         False, False, 0)
         main.pack_start(handle, False, False, 0)
 
-        left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self.ended_bar = Gtk.InfoBar()
-        self.ended_bar.set_message_type(Gtk.MessageType.INFO)
-        self.ended_label = label("opencode has ended.")
-        self.ended_bar.get_content_area().add(self.ended_label)
-        self.ended_bar.add_button("New conversation", 1)
-        self.ended_bar.add_button("Close", 2)
-        self.ended_bar.connect("response", self._on_ended_response)
-        self.ended_bar.set_no_show_all(True)
-        left.pack_start(self.ended_bar, False, False, 0)
+        self.chat = ChatPanel(self._send, self._stop)
         self.results = ResultsPanel()
-
-        if Vte is None:
-            left.pack_start(self.results, True, True, 0)
-            main.pack_start(left, True, True, 0)
-            return main
-
-        paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
-        paned.set_wide_handle(True)
-        self.terminal = Vte.Terminal()
-        self.terminal.set_size(20, 5)  # small request: the window animates from the prompt size
-        self.terminal.set_scrollback_lines(10000)
-        self.terminal.set_font(Pango.FontDescription("Monospace 11"))
-        background = Gdk.RGBA()
-        background.parse("#1e1f22")
-        foreground = Gdk.RGBA()
-        foreground.parse("#e6e6e6")
-        self.terminal.set_colors(foreground, background, None)
-        self.terminal.connect("key-press-event", self._on_terminal_key)
-        self.terminal.connect("child-exited", self._on_child_exited)
-        left.pack_start(self.terminal, True, True, 0)
-        paned.pack1(left, True, False)
-        paned.pack2(self.results, True, False)
-        self.paned = paned
-        main.pack_start(paned, True, True, 0)
+        self.paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
+        self.paned.set_wide_handle(True)
+        self.paned.pack1(self.chat, True, False)
+        self.paned.pack2(self.results, True, False)
+        main.pack_start(self.paned, True, True, 0)
         return main
 
-    def _start_conversation(self, opencode: str, text: str, model: str, extra_env: dict[str, str]) -> None:
-        self.stack.add_named(self._build_conversation(model), "conversation")
+    def _start_conversation(self, config: Config, text: str) -> None:
+        self.agent = Agent(
+            config,
+            workspace.system_prompt(),
+            self._execute,
+            lambda kind, data: GLib.idle_add(self._on_agent_event, kind, data),
+        )
+        self.stack.add_named(self._build_conversation(config.ai_model), "conversation")
         self.stack.show_all()
         self.stack.set_visible_child_name("conversation")
         self.expanded = True
@@ -1000,81 +1231,68 @@ class AssistantWindow(Gtk.Window):
         self.set_skip_taskbar_hint(False)
         self.set_skip_pager_hint(False)
         self.set_title(f"ChemAssistent – {text[:60]}")
-        self.pending_prompt = text
         self._grow()
+        self._send(text)
 
-        env = {key: value for key, value in os.environ.items() if key != "GDK_BACKEND"}
-        # opencode finds its project (and our agent) through $PWD.
-        env["PWD"] = str(WORKSPACE_DIR)
-        env.update(extra_env)
-        argv = [opencode, "--standalone", str(WORKSPACE_DIR)]
-        if self.terminal is None:
-            self._start_console(argv, env, text)
+    def _send(self, text: str, attachments: list[str] | tuple[str, ...] = ()) -> None:
+        if self.agent is None or self.agent.busy:
             return
-        env.update({"TERM": "xterm-256color", "COLORTERM": "truecolor"})
-        self.terminal.spawn_async(
-            Vte.PtyFlags.DEFAULT,
-            str(WORKSPACE_DIR),
-            argv,
-            [f"{key}={value}" for key, value in env.items()],
-            GLib.SpawnFlags.DEFAULT,
-            None,
-            None,
-            -1,
-            None,
-            self._on_spawned,
-        )
-        self.terminal.grab_focus()
+        self.chat.add_user(text, attachments)
+        self.chat.set_busy(True, "Working…")
+        self.agent.busy = True  # before the thread starts: no second send meanwhile
+        threading.Thread(target=self.agent.send, args=(text, attachments), daemon=True).start()
 
-    def _start_console(self, argv: list[str], env: dict[str, str], text: str) -> None:
-        """Windows: opencode in its own console, moved left of this window.
+    def _stop(self) -> None:
+        if self.agent is not None and self.agent.busy:
+            self.chat.set_busy(True, "Stopping…")
+            self.agent.cancel()
 
-        There is no terminal to type into, so the prompt goes on the command
-        line. opencode may take it before it loaded the workspace config; then
-        it lands in the "build" agent, which workspace.py makes a copy of ours,
-        with the model from the private TUI state.
-        """
-        try:
-            self.console = console_win.start([*argv, "--prompt", text], env, str(WORKSPACE_DIR))
-        except OSError as exc:
-            self._show_ended(f"Could not start opencode: {exc}")
-            return
-        self.child_pid = self.console.pid
-        deadline = time.monotonic() + CONSOLE_PLACE_TIMEOUT_S
-
-        def place() -> bool:
-            if self.console is None:
-                return False
-            hwnd = console_win.console_window(self.console.pid)
-            if hwnd:
-                x, y, width, height = self._console_area()
-                scale = self.get_scale_factor()  # GDK works in logical pixels
-                if console_win.place(hwnd, x * scale, y * scale, width * scale, height * scale):
-                    return False
-            return time.monotonic() < deadline
-
-        def watch() -> bool:
-            if self.console is None:
-                return False
-            if self.console.poll() is None:
-                return True
-            self.console = None
-            self._on_child_exited(None, 0)
+    def _on_agent_event(self, kind: str, data) -> bool:
+        if self.closed or self.chat is None:
             return False
+        if kind == "text":
+            self.chat.append_text(data)
+            self.chat.set_busy(True, "Writing…")
+        elif kind == "thinking":
+            self.chat.set_busy(True, "Thinking…")
+        elif kind == "tool":
+            self.chat.add_note(data)
+            self.chat.set_busy(True, "Working…")
+        elif kind == "error":
+            self.chat.add_note(data, "dialog-error-symbolic", "request-error")
+            self.chat.set_busy(False)
+        elif kind == "stopped":
+            self.chat.add_note("Stopped.", "media-playback-stop-symbolic")
+            self.chat.set_busy(False)
+        elif kind == "done":
+            self.chat.set_busy(False)
+        if not self.chat.busy:
+            self.chat.focus_input()
+        return False
 
-        GLib.timeout_add(250, place)
-        GLib.timeout_add_seconds(1, watch)
+    def _execute(self, purpose: str, code: str, cancelled: threading.Event) -> str:
+        """The agent's execute_python: a card in the result panel; returns the
+        text for the model once the user ran or rejected it."""
+        # Runs in the agent's thread: GTK only through GLib.idle_add.
+        pending = PendingRequest(purpose, code)
+        GLib.idle_add(self._show_request, pending)
+        while not pending.done.wait(0.2):
+            if cancelled.is_set():
+                GLib.idle_add(pending.abandoned)
+                return "Not run: the user stopped the assistant."
+        GLib.idle_add(lambda: self.chat is not None and self.chat.busy and self.chat.set_busy(True, "Working…"))
+        if pending.reply is None:
+            return "Not run: the user stopped the assistant."
+        return pending.reply["text"]
 
-    def _target_area(self) -> tuple[int, int, int, int]:
-        area = work_area()
-        if self.terminal is not None:
-            return area.x, area.y, area.width, area.height
-        width = int(area.width * RESULTS_SHARE)
-        return area.x + area.width - width, area.y, width, area.height
-
-    def _console_area(self) -> tuple[int, int, int, int]:
-        area = work_area()
-        return area.x, area.y, area.width - int(area.width * RESULTS_SHARE), area.height
+    def _show_request(self, pending: PendingRequest) -> bool:
+        if self.closed or self.results is None:
+            pending.answer(False, "ChemAssistent has no open conversation; the code did not run.")
+            return False
+        card = self.results.add_request(pending)
+        self.chat.add_note(f"#{card.number} {pending.purpose or 'Code'}", "system-run-symbolic")
+        self.chat.set_busy(True, "Waiting for you to Run or Reject the code on the right…")
+        return False
 
     def _on_header_press(self, _widget, event) -> bool:
         if event.button != 1:
@@ -1086,9 +1304,8 @@ class AssistantWindow(Gtk.Window):
         return True
 
     def _grow(self) -> None:
-        """Animate from the prompt to the work area (its right part on
-        Windows), then maximize (not on Windows)."""
-        target_x, target_y, target_width, target_height = self._target_area()
+        """Animate from the prompt to the work area, then maximize."""
+        area = work_area()
         x0, y0 = self.get_position()
         w0, h0 = self.get_size()
         self.set_resizable(True)
@@ -1098,95 +1315,35 @@ class AssistantWindow(Gtk.Window):
             nonlocal step
             step += 1
             t = 1 - (1 - step / GROW_STEPS) ** 3  # ease out
-            self.move(round(x0 + (target_x - x0) * t), round(y0 + (target_y - y0) * t))
-            self.resize(max(1, round(w0 + (target_width - w0) * t)), max(1, round(h0 + (target_height - h0) * t)))
+            self.move(round(x0 + (area.x - x0) * t), round(y0 + (area.y - y0) * t))
+            self.resize(max(1, round(w0 + (area.width - w0) * t)), max(1, round(h0 + (area.height - h0) * t)))
             if step < GROW_STEPS:
                 return True
-            if self.terminal is not None:
-                self.maximize()
-                self.paned.set_position(int(target_width * 0.55))
-                self.present_now()
-                self.terminal.grab_focus()
+            self.maximize()
+            self.paned.set_position(int(area.width * CHAT_SHARE))
+            self.present_now()
+            self.chat.focus_input()
             return False
 
         GLib.timeout_add(GROW_STEP_MS, tick)
 
-    def _on_spawned(self, _terminal, pid: int, error, *_args) -> None:
-        if error is not None:
-            self._show_ended(f"Could not start opencode: {error.message}")
-            return
-        self.child_pid = pid
-        self._send_when_ready(self.pending_prompt)
-
-    def _send_when_ready(self, text: str) -> None:
-        deadline = time.monotonic() + READY_TIMEOUT_S
-
-        def poll() -> bool:
-            if self.child_pid is None or self.terminal is None:
-                return False
-            screen = self.terminal.get_text_format(Vte.Format.TEXT) or ""
-            if f"{workspace.AGENT_LABEL} ·" not in screen and time.monotonic() < deadline:
-                return True
-            self.terminal.paste_text(text)
-            # Enter only after the TUI took the (bracketed) paste.
-            GLib.timeout_add(150, lambda: self.terminal is not None and self.terminal.feed_child(b"\r") and False)
-            return False
-
-        GLib.timeout_add(READY_POLL_MS, poll)
-
-    def _on_child_exited(self, _terminal, status: int) -> None:
-        self.child_pid = None
-        self._show_ended("opencode has ended.")
-        if self.results is not None:
-            self.results.close()
-
-    def _show_ended(self, text: str) -> None:
-        self.ended_label.set_text(text)
-        # show_all() skips widgets with no_show_all, which keeps the bar
-        # hidden until now.
-        self.ended_bar.set_no_show_all(False)
-        self.ended_bar.show_all()
-
-    def _on_ended_response(self, _bar, response: int) -> None:
-        if response == 1:
-            self.app.new_conversation()
-        else:
-            self.close_conversation()
-
-    def _on_terminal_key(self, _widget, event) -> bool:
-        mask = Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK
-        if event.state & mask == mask:
-            key = Gdk.keyval_to_lower(event.keyval)
-            if key == Gdk.KEY_c:
-                self.terminal.copy_clipboard_format(Vte.Format.TEXT)
-                return True
-            if key == Gdk.KEY_v:
-                self.terminal.paste_clipboard()
-                return True
-        return False
-
     def _on_key(self, _widget, event) -> bool:
-        # Escape belongs to opencode once the conversation runs.
-        if event.keyval == Gdk.KEY_Escape and not self.expanded:
+        if event.keyval != Gdk.KEY_Escape:
+            return False
+        if not self.expanded:
             self.close_conversation()
+            return True
+        if self.agent is not None and self.agent.busy:
+            self._stop()
             return True
         return False
 
     def close_conversation(self) -> None:
+        self.closed = True
+        if self.agent is not None:
+            self.agent.cancel()
         if self.results is not None:
             self.results.close()
-        if self.child_pid is not None:
-            if WINDOWS:
-                self.console = None
-                console_win.kill_tree(self.child_pid)
-            else:
-                try:
-                    # The child leads its own session on the pty; opencode's
-                    # server and the MCP server are in its process group.
-                    os.killpg(self.child_pid, signal.SIGHUP)
-                except OSError:
-                    pass
-            self.child_pid = None
         self.app.window_closed(self)
         self.destroy()
 
@@ -1295,14 +1452,6 @@ class ChemAssistentApp:
     def window_closed(self, window: AssistantWindow) -> None:
         if self.window is window:
             self.window = None
-
-    def handle_request(self, pending: PendingRequest) -> bool:
-        window = self.window
-        if window is None or window.results is None:
-            pending.answer(False, "ChemAssistent has no open conversation; the code did not run.")
-            return False
-        window.results.add_request(pending)
-        return False
 
     def quit(self) -> bool:
         if self.window is not None:

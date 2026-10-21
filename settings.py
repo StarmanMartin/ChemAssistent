@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import os
 import threading
 from pathlib import Path
@@ -11,8 +12,11 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import GLib, Gtk  # type: ignore  # noqa: E402
 
 import app_control  # noqa: E402
-from config import CONFIG_FILE, EXAMPLE, config_problem, read_raw_config, save_raw_config  # noqa: E402
-from opencode_models import list_models  # noqa: E402
+from agent import AgentError, list_models  # noqa: E402
+from config import (  # noqa: E402
+    AI_TOKEN_ENV, CONFIG_FILE, EXAMPLE, KI_TOOLBOX_URL, Config, ai_problem, ai_token, config_problem,
+    read_raw_config, save_raw_config,
+)
 
 
 PRGNAME = "chem-assistent-settings"
@@ -69,21 +73,46 @@ class SettingsWindow(Gtk.Window):
         self.verify_tls.set_active(bool(self.data.get("verify_tls", True)))
         row = self._add_row(grid, row, "Verify TLS certificate", self.verify_tls)
 
-        # The entry keeps the saved model usable when opencode is unavailable.
+        heading = Gtk.Label(xalign=0)
+        heading.set_markup("<b>AI model</b> (any OpenAI-compatible API)")
+        heading.set_margin_top(8)
+        grid.attach(heading, 0, row, 2, 1)
+        row += 1
+
+        # The KI-Toolbox is offered in the list; any other URL can be typed.
+        self.ai_url = Gtk.ComboBoxText.new_with_entry()
+        self.ai_url.set_hexpand(True)
+        self.ai_url.append_text(KI_TOOLBOX_URL)
+        self.ai_url.get_child().set_placeholder_text(KI_TOOLBOX_URL)
+        self.ai_url.get_child().set_text(str(self.data.get("ai_url") or ""))
+        row = self._add_row(grid, row, "API URL", self.ai_url)
+
+        self.ai_token = self._secret_entry(str(self.data.get("ai_token") or ""))
+        self.ai_token.set_placeholder_text(
+            f"From {AI_TOKEN_ENV}" if os.environ.get(AI_TOKEN_ENV) else "API key (Bearer token)"
+        )
+        row = self._add_row(grid, row, "API token", self.ai_token)
+
+        # The entry keeps any model id usable, also before the list is loaded.
         self.ai_model = Gtk.ComboBoxText.new_with_entry()
         self.ai_model.set_hexpand(True)
-        ai_entry = self.ai_model.get_child()
-        ai_entry.set_placeholder_text("opencode's default model")
-        ai_entry.set_text(str(self.data.get("ai_model") or ""))
-        row = self._add_row(grid, row, "AI model", self.ai_model)
+        self.ai_model.get_child().set_text(str(self.data.get("ai_model") or ""))
+        self.models_button = Gtk.Button(label="Load models")
+        self.models_button.set_tooltip_text("Ask the API for its models (also tests URL and token)")
+        self.models_button.connect("clicked", lambda *_: self._load_models())
+        model_row = Gtk.Box(spacing=6)
+        model_row.pack_start(self.ai_model, True, True, 0)
+        model_row.pack_start(self.models_button, False, False, 0)
+        row = self._add_row(grid, row, "Model", model_row)
 
         self.ai_note = Gtk.Label(
-            label="Loading models from opencode...", xalign=0, wrap=True, max_width_chars=60
+            label=f"KIT KI-Toolbox: create an API key at {KI_TOOLBOX_URL.split('/api')[0]}.",
+            xalign=0, wrap=True, max_width_chars=60,
         )
         self.ai_note.get_style_context().add_class("dim-label")
         grid.attach(self.ai_note, 1, row, 1, 1)
         row += 1
-        threading.Thread(target=self._models_worker, daemon=True).start()
+        self.loading_models = False
 
         self.spins: dict[str, Gtk.SpinButton] = {}
         for key, label, lower, upper in NUMBER_FIELDS:
@@ -125,6 +154,8 @@ class SettingsWindow(Gtk.Window):
         box.pack_start(buttons, False, False, 0)
         self.add(box)
         self._update_service_button()
+        if ai_token(self.data):
+            self._load_models()
 
     @staticmethod
     def _add_row(grid: Gtk.Grid, row: int, text: str, widget: Gtk.Widget) -> int:
@@ -163,6 +194,8 @@ class SettingsWindow(Gtk.Window):
             "user": self.user.get_text().strip(),
             "password": self.password.get_text(),
             "verify_tls": self.verify_tls.get_active(),
+            "ai_url": self.ai_url.get_child().get_text().strip().rstrip("/"),
+            "ai_token": self.ai_token.get_text().strip(),
             "ai_model": self.ai_model.get_child().get_text().strip(),
         }
         for key, spin in self.spins.items():
@@ -170,23 +203,41 @@ class SettingsWindow(Gtk.Window):
         return values
 
     # --- AI models ----------------------------------------------------------
-    def _models_worker(self) -> None:
+    def _load_models(self) -> None:
+        if self.loading_models:
+            return
+        values = self._form_values()
+        if not values["ai_url"]:
+            self.ai_note.set_text("Set the API URL first.")
+            return
+        config = dataclasses.replace(Config("", "", ""), ai_url=values["ai_url"], ai_token=ai_token(values))
+        self.loading_models = True
+        self.models_button.set_sensitive(False)
+        self.ai_note.set_text("Loading models...")
+        threading.Thread(target=self._models_worker, args=(config,), daemon=True).start()
+
+    def _models_worker(self, config: Config) -> None:
         # Runs in a thread: no GTK calls here.
         try:
-            models, error = list_models(), None
-        except RuntimeError as exc:
+            models, error = list_models(config), None
+        except AgentError as exc:
             models, error = [], str(exc)
         GLib.idle_add(self._models_done, models, error)
 
     def _models_done(self, models: list[str], error: str | None) -> bool:
+        self.loading_models = False
+        self.models_button.set_sensitive(True)
+        self.ai_model.remove_all()
         for model in models:
             self.ai_model.append_text(model)
         if error:
-            self.ai_note.set_text(f"{error}. You can still type a provider/model id.")
+            self.ai_note.set_text(f"{error}\nYou can still type a model id.")
         elif not models:
-            self.ai_note.set_text("opencode lists no models. You can still type a provider/model id.")
+            self.ai_note.set_text("The API lists no models. You can still type a model id.")
         else:
-            self.ai_note.set_text(f"{len(models)} models from opencode. Leave empty for opencode's default.")
+            current = self.ai_model.get_child().get_text().strip()
+            known = "" if not current or current in models else f" “{current}” is not among them."
+            self.ai_note.set_text(f"Connection OK: {len(models)} models.{known}")
         return False
 
     # --- Test connection ----------------------------------------------------
@@ -237,7 +288,7 @@ class SettingsWindow(Gtk.Window):
         except OSError as exc:
             self._set_status(f"Could not save: {exc}")
             return
-        problem = config_problem(values)
+        problem = config_problem(values) or ai_problem(values)
         # The app reads the config at the start of every conversation.
         self._set_status(f"Saved. {problem or 'Applies to the next conversation.'}")
 

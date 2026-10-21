@@ -3,7 +3,9 @@
   "user": "",
   "password": "",
   "verify_tls": true,
-  "ai_model": "",
+  "ai_url": "https://ki-toolbox.scc.kit.edu/api/v1",
+  "ai_token": "",
+  "ai_model": "alias.complex-local",
   "execution_timeout": 300,
   "prompt_width": 640
 }
