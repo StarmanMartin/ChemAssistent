@@ -14,6 +14,7 @@ import subprocess
 import sys
 import threading
 import time
+import webbrowser
 from pathlib import Path
 
 import gi
@@ -89,6 +90,8 @@ CONSOLE_PLACE_TIMEOUT_S = 10
 MAX_ANSWER_CHARS = 20000
 MAX_TABLE_COLUMNS = 12
 MAX_CELL_CHARS = 120
+# Result tabs kept in the panel; older ones are dropped.
+MAX_RESULT_TABS = 10
 MAX_REQUEST_BYTES = 10 * 1024 * 1024
 
 
@@ -383,13 +386,28 @@ class Execution:
 
 
 # --- result widgets ----------------------------------------------------------
-def table_widget(columns: list[str], rows: list[list[str]]) -> Gtk.Widget:
-    store = Gtk.ListStore(*([str] * len(columns)))
-    for row in rows:
-        store.append(row)
+def open_url(url: str) -> None:
+    if not webbrowser.open_new_tab(url):
+        LOG.warning("No browser to open %s", url)
+
+
+def table_widget(columns: list[str], rows: list[list[str]], urls: list[str] | None = None) -> Gtk.Widget:
+    """A sortable table; rows with a URL open it in the browser when clicked."""
+    urls = urls or [""] * len(rows)
+    url_column = len(columns)
+    store = Gtk.ListStore(*([str] * (len(columns) + 2)))  # + URL, + link icon name
+    for row, url in zip(rows, urls):
+        store.append(row + [url, "web-browser-symbolic" if url else ""])
     view = Gtk.TreeView(model=store)
     view.set_enable_search(False)
     view.set_grid_lines(Gtk.TreeViewGridLines.BOTH)
+    if any(urls):
+        icon = Gtk.TreeViewColumn("", Gtk.CellRendererPixbuf(), icon_name=url_column + 1)
+        view.append_column(icon)
+        view.set_activate_on_single_click(True)
+        view.set_tooltip_text("Click a row to open it in Chemotion")
+        view.connect("row-activated", lambda tree, path, _column: (
+            store[path][url_column] and open_url(store[path][url_column])))
     for index, name in enumerate(columns):
         renderer = Gtk.CellRendererText()
         renderer.set_property("ellipsize", Pango.EllipsizeMode.END)
@@ -407,21 +425,64 @@ def table_widget(columns: list[str], rows: list[list[str]]) -> Gtk.Widget:
 
 
 def result_widget(value) -> Gtk.Widget:
-    """A table for lists of dicts and dicts, text for everything else."""
+    """A table for lists of dicts and dicts, text for everything else. Dicts with
+    a "url" (chemotion_runner gives one to every element) are clickable rows."""
+    if isinstance(value, dict) and isinstance(value.get("url"), str):
+        value = [value]  # a single element: one clickable row
     if isinstance(value, list) and value and all(isinstance(item, dict) for item in value):
         columns: list[str] = []
         for item in value:
             for key in item:
-                if key not in columns and len(columns) < MAX_TABLE_COLUMNS:
+                if key != "url" and key not in columns and len(columns) < MAX_TABLE_COLUMNS:
                     columns.append(key)
         rows = [[cell_text(item.get(key)) for key in columns] for item in value]
-        return table_widget(columns, rows)
+        urls = [item["url"] if isinstance(item.get("url"), str) else "" for item in value]
+        return table_widget(columns, rows, urls)
+    if isinstance(value, dict) and any(isinstance(item, (dict, list)) and item for item in value.values()):
+        # e.g. {"samples": [...], "reactions": [...]}: one section per entry
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        scalars = {key: item for key, item in value.items() if not (isinstance(item, (dict, list)) and item)}
+        if scalars:
+            box.pack_start(result_widget(scalars), False, False, 0)
+        for key, item in value.items():
+            if key not in scalars:
+                box.pack_start(label(str(key), "dim"), False, False, 0)
+                box.pack_start(result_widget(item), False, False, 0)
+        return box
     if isinstance(value, dict) and value:
         return table_widget(["Key", "Value"], [[str(key), cell_text(item)] for key, item in value.items()])
     if isinstance(value, list) and value and not any(isinstance(item, (dict, list)) for item in value):
         return table_widget(["Value"], [[cell_text(item)] for item in value])
     text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, indent=2, default=str)
     return text_block(text)
+
+
+def result_page(stdout: str, error: str, result) -> Gtk.Widget:
+    """The content of one result tab: printed output, error and `result`."""
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, border_width=10)
+    if stdout.strip():
+        box.pack_start(label("Output", "dim"), False, False, 0)
+        box.pack_start(text_block(stdout.rstrip()), False, False, 0)
+    if error:
+        block = text_block(error.rstrip(), "request-error")
+        block.get_style_context().add_class("request-output")
+        box.pack_start(block, False, False, 0)
+    if result is not None:
+        row = Gtk.Box(spacing=8)
+        row.pack_start(label("Result", "dim"), True, True, 0)
+        copy = Gtk.Button(label="Copy JSON")
+        copy.set_relief(Gtk.ReliefStyle.NONE)
+        copy.connect("clicked", lambda *_: Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).set_text(
+            json.dumps(result, ensure_ascii=False, indent=2), -1))
+        row.pack_end(copy, False, False, 0)
+        box.pack_start(row, False, False, 0)
+        box.pack_start(result_widget(result), False, False, 0)
+    if not box.get_children():
+        box.pack_start(label("Nothing was printed and `result` was not set.", "dim"), False, False, 0)
+    scroller = Gtk.ScrolledWindow()
+    scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+    scroller.add(box)
+    return scroller
 
 
 def text_block(text: str, css: str = "request-output") -> Gtk.Widget:
@@ -464,12 +525,15 @@ def code_editor(code: str) -> tuple[Gtk.Widget, Gtk.TextView]:
 
 
 class RequestCard(Gtk.Box):
-    """One snippet: editable until the user runs or rejects it, then its output."""
+    """One snippet: editable until the user runs or rejects it. Its output goes
+    to a result tab through `on_result(card, page)`."""
 
-    def __init__(self, number: int, pending: PendingRequest, on_state_change) -> None:
+    def __init__(self, number: int, pending: PendingRequest, on_state_change, on_result) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.number = number
         self.pending = pending
         self.on_state_change = on_state_change
+        self.on_result = on_result
         self.execution: Execution | None = None
         self.state = "waiting"
         pending.on_abandoned = self._on_abandoned
@@ -514,9 +578,6 @@ class RequestCard(Gtk.Box):
         self.cancel_button.connect("clicked", lambda *_: self.execution and self.execution.cancel())
         status_row.pack_end(self.cancel_button, False, False, 0)
         self.pack_start(status_row, False, False, 0)
-
-        self.output = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        self.pack_start(self.output, False, False, 0)
 
     @property
     def code(self) -> str:
@@ -585,23 +646,7 @@ class RequestCard(Gtk.Box):
         error = str(outcome.get("error") or "")
         result = outcome.get("result")
 
-        if stdout.strip():
-            self.output.pack_start(label("Output", "dim"), False, False, 0)
-            self.output.pack_start(text_block(stdout.rstrip()), False, False, 0)
-        if error:
-            self.output.pack_start(text_block(error.rstrip(), "request-error"), False, False, 0)
-            self.output.get_children()[-1].get_style_context().add_class("request-output")
-        if ok and result is not None:
-            row = Gtk.Box(spacing=8)
-            row.pack_start(label("Result", "dim"), True, True, 0)
-            copy = Gtk.Button(label="Copy JSON")
-            copy.set_relief(Gtk.ReliefStyle.NONE)
-            copy.connect("clicked", lambda *_: Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).set_text(
-                json.dumps(result, ensure_ascii=False, indent=2), -1))
-            row.pack_end(copy, False, False, 0)
-            self.output.pack_start(row, False, False, 0)
-            self.output.pack_start(result_widget(result), False, False, 0)
-        self.output.show_all()
+        self.on_result(self, result_page(stdout, error, result if ok else None))
 
         abandoned = self.pending.done.is_set() and self.pending.reply is None
         note = " The assistant had stopped waiting, so it did not get this output." if abandoned else ""
@@ -641,6 +686,9 @@ class RequestCard(Gtk.Box):
 
 
 class ResultsPanel(Gtk.Box):
+    """The newest snippet (and older ones still waiting or running) on top, the
+    latest results as tabs below."""
+
     def __init__(self) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.cards: list[RequestCard] = []
@@ -662,7 +710,14 @@ class ResultsPanel(Gtk.Box):
         self.empty.set_margin_top(20)
         self.list.pack_start(self.empty, False, False, 0)
         self.scroller.add(self.list)
-        self.pack_start(self.scroller, True, True, 0)
+
+        self.tabs = Gtk.Notebook()
+        self.tabs.set_scrollable(True)
+        self.tabs.set_no_show_all(True)  # shown with the first result
+        self.paned = Gtk.Paned(orientation=Gtk.Orientation.VERTICAL)
+        self.paned.pack1(self.scroller, True, False)
+        self.paned.pack2(self.tabs, True, False)
+        self.pack_start(self.paned, True, True, 0)
 
         # Stay at the bottom while new cards and output arrive, unless the
         # user scrolled up. "changed" fires once the new content is allocated.
@@ -673,14 +728,42 @@ class ResultsPanel(Gtk.Box):
 
     def add_request(self, pending: PendingRequest) -> RequestCard:
         self.empty.hide()
-        card = RequestCard(len(self.cards) + 1, pending, self._update_counter)
+        card = RequestCard(len(self.cards) + 1, pending, self._update_counter, self._add_result)
         self.cards.append(card)
+        self._prune()
         self.list.pack_start(card, False, False, 0)
         card.show_all()
         self._update_counter()
         self.follow = True
         card.focus_code()
         return card
+
+    def _prune(self) -> None:
+        """Only the newest code stays visible, plus older code still waiting or running."""
+        for card in self.cards[:-1]:
+            if card.state not in ("waiting", "running") and card.get_parent() is self.list:
+                self.list.remove(card)
+
+    def _add_result(self, card: RequestCard, page: Gtk.Widget) -> None:
+        title = card.pending.purpose or "Result"
+        tab = Gtk.Box(spacing=4)
+        text = label(f"#{card.number} {title}", wrap=False)
+        text.set_ellipsize(Pango.EllipsizeMode.END)
+        text.set_width_chars(min(len(text.get_text()), 22))
+        text.set_max_width_chars(22)
+        tab.pack_start(text, True, True, 0)
+        tab.pack_start(icon_button("window-close-symbolic", "Close this result",
+                                   lambda: self.tabs.remove_page(self.tabs.page_num(page))), False, False, 0)
+        tab.set_tooltip_text(title)
+        tab.show_all()
+        page.show_all()
+        if not self.tabs.get_visible():
+            self.tabs.show()
+            self.paned.set_position(int(self.paned.get_allocated_height() * 0.4))
+        index = self.tabs.append_page(page, tab)
+        self.tabs.set_current_page(index)
+        while self.tabs.get_n_pages() > MAX_RESULT_TABS:
+            self.tabs.remove_page(0)
 
     def _on_content_changed(self, adjustment: Gtk.Adjustment) -> None:
         if self.follow:
@@ -693,6 +776,7 @@ class ResultsPanel(Gtk.Box):
         return sum(card.state == "waiting" for card in self.cards)
 
     def _update_counter(self) -> None:
+        self._prune()
         count = self.waiting()
         self.counter.set_text(f"· {count} waiting for confirmation" if count else "")
         window = self.get_toplevel()

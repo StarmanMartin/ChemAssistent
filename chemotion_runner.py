@@ -26,7 +26,7 @@ MAX_DEPTH = 6
 def describe_object(obj) -> dict | None:
     """Collections, elements and users as small dicts instead of their repr."""
     fields = {}
-    for name in ("id", "label", "name", "short_label", "element_type", "email", "first_name", "last_name"):
+    for name in ("short_label", "name", "label", "element_type", "id", "email", "first_name", "last_name"):
         try:
             value = getattr(obj, name)
         except Exception:  # lazy properties may hit the server and fail
@@ -37,6 +37,13 @@ def describe_object(obj) -> dict | None:
             fields[name] = value
     if not fields:
         return None
+    if "element_type" in fields:
+        # Elements open in the browser when the user clicks them in the panel.
+        try:
+            fields["url"] = obj.url()
+        except Exception:  # not saved yet, or no url() in this version
+            pass
+        return fields
     return {"type": type(obj).__name__, **fields}
 
 
