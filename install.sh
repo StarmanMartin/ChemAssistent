@@ -2,6 +2,11 @@
 # Install or update ChemAssistent for the current user.
 # Safe to re-run: it updates the code and chemotionapi, keeps the config and
 # restarts the service if it is running.
+#
+# One file is enough: without the source tree next to it the script fetches
+# the app from GitHub, e.g.
+#   curl -fsSL https://raw.githubusercontent.com/StarmanMartin/ChemAssistent/main/install.sh | bash
+# CHEM_ASSISTENT_REPO and CHEM_ASSISTENT_REF choose another repository or branch.
 set -euo pipefail
 
 APP_NAME="chem-assistent"
@@ -9,14 +14,23 @@ APP_DIR="${HOME}/.local/share/${APP_NAME}"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/${APP_NAME}"
 SERVICE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 SERVICE="${APP_NAME}.service"
-SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="${CHEM_ASSISTENT_REPO:-https://github.com/StarmanMartin/ChemAssistent.git}"
+REF="${CHEM_ASSISTENT_REF:-main}"
+# The checkout this script belongs to; empty when it runs from a pipe or alone.
+SOURCE_DIR=""
+if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  if [[ -f "$script_dir/app.py" && -f "$script_dir/setup_ai.py" ]]; then
+    SOURCE_DIR="$script_dir"
+  fi
+fi
 
 DESKTOP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 DESKTOP_FILES=("${APP_NAME}.desktop" "${APP_NAME}-settings.desktop")
 ICON_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps"
 
 APP_FILES=(agent.py app.py app_control.py chemotion_runner.py config.py gen_api_reference.py ipc.py
-  settings.py workspace.py setup_workspace.sh requirements.txt
+  settings.py workspace.py setup_workspace.sh uninstall.sh requirements.txt
   chem-assistent.svg chem-assistent-panel.svg)
 # Files of older versions (the opencode era) that an update removes.
 OLD_FILES=(console_win.py mcp_server.py opencode_models.py workspace/opencode.json)
@@ -25,6 +39,29 @@ OLD_FILES=(console_win.py mcp_server.py opencode_models.py workspace/opencode.js
 # on the PATH does not).
 PYTHON=/usr/bin/python3
 
+# A temporary clone of $REPO, removed on exit.
+fetch_source() {
+  SOURCE_DIR="$(mktemp -d)"
+  trap 'rm -rf "$SOURCE_DIR"' EXIT
+  echo "Fetching ChemAssistent ($REF) from $REPO ..."
+  git clone --quiet --depth 1 --branch "$REF" "$REPO" "$SOURCE_DIR"
+}
+
+# Runs a command with the terminal as stdin: under "curl ... | bash" stdin is
+# the script, and prompts must read from /dev/tty instead.
+with_terminal() {
+  if [[ -t 0 ]]; then
+    "$@"
+  elif (exec </dev/tty) 2>/dev/null; then
+    "$@" </dev/tty
+  else
+    "$@" </dev/null
+  fi
+}
+
+# Everything runs inside main, called on the last line, so that bash has read
+# the whole script before it starts (it may come through a pipe).
+main() {
 if [[ "${EUID}" -eq 0 ]]; then
   echo "Run this script as your normal user, not with sudo." >&2
   echo "It asks for sudo itself when system packages are missing." >&2
@@ -65,6 +102,12 @@ else
   echo "Ubuntu packages already installed."
 fi
 
+# --- Source -------------------------------------------------------------------
+# git comes from the packages above.
+if [[ -z "$SOURCE_DIR" ]]; then
+  fetch_source
+fi
+
 if ! "$PYTHON" -c 'import sys; sys.exit(not (3, 13) <= sys.version_info[:2] < (3, 15))'; then
   echo "Error: chemotion_api needs Python 3.13 or 3.14; $PYTHON is $("$PYTHON" --version)." >&2
   exit 1
@@ -76,7 +119,7 @@ mkdir -p "$APP_DIR" "$CONFIG_DIR" "$SERVICE_DIR"
 for file in "${APP_FILES[@]}"; do
   install -m 0644 "$SOURCE_DIR/$file" "$APP_DIR/$file"
 done
-chmod 0755 "$APP_DIR/setup_workspace.sh"
+chmod 0755 "$APP_DIR/setup_workspace.sh" "$APP_DIR/uninstall.sh"
 for file in "${OLD_FILES[@]}"; do
   rm -f "$APP_DIR/$file"
 done
@@ -122,7 +165,7 @@ if [[ -z "${KI_TOOLBOX_API_KEY:-}" ]] && grep -qs '^KI_TOOLBOX_API_KEY=.' "$KEY_
   KI_TOOLBOX_API_KEY="$(sed -n 's/^KI_TOOLBOX_API_KEY=//p' "$KEY_FILE" | tail -n 1)"
   export KI_TOOLBOX_API_KEY
 fi
-"$PYTHON" "$SOURCE_DIR/setup_ai.py"
+with_terminal "$PYTHON" "$SOURCE_DIR/setup_ai.py"
 
 
 # --- Menu entries and icons -------------------------------------------------
@@ -169,3 +212,7 @@ fi
 echo "Settings:  open \"ChemAssistent Settings\" from the application menu"
 echo "Use:       click the Chemotion icon in the top bar -> \"Ask Chemotion…\" (middle click opens it directly)"
 echo "Logs:      journalctl --user -u $SERVICE -f"
+echo "Remove:    $APP_DIR/uninstall.sh"
+}
+
+main "$@"

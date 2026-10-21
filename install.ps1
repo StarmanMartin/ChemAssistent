@@ -1,10 +1,16 @@
 # Install or update ChemAssistent for the current Windows user.
 # Needs MSYS2 (https://www.msys2.org), which provides GTK 3, PyGObject, git
-# and the compiled Python packages chemotion_api needs.
+# and the compiled Python packages chemotion_api needs; if it is missing,
+# the script installs it with winget.
 # Safe to re-run: it updates the code and chemotionapi, keeps the config and
 # restarts the app if it is running.
 #
 #   powershell -ExecutionPolicy Bypass -File install.ps1 [-Msys2Root C:\msys64] [-NoAutostart]
+#
+# One file is enough: without the source folder next to it the script
+# downloads the app from GitHub, e.g. in PowerShell
+#   irm https://raw.githubusercontent.com/StarmanMartin/ChemAssistent/main/install.ps1 | iex
+# CHEM_ASSISTENT_REPO and CHEM_ASSISTENT_REF choose another repository or branch.
 #
 # Keep this file ASCII-only: PowerShell 5.1 reads files without a BOM in the
 # ANSI code page.
@@ -17,7 +23,12 @@ param(
 $ErrorActionPreference = "Stop"
 
 $AppName = "chem-assistent"
+$Repo = if ($env:CHEM_ASSISTENT_REPO) { $env:CHEM_ASSISTENT_REPO } else { "https://github.com/StarmanMartin/ChemAssistent" }
+$Ref = if ($env:CHEM_ASSISTENT_REF) { $env:CHEM_ASSISTENT_REF } else { "main" }
+# The source folder this script belongs to; empty when it runs through iex.
 $SourceDir = $PSScriptRoot
+if (-not ($SourceDir -and (Test-Path (Join-Path $SourceDir "app.py")))) { $SourceDir = $null }
+$TempSource = $null
 $AppDir = Join-Path $env:LOCALAPPDATA "Programs\$AppName"
 $ConfigDir = Join-Path $env:APPDATA $AppName
 $StateDir = Join-Path $env:LOCALAPPDATA $AppName
@@ -29,7 +40,7 @@ $Startup = Join-Path $Programs "Startup"
 $AppFiles = @(
     "agent.py", "app.py", "app_control.py", "chemotion_runner.py", "config.py",
     "gen_api_reference.py", "ipc.py", "settings.py",
-    "workspace.py", "setup_workspace.sh", "requirements.txt",
+    "workspace.py", "setup_workspace.sh", "uninstall.ps1", "requirements.txt",
     "chem-assistent.svg", "chem-assistent-panel.svg"
 )
 # Files of older versions (the opencode era) that an update removes.
@@ -50,9 +61,29 @@ $Packages = @(
 $Bash = Join-Path $Msys2Root "usr\bin\bash.exe"
 $Python = Join-Path $Msys2Root "ucrt64\bin\python.exe"
 
+if (-not (Test-Path $Bash) -and (Get-Command "winget.exe" -ErrorAction SilentlyContinue) -and
+        $Msys2Root -eq "C:\msys64") {
+    # winget installs MSYS2 into C:\msys64.
+    Write-Host "Installing MSYS2 with winget ..."
+    & winget.exe install --id MSYS2.MSYS2 --exact --accept-source-agreements --accept-package-agreements
+}
 if (-not (Test-Path $Bash)) {
     Write-Error ("MSYS2 was not found in $Msys2Root. Install it from https://www.msys2.org " +
         "and run this script again (use -Msys2Root if it is somewhere else).")
+}
+
+# --- Source --------------------------------------------------------------------
+# The GitHub archive of $Ref, unpacked into a temporary folder.
+if (-not $SourceDir) {
+    $TempSource = Join-Path ([IO.Path]::GetTempPath()) ("chem-assistent-" + [Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Force -Path $TempSource | Out-Null
+    $zip = Join-Path $TempSource "source.zip"
+    Write-Host "Downloading ChemAssistent ($Ref) from $Repo ..."
+    # PowerShell 5.1 does not offer TLS 1.2 by default.
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    Invoke-WebRequest -UseBasicParsing -Uri "$Repo/archive/refs/heads/$Ref.zip" -OutFile $zip
+    Expand-Archive -Path $zip -DestinationPath $TempSource
+    $SourceDir = (Get-ChildItem $TempSource -Directory | Select-Object -First 1).FullName
 }
 
 function Invoke-Msys2([string]$Command) {
@@ -229,3 +260,5 @@ if ($createdConfig) {
 Write-Host "Settings:  'ChemAssistent Settings' in the Start menu"
 Write-Host "Use:       click the Chemotion icon in the tray, or 'ChemAssistent' in the Start menu$(if (-not $NoAutostart) { ' (starts at login)' })"
 Write-Host "Logs:      $(Join-Path $StateDir 'app.log')"
+Write-Host "Remove:    powershell -ExecutionPolicy Bypass -File `"$(Join-Path $AppDir 'uninstall.ps1')`""
+if ($TempSource) { Remove-Item $TempSource -Recurse -Force -ErrorAction SilentlyContinue }

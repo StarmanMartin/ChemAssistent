@@ -57,9 +57,15 @@ window (the top-bar icon brings it back) or end the conversation.
 
 ## Install
 
+One command, no download needed:
+
 ```bash
-./install.sh
+curl -fsSL https://raw.githubusercontent.com/StarmanMartin/ChemAssistent/main/install.sh | bash
 ```
+
+The script fetches the app from GitHub by itself. From a checkout,
+`./install.sh` installs that checkout instead. `CHEM_ASSISTENT_REF=<branch>`
+installs another branch.
 
 Run it as your normal user (it calls `sudo` only when Ubuntu packages are
 missing: GTK 3, the AppIndicator library, GtkSourceView, libmagic, git).
@@ -70,7 +76,7 @@ agent, asks once for your KI-Toolbox API key (saved as `ai_token` in the
 config) and installs and starts the systemd user service, so the icon appears
 in the top bar now and at every login.
 
-Re-run `install.sh` to update the app and chemotionapi; the configuration is
+Run it again to update the app and chemotionapi; the configuration is
 kept.
 
 Requirements:
@@ -89,15 +95,20 @@ model; “Load models” lists the models and tests the token) and save.
 ## Install on Windows
 
 The app uses GTK 3, which on Windows comes from [MSYS2](https://www.msys2.org),
-a free collection of open-source tools and libraries for Windows. Install
-MSYS2 (default location `C:\msys64`), then run in PowerShell, in this folder:
+a free collection of open-source tools and libraries for Windows. In
+PowerShell:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File install.ps1
+irm https://raw.githubusercontent.com/StarmanMartin/ChemAssistent/main/install.ps1 | iex
 ```
 
-Options: `-Msys2Root D:\msys64` if MSYS2 is elsewhere, `-NoAutostart` to not
-start the app at login. The script installs GTK 3, PyGObject, GtkSourceView,
+The script downloads the app from GitHub and, if MSYS2 is missing, installs
+it with winget (into `C:\msys64`). From a checkout run
+`powershell -ExecutionPolicy Bypass -File install.ps1` instead; options:
+`-Msys2Root D:\msys64` if MSYS2 is elsewhere, `-NoAutostart` to not start the
+app at login (with the one-liner:
+`& ([scriptblock]::Create((irm https://raw.githubusercontent.com/StarmanMartin/ChemAssistent/main/install.ps1))) -NoAutostart`).
+The script installs GTK 3, PyGObject, GtkSourceView,
 git and the compiled Python packages chemotion_api needs with `pacman`,
 copies the app to `%LOCALAPPDATA%\Programs\chem-assistent` with its own
 virtual environment, sets up chemotionapi as on Linux, asks for the
@@ -114,8 +125,8 @@ Differences from Linux: a left click on the tray icon opens the prompt, a
 right click the menu.
 Windows support is new and has not been tested much.
 
-Remove: `powershell -ExecutionPolicy Bypass -File uninstall.ps1` (keeps the
-configuration).
+Remove: `powershell -ExecutionPolicy Bypass -File "%LOCALAPPDATA%\Programs\chem-assistent\uninstall.ps1"`
+(keeps the configuration).
 
 ## Configuration
 
@@ -179,10 +190,10 @@ journalctl --user -u chem-assistent.service -f
 ## Remove
 
 ```bash
-./uninstall.sh
+~/.local/share/chem-assistent/uninstall.sh
 ```
 
-Keeps `~/.config/chem-assistent/`.
+(or `./uninstall.sh` in a checkout). Keeps `~/.config/chem-assistent/`.
 
 ## License
 
