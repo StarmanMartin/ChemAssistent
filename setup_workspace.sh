@@ -15,7 +15,9 @@ BRANCH="version-3"
 CHECKOUT="$WORKSPACE/chemotionapi"
 
 mkdir -p "$WORKSPACE"
-if [[ -d "$CHECKOUT/.git" ]]; then
+# An interrupted clone leaves a .git without commits ("No commits yet");
+# re-clone in that case instead of updating.
+if [[ -d "$CHECKOUT/.git" ]] && git -C "$CHECKOUT" rev-parse --verify --quiet HEAD >/dev/null 2>&1; then
   echo "Updating chemotionapi ($BRANCH)..."
   git -C "$CHECKOUT" fetch --quiet --depth 1 origin "$BRANCH"
   git -C "$CHECKOUT" reset --quiet --hard FETCH_HEAD
