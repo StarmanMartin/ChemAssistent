@@ -39,7 +39,7 @@ $Startup = Join-Path $Programs "Startup"
 # The same files as APP_FILES in install.sh.
 $AppFiles = @(
     "agent.py", "app.py", "app_control.py", "chemotion_runner.py", "config.py",
-    "gen_api_reference.py", "hotkey.py", "ipc.py", "settings.py",
+    "gen_api_reference.py", "history.py", "hotkey.py", "ipc.py", "settings.py",
     "workspace.py", "setup_workspace.sh", "uninstall.ps1", "requirements.txt",
     "chem-assistent.svg", "chem-assistent-panel.svg"
 )

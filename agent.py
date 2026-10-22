@@ -35,6 +35,11 @@ MAX_LIST_ENTRIES = 300
 # Files grep looks at below one directory (an attached folder may be huge).
 MAX_GREP_FILES = 5000
 SKIP_DIRS = {".git", "__pycache__", ".venv", "node_modules"}
+# Appended to a user message with attachments; the history shows the text before it.
+ATTACHMENT_NOTE = ("\n\nAttached by the user (read them with read_file / list_files / grep by these "
+                   "absolute paths; execute_python code can open them, e.g. to upload a file to "
+                   "Chemotion):\n")
+STOPPED_NOTE = "(Stopped after many tool calls.)"
 
 TOOLS = [
     {
@@ -253,6 +258,16 @@ def list_files(roots: list[Path], path: str | None = None) -> str:
     return "\n".join(entries[:MAX_LIST_ENTRIES]) + more
 
 
+def tool_summary(name: str, arguments: dict) -> str:
+    """The note the chat shows for a read-only tool call."""
+    if name == "read_file":
+        return f"Read {arguments.get('path')}"
+    if name == "grep":
+        where = f" in {arguments['path']}" if arguments.get("path") else ""
+        return f"Searched “{arguments.get('pattern')}”{where}"
+    return f"Listed {arguments.get('path') or 'the workspace'}"
+
+
 def describe_attachment(path: Path) -> str:
     if path.is_dir():
         count = sum(1 for _ in _files(path, None))
@@ -288,6 +303,16 @@ class Agent:
         self._response = None
         self._call_counter = 0
 
+    def restore(self, messages: list[dict], roots: list[str]) -> None:
+        """Continue a saved conversation (history.py): its messages after the
+        current system prompt, and the attachments that still exist."""
+        self.messages = self.messages[:1] + [m for m in messages if isinstance(m, dict) and m.get("role") != "system"]
+        for item in roots:
+            path = Path(item)
+            if path.exists() and path not in self.roots:
+                self.roots.append(path)
+        self._close_open_calls()
+
     def cancel(self) -> None:
         self.cancelled.set()
         response = self._response
@@ -309,9 +334,7 @@ class Agent:
                     self.roots.append(path)
                 lines.append(describe_attachment(path))
         if lines:
-            text += ("\n\nAttached by the user (read them with read_file / list_files / grep by these "
-                     "absolute paths; execute_python code can open them, e.g. to upload a file to "
-                     "Chemotion):\n" + "\n".join(lines))
+            text += ATTACHMENT_NOTE + "\n".join(lines)
         self.messages.append({"role": "user", "content": text})
         try:
             for _ in range(MAX_ROUNDS):
@@ -329,7 +352,7 @@ class Agent:
                 if self.cancelled.is_set():
                     break
             else:
-                self.messages.append({"role": "user", "content": "(Stopped after many tool calls.)"})
+                self.messages.append({"role": "user", "content": STOPPED_NOTE})
                 self.on_event("error", f"Stopped after {MAX_ROUNDS} tool rounds. Send a message to continue.")
                 return
             self._close_open_calls()
@@ -477,17 +500,16 @@ class Agent:
             if name == "read_file":
                 text = read_file(str(arguments.get("path") or ""), self.roots, arguments.get("offset") or 1,
                                  arguments.get("limit") or MAX_READ_LINES)
-                self.on_event("tool", f"Read {arguments.get('path')}")
+                self.on_event("tool", tool_summary(name, arguments))
                 return text
             if name == "grep":
                 text = grep(str(arguments.get("pattern") or ""), self.roots, arguments.get("path"),
                             arguments.get("glob"))
-                where = f" in {arguments['path']}" if arguments.get("path") else ""
-                self.on_event("tool", f"Searched “{arguments.get('pattern')}”{where}")
+                self.on_event("tool", tool_summary(name, arguments))
                 return text
             if name == "list_files":
                 text = list_files(self.roots, arguments.get("path"))
-                self.on_event("tool", f"Listed {arguments.get('path') or 'the workspace'}")
+                self.on_event("tool", tool_summary(name, arguments))
                 return text
         except AgentError as exc:
             return f"Error: {exc}"

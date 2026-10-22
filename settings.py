@@ -12,6 +12,7 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import GLib, Gtk  # type: ignore  # noqa: E402
 
 import app_control  # noqa: E402
+import history  # noqa: E402
 import hotkey  # noqa: E402
 from agent import AgentError, list_models  # noqa: E402
 from config import (  # noqa: E402
@@ -136,6 +137,17 @@ class SettingsWindow(Gtk.Window):
             spin.set_value(self._int_value(key, lower))
             self.spins[key] = spin
             row = self._add_row(grid, row, label, spin)
+
+        self.clear_history_button = Gtk.Button(label="Clear history")
+        self.clear_history_button.set_tooltip_text(f"Delete the saved conversations in {history.HISTORY_DIR}")
+        self.clear_history_button.connect("clicked", self._on_clear_history)
+        self.history_note = Gtk.Label(xalign=0)
+        self.history_note.get_style_context().add_class("dim-label")
+        history_row = Gtk.Box(spacing=10)
+        history_row.pack_start(self.clear_history_button, False, False, 0)
+        history_row.pack_start(self.history_note, False, False, 0)
+        row = self._add_row(grid, row, "Conversation history", history_row)
+        self._update_history_note()
 
         # max_width_chars keeps a long message from widening the window.
         self.status = Gtk.Label(xalign=0, wrap=True, selectable=True, max_width_chars=60)
@@ -316,6 +328,33 @@ class SettingsWindow(Gtk.Window):
                 problem = f"Could not set the GNOME shortcut: {exc}"
         # The app reads the config at the start of every conversation.
         self._set_status(f"Saved. {problem or 'Applies to the next conversation.'}")
+
+    # --- History ------------------------------------------------------------
+    def _update_history_note(self) -> None:
+        count = history.count()
+        self.history_note.set_text(f"{count} saved conversation{'' if count == 1 else 's'}")
+        self.clear_history_button.set_sensitive(count > 0)
+
+    def _on_clear_history(self, _button: Gtk.Button) -> None:
+        dialog = Gtk.MessageDialog(
+            transient_for=self, modal=True, message_type=Gtk.MessageType.QUESTION,
+            buttons=Gtk.ButtonsType.NONE, text="Delete all saved conversations?",
+        )
+        dialog.format_secondary_text("They can no longer be continued from the prompt. "
+                                     "A conversation that is open right now is saved again when it goes on.")
+        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Delete", Gtk.ResponseType.ACCEPT).get_style_context().add_class("destructive-action")
+        answer = dialog.run()
+        dialog.destroy()
+        if answer != Gtk.ResponseType.ACCEPT:
+            return
+        try:
+            deleted = history.clear()
+        except OSError as exc:
+            self._set_status(f"Could not clear the history: {exc}")
+        else:
+            self._set_status(f"Deleted {deleted} conversation{'' if deleted == 1 else 's'}.")
+        self._update_history_note()
 
     # --- Service ------------------------------------------------------------
     def _update_service_button(self) -> None:

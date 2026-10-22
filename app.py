@@ -52,10 +52,11 @@ except (ValueError, ImportError):
     GtkSource = None
 
 import app_control  # noqa: E402
+import history  # noqa: E402
 import hotkey  # noqa: E402
 import ipc  # noqa: E402
 import workspace  # noqa: E402
-from agent import Agent  # noqa: E402
+from agent import ATTACHMENT_NOTE, STOPPED_NOTE, Agent, tool_summary  # noqa: E402
 from config import (  # noqa: E402
     CONFIG_FILE, STATE_DIR, WINDOWS, WORKSPACE_DIR, Config, ai_problem, load_config, read_raw_config,
 )
@@ -88,6 +89,8 @@ MAX_CELL_CHARS = 120
 # Result tabs kept in the panel; older ones are dropped.
 MAX_RESULT_TABS = 10
 MAX_REQUEST_BYTES = 65536
+# Old conversations the prompt offers to continue.
+RECENT_CONVERSATIONS = 6
 
 
 CSS = b"""
@@ -171,6 +174,19 @@ CSS = b"""
     border: 1px solid rgba(255, 255, 255, 0.15);
     border-radius: 12px;
     padding: 0 0 0 8px;
+}
+.recent-list, .recent-list row {
+    background: transparent;
+}
+.recent-list row {
+    border-radius: 6px;
+    padding: 2px 6px;
+}
+.recent-list row:hover, .recent-list row:selected {
+    background: rgba(255, 255, 255, 0.08);
+}
+.recent-title {
+    color: #e6e6e6;
 }
 .chat-input text {
     background: #2a2c30;
@@ -1047,6 +1063,39 @@ class ChatPanel(Gtk.Box):
             self.answer.set_text(self.answer_text.strip())
         return False
 
+    def replay(self, messages: list[dict]) -> None:
+        """Show the messages of a saved conversation (Agent.messages)."""
+        for message in messages:
+            role, content = message.get("role"), message.get("content")
+            if role == "user" and isinstance(content, str):
+                if content == STOPPED_NOTE:
+                    self.add_note("Stopped after many tool calls.", "dialog-error-symbolic", "request-error")
+                    continue
+                text, _, listed = content.partition(ATTACHMENT_NOTE)
+                # "- /path (text file, 1.2 kB)" lines; the paths contain no " (".
+                paths = [line[2:].split(" (", 1)[0].rstrip("/\\") for line in listed.splitlines()
+                         if line.startswith("- ")]
+                self.add_user(text, paths)
+            elif role == "assistant":
+                if isinstance(content, str) and content.strip():
+                    self.append_text(content)
+                    self._render()
+                for call in message.get("tool_calls") or []:
+                    function = call.get("function") or {}
+                    try:
+                        arguments = json.loads(function.get("arguments") or "{}")
+                    except ValueError:
+                        arguments = {}
+                    if not isinstance(arguments, dict):
+                        arguments = {}
+                    if function.get("name") == "execute_python":
+                        self.add_note(arguments.get("purpose") or "Code", "system-run-symbolic")
+                    else:
+                        self.add_note(tool_summary(str(function.get("name")), arguments))
+        self.answer = None
+        self.add_note("Continued from the history. Earlier results are not shown on the right.",
+                      "document-open-recent-symbolic")
+
     def add_note(self, text: str, icon: str = "document-open-symbolic", css: str = "dim") -> None:
         if self.answer is not None:
             self._render()
@@ -1076,6 +1125,9 @@ class AssistantWindow(Gtk.Window):
         self.chat: ChatPanel | None = None
         self.results: ResultsPanel | None = None
         self.agent: Agent | None = None
+        self.conversation_id: str | None = None
+        self.conversation_title = ""
+        self.saved_messages = 0  # how many messages history has; saves only on change
         self.expanded = False
         self.closed = False
 
@@ -1135,6 +1187,15 @@ class AssistantWindow(Gtk.Window):
         self.error.set_no_show_all(True)
         box.pack_start(self.error, False, False, 0)
 
+        self.recent = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self.recent.pack_start(label("Recent conversations", "prompt-hint", wrap=False), False, False, 0)
+        self.recent_list = Gtk.ListBox()
+        self.recent_list.get_style_context().add_class("recent-list")
+        self.recent_list.set_selection_mode(Gtk.SelectionMode.NONE)
+        self.recent_list.connect("row-activated", lambda _list, row: self._resume(row.conversation_id))
+        self.recent.pack_start(self.recent_list, False, False, 0)
+        box.pack_start(self.recent, False, False, 0)
+
         outer = Gtk.Box()
         outer.pack_start(box, True, True, 0)
         return outer
@@ -1147,12 +1208,43 @@ class AssistantWindow(Gtk.Window):
             self.entry.set_width_chars(max(30, config.prompt_width // 11))
         except ValueError:
             self.hint.set_text("Enter starts the assistant · Esc closes")
-        self.error.hide()
         self.show_all()
+        self.error.hide()
+        self._fill_recent()
         width, height = self.get_size()
         area = work_area()
         self.move(area.x + (area.width - width) // 2, area.y + (area.height - height) // 3)
         self.present_now()
+        self.entry.grab_focus()
+
+    def _fill_recent(self) -> None:
+        for row in self.recent_list.get_children():
+            self.recent_list.remove(row)
+        entries = history.entries(RECENT_CONVERSATIONS)
+        for entry in entries:
+            row = Gtk.ListBoxRow()
+            row.conversation_id = entry.id
+            line = Gtk.Box(spacing=8)
+            line.pack_start(Gtk.Image.new_from_icon_name("document-open-recent-symbolic", Gtk.IconSize.MENU),
+                            False, False, 0)
+            title = label(entry.title, "recent-title", wrap=False)
+            title.set_ellipsize(Pango.EllipsizeMode.END)
+            line.pack_start(title, True, True, 0)
+            line.pack_start(label(history.age(entry.updated), "dim", wrap=False), False, False, 0)
+            line.pack_start(icon_button("user-trash-symbolic", "Delete from the history",
+                                        lambda entry_id=entry.id: self._forget(entry_id)), False, False, 0)
+            row.add(line)
+            row.set_tooltip_text(f"Continue this conversation ({entry.model})" if entry.model
+                                 else "Continue this conversation")
+            self.recent_list.add(row)
+        self.recent.show_all() if entries else self.recent.hide()
+
+    def _forget(self, conversation_id: str) -> None:
+        try:
+            history.delete(conversation_id)
+        except OSError as exc:
+            self.show_error(f"Could not delete it: {exc}")
+        self._fill_recent()
         self.entry.grab_focus()
 
     def present_now(self) -> None:
@@ -1165,24 +1257,41 @@ class AssistantWindow(Gtk.Window):
         self.error.show()
         self.entry.grab_focus()
 
-    def _submit(self) -> None:
-        text = self.entry.get_text().strip()
-        if not text:
-            return
+    def _ready_config(self) -> Config | None:
+        """The config, or None after showing why no conversation can start."""
         try:
             config = load_config()
         except ValueError as exc:
             self.show_error(f"{exc}\nOpen the settings with the gear button.")
-            return
+            return None
         problem = ai_problem(read_raw_config())
         if problem:
             self.show_error(f"{problem}\nOpen the settings with the gear button.")
-            return
+            return None
         if not workspace.reference_ready():
             self.show_error(f"The Chemotion API reference is missing in {WORKSPACE_DIR}. Run install.sh "
                             "(or setup_workspace.sh in the source tree).")
+            return None
+        return config
+
+    def _submit(self) -> None:
+        text = self.entry.get_text().strip()
+        if not text:
             return
-        self._start_conversation(config, text)
+        config = self._ready_config()
+        if config is not None:
+            self._start_conversation(config, text)
+
+    def _resume(self, conversation_id: str) -> None:
+        data = history.load(conversation_id)
+        if data is None:
+            self.show_error("This conversation cannot be read any more.")
+            self._fill_recent()
+            return
+        config = self._ready_config()
+        if config is None:
+            return
+        self._start_conversation(config, None, conversation_id, data)
 
     # --- conversation ---------------------------------------------------------
     def _build_conversation(self, model: str) -> Gtk.Widget:
@@ -1222,13 +1331,17 @@ class AssistantWindow(Gtk.Window):
         main.pack_start(self.paned, True, True, 0)
         return main
 
-    def _start_conversation(self, config: Config, text: str) -> None:
+    def _start_conversation(self, config: Config, text: str | None, conversation_id: str | None = None,
+                            saved: dict | None = None) -> None:
+        """A new conversation starting with `text`, or a `saved` one from the history."""
         self.agent = Agent(
             config,
             workspace.system_prompt(),
             self._execute,
             lambda kind, data: GLib.idle_add(self._on_agent_event, kind, data),
         )
+        self.conversation_id = conversation_id or history.new_id()
+        self.conversation_title = str(saved.get("title") or "") if saved else text
         self.stack.add_named(self._build_conversation(config.ai_model), "conversation")
         self.stack.show_all()
         self.stack.set_visible_child_name("conversation")
@@ -1236,9 +1349,30 @@ class AssistantWindow(Gtk.Window):
         self.set_keep_above(False)
         self.set_skip_taskbar_hint(False)
         self.set_skip_pager_hint(False)
-        self.set_title(f"ChemAssistent – {text[:60]}")
+        self.set_title(f"ChemAssistent – {self.conversation_title[:60]}")
+        if saved:
+            self.agent.restore(saved["messages"], [str(root) for root in saved.get("roots") or []])
+            self.chat.replay(self.agent.messages[1:])
+            self.saved_messages = len(self.agent.messages) - 1
         self._grow()
-        self._send(text)
+        if text is not None:
+            self._send(text)
+
+    def _save_history(self) -> None:
+        """Store the conversation (after every answer and on close)."""
+        if self.agent is None or self.conversation_id is None:
+            return
+        messages = list(self.agent.messages[1:])  # without the system prompt
+        if len(messages) == self.saved_messages or not any(message.get("role") == "user" for message in messages):
+            return
+        workspace_root = WORKSPACE_DIR.resolve()
+        roots = [str(root) for root in self.agent.roots if root != workspace_root]
+        try:
+            history.save(self.conversation_id, self.conversation_title, self.agent.config.ai_model, messages, roots)
+        except OSError as exc:
+            LOG.warning("Could not save the conversation: %s", exc)
+        else:
+            self.saved_messages = len(messages)
 
     def _send(self, text: str, attachments: list[str] | tuple[str, ...] = ()) -> None:
         if self.agent is None or self.agent.busy:
@@ -1272,6 +1406,8 @@ class AssistantWindow(Gtk.Window):
             self.chat.set_busy(False)
         elif kind == "done":
             self.chat.set_busy(False)
+        if kind in ("done", "error", "stopped"):
+            self._save_history()
         if not self.chat.busy:
             self.chat.focus_input()
         return False
@@ -1347,6 +1483,8 @@ class AssistantWindow(Gtk.Window):
     def close_conversation(self) -> None:
         self.closed = True
         if self.agent is not None:
+            # A turn still running is saved as far as it got; restore() answers its open calls.
+            self._save_history()
             self.agent.cancel()
         if self.results is not None:
             self.results.close()

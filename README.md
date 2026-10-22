@@ -41,6 +41,12 @@ only after you click **Run**.
 The header buttons start a new conversation, open the settings, minimize the
 window (the top-bar icon brings it back) or end the conversation.
 
+Conversations are saved after every answer in
+`~/.local/state/chem-assistent/history/` (the newest 200). The prompt lists
+the latest ones: click one to continue it (the chat comes back, the result
+tabs of earlier runs do not), the bin icon deletes it. **Clear history** in
+the settings deletes them all.
+
 ## Safety
 
 - The agent has exactly four tools: `execute_python`, which waits for your
@@ -152,6 +158,7 @@ On Windows the files live in other places:
 
 - configuration: `%APPDATA%\chem-assistent\config.json`
 - log: `%LOCALAPPDATA%\chem-assistent\app.log`
+- conversation history: `%LOCALAPPDATA%\chem-assistent\history\`
 
 Differences from Linux: a left click on the tray icon opens the prompt, a
 right click the menu.
