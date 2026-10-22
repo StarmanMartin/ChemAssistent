@@ -157,8 +157,19 @@
     <p class="soft" style="font-size:44px;line-height:1.3;width:960px">Talk to your electronic lab notebook in plain language. Every change runs only after you confirm it.</p>
   </section>
 
-  <!-- 2 How it starts -->
-  <section class="slide light" aria-label="Slide 2: How it starts">
+  <!-- 2 Screencast -->
+  <section class="slide dark" aria-label="Slide 2: See it in action" style="gap:40px">
+    <div class="head">
+      <p class="eyebrow">See it in action</p>
+      <h2>One question, one confirmation, one table</h2>
+    </div>
+    <video class="shot" src="assets/screencast.mp4" poster="assets/screencast.jpg" controls preload="metadata" playsinline style="width:1152px;height:648px;align-self:center;background:#000" aria-label="Screencast of ChemAssistent: the prompt opens from the top bar, the agent proposes code that runs after a click on Run, the samples of a collection appear as a table, and a follow-up adds a new sample">
+      <a href="assets/screencast.mp4">Download the screencast (MP4)</a>
+    </video>
+  </section>
+
+  <!-- 3 How it starts -->
+  <section class="slide light" aria-label="Slide 3: How it starts">
     <div class="head">
       <p class="eyebrow">How it starts</p>
       <h2>From the top bar to your data in one step</h2>
@@ -171,8 +182,8 @@
     <img class="shot" src="assets/prompt.png" alt="The ChemAssistent prompt: a dark input box titled “Ask Chemotion” with the question “Show me the samples and reactions in my collection FIXED.”" style="width:1000px;height:203px;align-self:center">
   </section>
 
-  <!-- 3 Workspace -->
-  <section class="slide dark" aria-label="Slide 3: The workspace" style="gap:48px">
+  <!-- 4 Workspace -->
+  <section class="slide dark" aria-label="Slide 4: The workspace" style="gap:48px">
     <div class="head">
       <p class="eyebrow">The workspace</p>
       <h2>Chat on the left, results on the right</h2>
@@ -187,8 +198,8 @@
     </div>
   </section>
 
-  <!-- 4 Confirm -->
-  <section class="slide light" aria-label="Slide 4: Nothing runs without your confirmation" style="gap:48px">
+  <!-- 5 Confirm -->
+  <section class="slide light" aria-label="Slide 5: Nothing runs without your confirmation" style="gap:48px">
     <div class="head">
       <p class="eyebrow">You stay in control</p>
       <h2>Nothing runs without your confirmation</h2>
@@ -203,8 +214,8 @@
     </div>
   </section>
 
-  <!-- 5 Results -->
-  <section class="slide dark" aria-label="Slide 5: Results you can click" style="gap:48px">
+  <!-- 6 Results -->
+  <section class="slide dark" aria-label="Slide 6: Results you can click" style="gap:48px">
     <div class="head">
       <p class="eyebrow">Results</p>
       <h2>Tables you can click</h2>
@@ -219,8 +230,8 @@
     </div>
   </section>
 
-  <!-- 6 What you can ask -->
-  <section class="slide accent" aria-label="Slide 6: What you can ask" style="gap:48px">
+  <!-- 7 What you can ask -->
+  <section class="slide accent" aria-label="Slide 7: What you can ask" style="gap:48px">
     <div class="head">
       <p class="eyebrow">What you can ask</p>
       <h2>Everything the Chemotion API can do</h2>
@@ -235,8 +246,8 @@
     </div>
   </section>
 
-  <!-- 7 How it works -->
-  <section class="slide light" aria-label="Slide 7: How it works" style="gap:64px">
+  <!-- 8 How it works -->
+  <section class="slide light" aria-label="Slide 8: How it works" style="gap:64px">
     <div class="head">
       <p class="eyebrow">How it works</p>
       <h2>One request, five steps</h2>
@@ -255,8 +266,8 @@
     <p class="soft" style="font-size:32px;line-height:1.45;width:1500px">The agent is part of ChemAssistent and speaks the standard OpenAI-compatible API. It knows <b>chemotion_api, branch version-3</b> from a reference generated out of its documentation and from its skills, and reads the package source when it needs more detail.</p>
   </section>
 
-  <!-- 8 Safety -->
-  <section class="slide dark" aria-label="Slide 8: Safe by design">
+  <!-- 9 Safety -->
+  <section class="slide dark" aria-label="Slide 9: Safe by design">
     <div class="head">
       <p class="eyebrow">Safe by design</p>
       <h2>Powerful, but on a short leash</h2>
@@ -281,15 +292,15 @@
     </div>
   </section>
 
-  <!-- 9 Get started -->
-  <section class="slide light" aria-label="Slide 9: Get started" style="padding-bottom:160px">
+  <!-- 10 Get started -->
+  <section class="slide light" aria-label="Slide 10: Get started" style="padding-bottom:160px">
     <div class="head">
       <p class="eyebrow">Get started</p>
       <h2>Install once, ask from the top bar</h2>
     </div>
     <div class="row">
       <div class="card" style="gap:20px"><h3>Ubuntu</h3><p class="cmd">./install.sh</p><p class="soft">Installs everything, starts the app at login.</p></div>
-      <div class="card" style="gap:20px"><h3>Windows</h3><p class="cmd">install.ps1</p><p class="soft">Via MSYS2, with a tray icon.</p></div>
+      <div class="card" style="gap:20px"><h3>Windows</h3><p class="cmd">install.ps1</p><p class="soft">Installs a ready-made bundle, with a tray icon.</p></div>
       <div class="card" style="gap:20px"><h3>Then</h3><p class="soft">Open <b>ChemAssistent Settings</b>: Chemotion URL, user, password, AI token and model. Click the icon and ask.</p></div>
     </div>
     <p class="footer soft"><a href="https://github.com/StarmanMartin/ChemAssistent">github.com/StarmanMartin/ChemAssistent</a> · built on <a href="https://github.com/Chemotion/chemotionapi/tree/version-3">chemotion_api (version-3)</a> and the <a href="https://ki-toolbox.scc.kit.edu">KIT KI-Toolbox</a></p>
@@ -299,7 +310,7 @@
 
 <nav class="controls" aria-label="Slide navigation">
   <button id="prev" aria-label="Previous slide">‹</button>
-  <span id="counter">1 / 9</span>
+  <span id="counter">1 / 10</span>
   <button id="next" aria-label="Next slide">›</button>
   <button id="full" aria-label="Full screen" title="Full screen (F)">⛶</button>
 </nav>
@@ -321,6 +332,10 @@
     slides.forEach(function (s, i) {
       s.classList.toggle('active', i === current);
       s.setAttribute('aria-hidden', i === current ? 'false' : 'true');
+    });
+    // A video keeps playing invisibly otherwise.
+    Array.prototype.forEach.call(document.querySelectorAll('video'), function (v) {
+      if (!slides[current].contains(v)) v.pause();
     });
     counter.textContent = (current + 1) + ' / ' + slides.length;
     progress.style.width = ((current + 1) / slides.length * 100) + '%';
@@ -346,6 +361,7 @@
 
   document.addEventListener('keydown', function (e) {
     if (e.altKey || e.ctrlKey || e.metaKey) return;
+    if (e.target.closest && e.target.closest('video')) return;  // space plays/pauses there
     switch (e.key) {
       case 'ArrowRight': case 'PageDown': case ' ': case 'Enter': show(current + 1); break;
       case 'ArrowLeft': case 'PageUp': case 'Backspace': show(current - 1); break;
@@ -357,9 +373,9 @@
     e.preventDefault();
   });
 
-  // Click on the right two thirds = next, left third = previous (links still work).
+  // Click on the right two thirds = next, left third = previous (links and videos still work).
   document.getElementById('stage').addEventListener('click', function (e) {
-    if (e.target.closest('a')) return;
+    if (e.target.closest('a, video')) return;
     show(e.clientX > window.innerWidth / 3 ? current + 1 : current - 1);
   });
 
