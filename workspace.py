@@ -10,9 +10,10 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from config import WORKSPACE_DIR
+from config import FROZEN, WINDOWS, WORKSPACE_DIR
 
 
+HERE = Path(__file__).resolve().parent
 REFERENCE = "CHEMOTION_API.md"
 SOURCE_DIR = "chemotionapi"
 
@@ -84,10 +85,26 @@ def system_prompt() -> str:
     return SYSTEM_PROMPT.format(skills=skill_lines())
 
 
-def console_python() -> str:
-    """The interpreter for children with stdio: on Windows python.exe next to
-    pythonw.exe, which the app runs under and which has no usable stdio."""
-    path = Path(sys.executable)
-    if path.name.lower() == "pythonw.exe" and path.with_name("python.exe").is_file():
-        return str(path.with_name("python.exe"))
-    return sys.executable
+# The programs of the Windows build (windows/chem-assistent.spec) that run
+# each script, next to sys.executable.
+FROZEN_PROGRAMS = {
+    "app.py": ["ChemAssistent.exe"],
+    "settings.py": ["ChemAssistent.exe", "--settings"],
+    "chemotion_runner.py": ["chem-assistent-runner.exe"],
+}
+
+
+def command(script: str, console: bool = False) -> list[str]:
+    """The command line that starts app.py, settings.py or chemotion_runner.py
+    in a child process. `console`: the child needs stdio, which on Windows
+    python.exe has and pythonw.exe (no console window) has not. The Windows
+    build has no Python: there the bundle's exes run the scripts."""
+    if FROZEN:
+        program, *args = FROZEN_PROGRAMS[script]
+        return [str(Path(sys.executable).with_name(program)), *args]
+    python = Path(sys.executable)
+    if WINDOWS:
+        wanted = python.with_name("python.exe" if console else "pythonw.exe")
+        if wanted.is_file():
+            python = wanted
+    return [str(python), str(HERE / script)]

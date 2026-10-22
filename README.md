@@ -100,72 +100,138 @@ model; “Load models” lists the models and tests the token) and save.
 
 ## Install on Windows
 
-The app uses GTK 3, which on Windows comes from [MSYS2](https://www.msys2.org),
-a free collection of open-source tools and libraries for Windows. In
+On Windows ChemAssistent is one self-contained folder: Python, GTK 3 and
+chemotion_api are bundled with [PyInstaller](https://pyinstaller.org). The
+installer only unpacks that folder and creates shortcuts: no admin rights,
+no MSYS2, no Python, no git, nothing added to `PATH` or the registry. In
 PowerShell:
 
 ```powershell
 irm https://raw.githubusercontent.com/StarmanMartin/ChemAssistent/main/install.ps1 | iex
 ```
 
-The script downloads the app from GitHub and, if MSYS2 is missing, installs
-it with winget (into `C:\msys64`). From a checkout run
-`powershell -ExecutionPolicy Bypass -File install.ps1` instead; options:
-`-Msys2Root D:\msys64` if MSYS2 is elsewhere, `-NoAutostart` to not start the
-app at login (with the one-liner:
-`& ([scriptblock]::Create((irm https://raw.githubusercontent.com/StarmanMartin/ChemAssistent/main/install.ps1))) -NoAutostart`).
-The script installs GTK 3, PyGObject, GtkSourceView,
-git and the compiled Python packages chemotion_api needs with `pacman`,
-copies the app to `%LOCALAPPDATA%\Programs\chem-assistent` with its own
-virtual environment, sets up chemotionapi as on Linux, asks for the
-KI-Toolbox API key (saved in the config), creates Start-menu shortcuts
-(“ChemAssistent”, “ChemAssistent Settings”) plus a Startup shortcut, and
-starts the app.
+The script
 
-Re-run `install.ps1` to update the app and chemotionapi; the configuration is
-kept. It stops a running instance first and starts the app again afterwards.
+1. downloads `ChemAssistent-windows-x64.zip` from the GitHub release
+   `windows-main` (see [Build the Windows version](#build-the-windows-version)),
+2. unpacks it to `%LOCALAPPDATA%\Programs\chem-assistent`, replacing an
+   older version (a running app is stopped first),
+3. asks once for your KI-Toolbox API key (saved as `ai_token` in the
+   config; `KI_TOOLBOX_API_KEY` from your user environment is taken over),
+4. creates the Start-menu shortcuts “ChemAssistent” and “ChemAssistent
+   Settings” plus a Startup shortcut, and starts the app.
+
+Options: `-NoAutostart` to not start the app at login, `-Package <zip>` to
+install a locally built zip instead of downloading one. With the one-liner:
+`& ([scriptblock]::Create((irm https://raw.githubusercontent.com/StarmanMartin/ChemAssistent/main/install.ps1))) -NoAutostart`.
+From a checkout: `powershell -ExecutionPolicy Bypass -File install.ps1`.
+Another branch: set `$env:CHEM_ASSISTENT_REF = "<branch>"` first (the script
+then downloads the release `windows-<branch>`).
+
+Re-run the installer to update the app and chemotionapi; the configuration
+and the conversation history are kept.
 
 Requirements:
 
-- [MSYS2](https://www.msys2.org) in `C:\msys64` (or `-Msys2Root`). It provides
-  GTK 3, PyGObject and the Python 3.13/3.14 that chemotion_api needs; the
-  script installs the missing packages itself.
-- [Git for Windows](https://gitforwindows.org) with a GitHub login that can
-  read the chemotionapi repository: it is not public, so cloning it needs
-  your credentials. Git for Windows keeps them in Git Credential Manager and
-  the script makes MSYS2's git use them. Check with
-  `git ls-remote https://github.com/Chemotion/chemotionapi.git`.
-- **Smart App Control off.** It blocks the unsigned MSYS2 binaries (Python
-  modules, GTK libraries) and has no way to exclude them. Turn it off in
-  Settings > Privacy & security > Windows Security > App & browser control >
-  Smart App Control settings (Windows keeps this setting permanently; it can
-  only be re-enabled by resetting Windows).
+- Windows 10 or 11, 64-bit.
+- (*only on some systems, not vertified yet*):**Smart App Control off.** The build is not code-signed, and Smart App
+  Control blocks unsigned programs and has no way to exclude them. Turn it
+  off in Settings > Privacy & security > Windows Security > App & browser
+  control > Smart App Control settings (Windows keeps this setting
+  permanently; it can only be re-enabled by resetting Windows).
 - An API key of the [KIT KI-Toolbox](https://ki-toolbox.scc.kit.edu), or
   the URL and token of another OpenAI-compatible API.
 
+Then open **ChemAssistent Settings** from the Start menu and enter the
+Chemotion URL, user and password as on Linux.
+
 If the installation fails:
 
-- `DLL load failed while importing …` with “an application control policy has
-  blocked this file” (on German Windows: „Eine Anwendungssteuerungsrichtlinie
-  hat diese Datei blockiert“): Smart App Control is still on, see above.
-- `could not read Username for 'https://github.com'` during the chemotionapi
-  clone: the GitHub credentials are missing, see Git for Windows above.
-- `Could not delete the old virtual environment`: an instance of the app is
-  still running from it. Close it (right-click the tray icon) and run the
-  script again.
+- `Could not download …`: there is no build for that branch yet; see
+  [Build the Windows version](#build-the-windows-version).
+- `An application control policy has blocked this file` (on German Windows:
+  „Eine Anwendungssteuerungsrichtlinie hat diese Datei blockiert“): Smart
+  App Control is still on, see above.
+- `Could not delete the old version`: the app is still running. Quit it
+  (right-click the tray icon) and run the script again.
+- An antivirus program reports or quarantines `ChemAssistent.exe`:
+  PyInstaller programs are occasionally flagged by mistake. Allow the folder
+  `%LOCALAPPDATA%\Programs\chem-assistent`.
+
+Upgrading from the earlier MSYS2-based version: just run the new installer.
+It replaces the app folder (including the old virtual environment) and the
+shortcuts and keeps the configuration. MSYS2 itself is left installed; if
+nothing else uses it, remove it under Settings > Apps (“MSYS2”) or with
+`winget uninstall MSYS2.MSYS2`. Git for Windows and a GitHub login are no
+longer needed.
 
 On Windows the files live in other places:
 
+- the app: `%LOCALAPPDATA%\Programs\chem-assistent` (`build.json` there
+  says which commit of the app and of chemotionapi it was built from,
+  `License.md` lists the licenses of all bundled third-party software)
 - configuration: `%APPDATA%\chem-assistent\config.json`
 - log: `%LOCALAPPDATA%\chem-assistent\app.log`
 - conversation history: `%LOCALAPPDATA%\chem-assistent\history\`
 
-Differences from Linux: a left click on the tray icon opens the prompt, a
-right click the menu.
+Differences from Linux:
+
+- a left click on the tray icon opens the prompt, a right click the menu;
+- chemotionapi is part of the build (the newest `version-3` when it was
+  built) instead of being cloned at install time;
+- confirmed code runs in the bundled Python: the standard library,
+  chemotion_api and its dependencies (requests, PyYAML, jsonschema, rdflib,
+  …); other packages such as numpy or pandas are not available;
+- the MIME type of an uploaded file is guessed from its file name
+  (`windows/magic.py` replaces python-magic, which needs libmagic).
+
 Windows support is new and has not been tested much.
 
 Remove: `powershell -ExecutionPolicy Bypass -File "%LOCALAPPDATA%\Programs\chem-assistent\uninstall.ps1"`
-(keeps the configuration).
+(keeps the configuration and the history).
+
+### Build the Windows version
+
+The GitHub workflow `.github/workflows/windows.yml` builds the zip on
+`windows-latest` and publishes it as the release `windows-<branch>` (slashes
+become `-`): on every push that changes the app, every Monday (to pick up
+chemotionapi changes) and on demand (Actions > Windows build > Run
+workflow). The release is replaced by each build; `install.ps1` always
+downloads the newest one.
+
+To build it yourself on Windows you need Python 3.14 (e.g. from
+[python.org](https://www.python.org/downloads/windows/)); it must be that
+version because gvsbuild's PyGObject wheel is built for it:
+
+```powershell
+py -3.14 windows\build.py
+powershell -ExecutionPolicy Bypass -File install.ps1 -Package dist\ChemAssistent-windows-x64.zip
+```
+
+`windows\build.py` downloads GTK 3, GtkSourceView and PyGObject from
+[gvsbuild](https://github.com/wingtk/gvsbuild) (about 315 MB, kept for the
+next build) and chemotionapi into `build\windows\`, installs everything into
+a virtual environment there, generates the API reference, runs PyInstaller
+with `windows\chem-assistent.spec`, checks the result with
+`chem-assistent-runner.exe --self-test` and writes
+`dist\ChemAssistent-windows-x64.zip`. Nothing is installed outside the
+checkout.
+
+The zip contains `LICENSE.txt` (ChemAssistent's AGPL-3.0) and `License.md`,
+which `windows\licenses.py` generates from what is really in the build:
+every bundled DLL with its component, version, license and source, every
+Python package with the license files from its metadata, PyInstaller's
+bootloader, the icon theme and the full license texts. It takes them from
+gvsbuild's `share\doc` and `share\licenses`, the packages' `dist-info`,
+Python's `LICENSE.txt` and `windows\licenses\` (FreeType, libxml2 and
+OpenSSL, which gvsbuild ships without license text). If a DLL is not known
+to `COMPONENTS` in `windows\licenses.py` or a license text is missing, the
+build fails; add the component there.
+
+`License.md` also contains the written offer for the source code of the
+LGPL/GPL components. Its contact is `SOURCE_CONTACT` in
+`windows\licenses.py`, for now a placeholder (the build warns about it):
+fill it in before distributing builds.
 
 ## Configuration
 

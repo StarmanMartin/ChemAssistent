@@ -14,11 +14,19 @@ $Programs = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
 if (Test-Path $PidFile) {
     $oldPid = (Get-Content $PidFile -Raw).Trim()
     $process = Get-Process -Id $oldPid -ErrorAction SilentlyContinue
-    if ($process -and $process.ProcessName -like "python*") {
+    if ($process -and ($process.ProcessName -like "python*" -or $process.ProcessName -like "ChemAssistent*")) {
         Stop-Process -Id $oldPid -Force
         $process.WaitForExit(5000) | Out-Null
     }
     Remove-Item $PidFile -Force -ErrorAction SilentlyContinue
+}
+# The settings or a runner may still run from the app directory.
+Get-Process -ErrorAction SilentlyContinue | Where-Object {
+    try { $_.Path -and $_.Path.StartsWith($AppDir + "\", [System.StringComparison]::OrdinalIgnoreCase) }
+    catch { $false }
+} | ForEach-Object {
+    Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+    $_.WaitForExit(5000) | Out-Null
 }
 
 foreach ($link in @(
@@ -30,8 +38,8 @@ foreach ($link in @(
 }
 Remove-Item $AppDir -Recurse -Force -ErrorAction SilentlyContinue
 
-Write-Host "Application removed. MSYS2 and its packages were left installed."
+Write-Host "Application removed."
 Write-Host "Configuration was kept at:"
 Write-Host "  $ConfigDir"
-Write-Host "The log (may be deleted):"
+Write-Host "The log and the conversation history (may be deleted):"
 Write-Host "  $StateDir"

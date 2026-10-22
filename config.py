@@ -9,6 +9,9 @@ from pathlib import Path
 
 APP_NAME = "chem-assistent"
 WINDOWS = sys.platform == "win32"
+# The Windows build is a PyInstaller bundle (windows/): no Python, its
+# programs are exes, and this file's folder is the bundle's _internal\.
+FROZEN = bool(getattr(sys, "frozen", False))
 if WINDOWS:
     CONFIG_DIR = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming") / APP_NAME
     STATE_DIR = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / APP_NAME
