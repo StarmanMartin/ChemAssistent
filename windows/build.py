@@ -3,8 +3,9 @@
     py -3.14 windows\\build.py
 
 Result: dist\\ChemAssistent-windows-x64.zip, one folder with
-ChemAssistent.exe, chem-assistent-runner.exe, Python, GTK 3, chemotion_api
-and the agent's workspace, which install.ps1 unpacks. No MSYS2: GTK 3,
+ChemAssistent.exe, chem-assistent-runner.exe, Python, GTK 3, chemotion_api,
+the agent's workspace and License.md (windows/licenses.py: the licenses of
+everything in it), which install.ps1 unpacks. No MSYS2: GTK 3,
 GtkSourceView and PyGObject come from gvsbuild's release
 (https://github.com/wingtk/gvsbuild), whose PyGObject wheel is built for one
 Python version (3.14 for GTK_RELEASE), so run this with that Python.
@@ -166,6 +167,7 @@ def main() -> int:
 
     bundle = BUILD / "dist" / "ChemAssistent"
     shutil.copy2(ROOT / "uninstall.ps1", bundle / "uninstall.ps1")
+    shutil.copy2(ROOT / "LICENSE", bundle / "LICENSE.txt")
     (bundle / "build.json").write_text(json.dumps({
         "app_commit": app_commit(),
         "chemotionapi": f"{CHEMOTION_REF} {chemotion_commit}",
@@ -173,6 +175,8 @@ def main() -> int:
         "python": sys.version.split()[0],
         "built": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
     }, indent=2) + "\n", encoding="utf-8")
+    # License.md with every third-party license; fails when one is missing.
+    run([python, ROOT / "windows" / "licenses.py", bundle, gtk])
     # Without GTK on PATH: the bundle must find everything in itself.
     run([bundle / "chem-assistent-runner.exe", "--self-test"])
 

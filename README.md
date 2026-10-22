@@ -168,7 +168,8 @@ longer needed.
 On Windows the files live in other places:
 
 - the app: `%LOCALAPPDATA%\Programs\chem-assistent` (`build.json` there
-  says which commit of the app and of chemotionapi it was built from)
+  says which commit of the app and of chemotionapi it was built from,
+  `License.md` lists the licenses of all bundled third-party software)
 - configuration: `%APPDATA%\chem-assistent\config.json`
 - log: `%LOCALAPPDATA%\chem-assistent\app.log`
 - conversation history: `%LOCALAPPDATA%\chem-assistent\history\`
@@ -215,6 +216,22 @@ with `windows\chem-assistent.spec`, checks the result with
 `chem-assistent-runner.exe --self-test` and writes
 `dist\ChemAssistent-windows-x64.zip`. Nothing is installed outside the
 checkout.
+
+The zip contains `LICENSE.txt` (ChemAssistent's AGPL-3.0) and `License.md`,
+which `windows\licenses.py` generates from what is really in the build:
+every bundled DLL with its component, version, license and source, every
+Python package with the license files from its metadata, PyInstaller's
+bootloader, the icon theme and the full license texts. It takes them from
+gvsbuild's `share\doc` and `share\licenses`, the packages' `dist-info`,
+Python's `LICENSE.txt` and `windows\licenses\` (FreeType, libxml2 and
+OpenSSL, which gvsbuild ships without license text). If a DLL is not known
+to `COMPONENTS` in `windows\licenses.py` or a license text is missing, the
+build fails; add the component there.
+
+`License.md` also contains the written offer for the source code of the
+LGPL/GPL components. Its contact is `SOURCE_CONTACT` in
+`windows\licenses.py`, for now a placeholder (the build warns about it):
+fill it in before distributing builds.
 
 ## Configuration
 
