@@ -64,6 +64,12 @@ COMPONENTS = (
               dlls=("vcruntime140*.dll", "msvcp140*.dll", "concrt140.dll", "vcomp140.dll"),
               note="Redistributable files of Microsoft Visual C++, distributed unmodified as permitted by the "
                    "Visual Studio license terms."),
+    Component("Microsoft Universal C Runtime (UCRT)", "Microsoft Windows SDK license terms (redistributable code)",
+              "https://learn.microsoft.com/cpp/windows/universal-crt-deployment", (),
+              dlls=("ucrtbase.dll", "api-ms-win-*.dll"),
+              note="Redistributable files of the Universal CRT from the Windows SDK, distributed unmodified for "
+                   "app-local deployment as permitted by the Windows SDK license terms. Windows 10 and later "
+                   "already contain them."),
     # --- GTK 3 and its dependencies (gvsbuild) ---------------------------------
     Component("GLib", "LGPL-2.1-or-later", "https://gitlab.gnome.org/GNOME/glib", (LGPL_2_1,),
               dlls=("glib-2.0-0.dll", "gobject-2.0-0.dll", "gio-2.0-0.dll", "gmodule-2.0-0.dll",
