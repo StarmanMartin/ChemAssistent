@@ -1,22 +1,24 @@
 """Start, stop and check the app (no GTK).
 
 Linux: the systemd user service. Windows: there is no service manager, so
-app.py records its process id in PID_FILE and this module starts it with
-pythonw and terminates it by that id.
+app.py records its process id in PID_FILE and this module starts it
+(ChemAssistent.exe of the build, pythonw from source) and terminates it by
+that id.
 """
 from __future__ import annotations
 
 import os
 import subprocess
-import sys
 from pathlib import Path
 
+import workspace
 from config import STATE_DIR, WINDOWS
 
 
 SERVICE = "chem-assistent.service"
 PID_FILE = STATE_DIR / "app.pid"
-APP_SCRIPT = Path(__file__).with_name("app.py")
+# Image names of the app's process: the Windows build, or Python from source.
+APP_PROCESS_NAMES = ("chemassistent.exe", "python")
 
 
 class ControlError(RuntimeError):
@@ -44,7 +46,7 @@ def _systemctl_checked(*args: str) -> None:
 
 # --- Windows: PID file -----------------------------------------------------
 def _pid_alive(pid: int) -> bool:
-    """True if `pid` is a running Python process (process ids get reused)."""
+    """True if `pid` is a running app process (process ids get reused)."""
     import ctypes
     from ctypes import wintypes
 
@@ -62,7 +64,8 @@ def _pid_alive(pid: int) -> bool:
         name = ctypes.create_unicode_buffer(size.value)
         if not kernel32.QueryFullProcessImageNameW(handle, 0, name, ctypes.byref(size)):
             return True
-        return "python" in Path(name.value).name.lower()
+        image = Path(name.value).name.lower()
+        return any(app_name in image for app_name in APP_PROCESS_NAMES)
     finally:
         kernel32.CloseHandle(handle)
 
@@ -73,12 +76,6 @@ def _recorded_pid() -> int | None:
     except (OSError, ValueError):
         return None
     return pid if pid != os.getpid() and _pid_alive(pid) else None
-
-
-def pythonw() -> str:
-    # pythonw has no console window; fall back to the current interpreter.
-    candidate = Path(sys.executable).with_name("pythonw.exe")
-    return str(candidate) if candidate.is_file() else sys.executable
 
 
 def write_pid() -> None:
@@ -114,8 +111,8 @@ def start() -> None:
     flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
     try:
         subprocess.Popen(
-            [pythonw(), str(APP_SCRIPT)],
-            cwd=str(APP_SCRIPT.parent),
+            workspace.command("app.py"),
+            cwd=str(workspace.HERE),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

@@ -70,11 +70,9 @@ ICON_FILE = HERE / "chem-assistent.svg"
 PANEL_ICON = "chem-assistent-panel"  # chem-assistent-panel.svg next to this file
 # The light variant of the mark, for the app's own dark prompt and header.
 DARK_UI_ICON_FILE = HERE / f"{PANEL_ICON}.svg"
-RUNNER = HERE / "chemotion_runner.py"
-SETTINGS = HERE / "settings.py"
 
-# Keeps the runner from opening a console window when the app runs under
-# pythonw on Windows. 0 elsewhere (creationflags must be 0 there).
+# Keeps the runner (a console program) from opening a console window on
+# Windows. 0 elsewhere (creationflags must be 0 there).
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 GROW_STEPS = 14
 GROW_STEP_MS = 16
@@ -247,7 +245,7 @@ def icon_button(icon: str, tooltip: str, callback) -> Gtk.Button:
 
 
 def open_settings() -> None:
-    subprocess.Popen([sys.executable, str(SETTINGS)], start_new_session=True, creationflags=NO_WINDOW)
+    subprocess.Popen(workspace.command("settings.py"), start_new_session=True, creationflags=NO_WINDOW)
 
 
 # --- requests from the agent -------------------------------------------------
@@ -355,7 +353,7 @@ class Execution:
         }
         try:
             self.process = subprocess.Popen(
-                [workspace.console_python(), str(RUNNER)],
+                workspace.command("chemotion_runner.py", console=True),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -1664,10 +1662,6 @@ def main() -> None:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         handler = RotatingFileHandler(STATE_DIR / "app.log", maxBytes=1_000_000, backupCount=1, encoding="utf-8")
         logging.basicConfig(level=logging.INFO, format=log_format, handlers=[handler])
-        # MSYS2's DLLs (libmagic for chemotion_api in the runner) are found
-        # through PATH, which a Start-menu shortcut does not extend.
-        dirs = [str(Path(sys.executable).parent), str(Path(sys.base_prefix) / "bin")]
-        os.environ["PATH"] = os.pathsep.join([*dirs, os.environ.get("PATH", "")])
     else:
         logging.basicConfig(level=logging.INFO, format=log_format)
     show_prompt = "--show" in sys.argv[1:]
