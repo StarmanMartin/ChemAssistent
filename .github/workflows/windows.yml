@@ -1,0 +1,70 @@
+# Builds the Windows bundle (windows/build.py: PyInstaller with gvsbuild's
+# GTK 3, no MSYS2) and publishes it as the release "windows-<branch>"
+# (slashes in the branch name become "-"), which install.ps1 downloads.
+name: Windows build
+
+on:
+  push:
+    # Branches only: the tags this workflow moves must not start it again.
+    branches: ["**"]
+    paths:
+      - "**.py"
+      - "*.svg"
+      - "requirements.txt"
+      - "install.ps1"
+      - "uninstall.ps1"
+      - "windows/**"
+      - ".github/workflows/windows.yml"
+  workflow_dispatch:
+  schedule:
+    # Weekly, so the bundle picks up changes of chemotionapi (version-3).
+    - cron: "17 3 * * 1"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # The Python of gvsbuild's PyGObject wheel (GTK_RELEASE in windows/build.py).
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - uses: actions/cache@v4
+        with:
+          path: build/windows/download/GTK3_*.zip
+          key: gvsbuild-${{ hashFiles('windows/build.py') }}
+
+      - name: Build
+        run: python windows/build.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ChemAssistent-windows-x64
+          path: dist/ChemAssistent-windows-x64.zip
+
+      - name: Publish the release windows-<branch>
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="windows-${GITHUB_REF_NAME//\//-}"
+          git tag -f "$tag"
+          git push -f origin "refs/tags/$tag"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/ChemAssistent-windows-x64.zip --clobber
+          else
+            flags=()
+            [ "$GITHUB_REF_NAME" = main ] || flags=(--prerelease)
+            gh release create "$tag" dist/ChemAssistent-windows-x64.zip "${flags[@]}" \
+              --title "Windows build ($GITHUB_REF_NAME)" \
+              --notes "Built automatically from the branch $GITHUB_REF_NAME and replaced on every build. Install with install.ps1 (see the README)."
+          fi
