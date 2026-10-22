@@ -134,7 +134,7 @@ and the conversation history are kept.
 Requirements:
 
 - Windows 10 or 11, 64-bit.
-- **Smart App Control off.** The build is not code-signed, and Smart App
+- (*only on some systems, not vertified yet*):**Smart App Control off.** The build is not code-signed, and Smart App
   Control blocks unsigned programs and has no way to exclude them. Turn it
   off in Settings > Privacy & security > Windows Security > App & browser
   control > Smart App Control settings (Windows keeps this setting
