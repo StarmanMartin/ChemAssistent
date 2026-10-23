@@ -3,7 +3,9 @@ opens a chat with an AI agent (agent.py) about the Chemotion ELN. Code the
 agent wants to run is shown on the right and runs only after the user
 confirmed it — unless an auto-run mode is on (config key `auto_run`, and the
 menu in the conversation header): then read-only or all code starts by
-itself, and the card shows what ran."""
+itself, and the card shows what ran. The header also switches the model of
+the conversation, e.g. when the configured one fails; an error note offers
+Retry, which repeats the request without a new message."""
 from __future__ import annotations
 
 import importlib
@@ -58,7 +60,9 @@ import history  # noqa: E402
 import hotkey  # noqa: E402
 import ipc  # noqa: E402
 import workspace  # noqa: E402
-from agent import ATTACHMENT_NOTE, STOPPED_NOTE, Agent, looks_read_only, tool_summary  # noqa: E402
+from agent import (  # noqa: E402
+    ATTACHMENT_NOTE, STOPPED_NOTE, Agent, AgentError, list_models, looks_read_only, tool_summary,
+)
 from config import (  # noqa: E402
     AUTO_RUN_LABELS, AUTO_RUN_MODES, CONFIG_FILE, STATE_DIR, WINDOWS, WORKSPACE_DIR, Config,
     ai_problem, load_config, read_raw_config,
@@ -84,6 +88,8 @@ CHAT_SHARE = 0.45
 # Header icon for each auto-run mode (config.AUTO_RUN_MODES).
 RUN_MODE_ICONS = {"off": "dialog-question-symbolic", "readonly": "emblem-readonly-symbolic",
                   "always": "system-run-symbolic"}
+# How much of a failed GET /models the model menu shows.
+MAX_MODEL_ERROR_CHARS = 120
 # Two presses of the global hotkey within this time open the prompt.
 HOTKEY_DOUBLE_S = 0.6
 # What the agent gets back from one snippet; the panel shows everything.
@@ -905,6 +911,7 @@ class ChatPanel(Gtk.Box):
         self.answer: Gtk.Label | None = None  # the assistant message being streamed
         self.answer_text = ""
         self.render_pending = False
+        self.actions: list[Gtk.Button] = []  # add_note(actions=...), until the next message
 
         scroller = Gtk.ScrolledWindow()
         scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
@@ -1055,6 +1062,7 @@ class ChatPanel(Gtk.Box):
 
     def add_user(self, text: str, attachments: list[str] | tuple[str, ...] = ()) -> None:
         self.answer = None
+        self.clear_actions()
         bubble = label(text, "chat-user", selectable=True)
         bubble.set_halign(Gtk.Align.END)
         bubble.set_margin_start(60)
@@ -1124,14 +1132,37 @@ class ChatPanel(Gtk.Box):
         self.add_note("Continued from the history. Earlier results are not shown on the right.",
                       "document-open-recent-symbolic")
 
-    def add_note(self, text: str, icon: str = "document-open-symbolic", css: str = "dim") -> None:
+    def add_note(self, text: str, icon: str = "document-open-symbolic", css: str = "dim",
+                 actions: tuple[tuple[str, object], ...] = ()) -> None:
+        """`actions`: (label, callback) buttons below the note; they work until
+        the next message or the next note with actions (clear_actions())."""
         if self.answer is not None:
             self._render()
         self.answer = None
+        if actions:
+            self.clear_actions()
         row = Gtk.Box(spacing=6)
         row.pack_start(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.MENU), False, False, 0)
-        row.pack_start(label(text, css, selectable=True), True, True, 0)
+        if actions:
+            column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+            column.pack_start(label(text, css, selectable=True), False, False, 0)
+            buttons = Gtk.Box(spacing=6)
+            for text_, callback in actions:
+                button = Gtk.Button(label=text_)
+                button.connect("clicked", lambda _button, callback=callback: callback())
+                buttons.pack_start(button, False, False, 0)
+                self.actions.append(button)
+            column.pack_start(buttons, False, False, 0)
+            row.pack_start(column, True, True, 0)
+        else:
+            row.pack_start(label(text, css, selectable=True), True, True, 0)
         self._add(row)
+
+    def clear_actions(self) -> None:
+        """Disable the buttons of the last note: they belong to that moment."""
+        for button in self.actions:
+            button.set_sensitive(False)
+        self.actions = []
 
     def set_busy(self, busy: bool, status: str = "") -> None:
         self.busy = busy
@@ -1160,6 +1191,8 @@ class AssistantWindow(Gtk.Window):
         self.closed = False
         self.auto_run = "off"  # the conversation's auto-run mode; set in _start_conversation
         self.run_mode_button: Gtk.MenuButton | None = None
+        self.model_button: Gtk.MenuButton | None = None
+        self.model_label: Gtk.Label | None = None
 
         self.set_decorated(False)
         self.set_resizable(False)
@@ -1342,7 +1375,7 @@ class AssistantWindow(Gtk.Window):
         except GLib.Error:
             pass
         header.pack_start(label("ChemAssistent", "assistant-title", wrap=False), False, False, 0)
-        header.pack_start(label(f"· {model}", "dim", wrap=False), False, False, 0)
+        header.pack_start(self._build_model_button(model), False, False, 0)
         header.pack_end(icon_button("window-close-symbolic", "End the conversation and close", self.close_conversation),
                         False, False, 0)
         header.pack_end(icon_button("window-minimize-symbolic", "Minimize (the Chemotion icon brings it back)",
@@ -1406,6 +1439,75 @@ class AssistantWindow(Gtk.Window):
         self.run_mode_button.set_tooltip_text(f"Code execution: {AUTO_RUN_LABELS[mode]}")
         self.run_mode_button.show_all()
 
+    # --- model ---------------------------------------------------------------------
+    def _build_model_button(self, model: str) -> Gtk.MenuButton:
+        """The header menu that switches this conversation's model."""
+        button = Gtk.MenuButton()
+        button.set_relief(Gtk.ReliefStyle.NONE)
+        button.set_tooltip_text("Model for this conversation")
+        box = Gtk.Box(spacing=4)
+        self.model_label = label(f"· {model}", "dim", wrap=False)
+        box.pack_start(self.model_label, False, False, 0)
+        box.pack_start(Gtk.Image.new_from_icon_name("pan-down-symbolic", Gtk.IconSize.MENU), False, False, 0)
+        button.add(box)
+        self.model_button = button
+        self.models_changed()
+        return button
+
+    def models_changed(self) -> None:
+        """(Re)fill the model menu: the app's model list, or why it is missing."""
+        if self.model_button is None or self.agent is None:
+            return
+        current = self.agent.config.ai_model
+        models, error = self.app.models, self.app.models_error
+        menu = Gtk.Menu()
+        first: Gtk.RadioMenuItem | None = None
+        for model in sorted(set(models or ()) | {current}):
+            item = Gtk.RadioMenuItem(label=model, group=first)
+            first = first or item
+            if model == current:
+                item.set_active(True)  # before connecting "toggled": no spurious handler call
+            item.connect("toggled", self._on_model_toggled, model)
+            menu.append(item)
+        if models is None:
+            menu.append(Gtk.SeparatorMenuItem())
+            if error:
+                if len(error) > MAX_MODEL_ERROR_CHARS:
+                    error = error[: MAX_MODEL_ERROR_CHARS - 1] + "…"
+                failed = Gtk.MenuItem(label=f"Could not load the models: {error}")
+                failed.set_sensitive(False)
+                menu.append(failed)
+                again = Gtk.MenuItem(label="Load again")
+                again.connect("activate", lambda *_: self.agent and self.app.load_models(self.agent.config, True))
+                menu.append(again)
+            else:
+                loading = Gtk.MenuItem(label="Loading models…")
+                loading.set_sensitive(False)
+                menu.append(loading)
+        menu.show_all()
+        self.model_button.set_popup(menu)
+
+    def _on_model_toggled(self, item: Gtk.RadioMenuItem, model: str) -> bool:
+        if item.get_active():
+            self._set_model(model)
+        return False
+
+    def _set_model(self, model: str) -> None:
+        """Switch the model for this conversation from the next request on;
+        the config default for new conversations is unchanged."""
+        if self.agent is None or model == self.agent.config.ai_model:
+            return
+        self.agent.set_model(model)
+        if self.model_label is not None:
+            self.model_label.set_text(f"· {model}")
+        if self.chat is not None:
+            self.chat.add_note(f"Model: {model}", "emblem-synchronizing-symbolic")
+        GLib.idle_add(self.models_changed)  # not inside the menu's own signal
+
+    def _choose_model(self) -> None:
+        if self.model_button is not None:
+            self.model_button.set_active(True)
+
     def _start_conversation(self, config: Config, text: str | None, conversation_id: str | None = None,
                             saved: dict | None = None) -> None:
         """A new conversation starting with `text`, or a `saved` one from the history."""
@@ -1420,6 +1522,7 @@ class AssistantWindow(Gtk.Window):
         self.conversation_title = str(saved.get("title") or "") if saved else text
         self.auto_run = config.auto_run  # the header menu can change it for this conversation
         self.stack.add_named(self._build_conversation(config.ai_model), "conversation")
+        self.app.load_models(config)
         self.stack.show_all()
         self.stack.set_visible_child_name("conversation")
         self.expanded = True
@@ -1459,6 +1562,15 @@ class AssistantWindow(Gtk.Window):
         self.agent.busy = True  # before the thread starts: no second send meanwhile
         threading.Thread(target=self.agent.send, args=(text, attachments), daemon=True).start()
 
+    def _retry(self) -> None:
+        """Repeat the failed request (maybe with another model)."""
+        if self.agent is None or self.agent.busy:
+            return
+        self.chat.clear_actions()
+        self.chat.set_busy(True, "Working…")
+        self.agent.busy = True
+        threading.Thread(target=self.agent.retry, daemon=True).start()
+
     def _stop(self) -> None:
         if self.agent is not None and self.agent.busy:
             self.chat.set_busy(True, "Stopping…")
@@ -1476,7 +1588,8 @@ class AssistantWindow(Gtk.Window):
             self.chat.add_note(data)
             self.chat.set_busy(True, "Working…")
         elif kind == "error":
-            self.chat.add_note(data, "dialog-error-symbolic", "request-error")
+            self.chat.add_note(data, "dialog-error-symbolic", "request-error",
+                               (("Retry", self._retry), ("Change model…", self._choose_model)))
             self.chat.set_busy(False)
         elif kind == "stopped":
             self.chat.add_note("Stopped.", "media-playback-stop-symbolic")
@@ -1598,6 +1711,11 @@ class ChemAssistentApp:
         self.show_prompt = show_prompt
         self.indicator = None
         self.last_hotkey = 0.0
+        # GET /models for the conversations' model menu: None while loading or
+        # after an error; loaded once per AI endpoint (ai_url, ai_token).
+        self.models: list[str] | None = None
+        self.models_error = ""
+        self.models_key: tuple[str, str] | None = None
 
         provider = Gtk.CssProvider()
         provider.load_from_data(CSS)
@@ -1675,6 +1793,32 @@ class ChemAssistentApp:
             return False
         self.window = AssistantWindow(self)
         self.window.open_prompt()
+        return False
+
+    def load_models(self, config: Config, again: bool = False) -> None:
+        """Load the model list in a thread (the KI-Toolbox needs ~15 s for it)."""
+        key = (config.ai_url, config.ai_token)
+        if key == self.models_key and not (again and self.models_error):
+            return  # loaded, or loading
+        self.models_key, self.models, self.models_error = key, None, ""
+        if self.window is not None:
+            self.window.models_changed()
+        threading.Thread(target=self._models_worker, args=(config, key), daemon=True).start()
+
+    def _models_worker(self, config: Config, key: tuple[str, str]) -> None:
+        try:
+            models, error = list_models(config), ""
+        except AgentError as exc:
+            models, error = None, str(exc)
+        except Exception as exc:
+            models, error = None, f"{type(exc).__name__}: {exc}"
+        GLib.idle_add(self._models_loaded, key, models, error)
+
+    def _models_loaded(self, key: tuple[str, str], models: list[str] | None, error: str) -> bool:
+        if key == self.models_key:
+            self.models, self.models_error = models, error
+            if self.window is not None:
+                self.window.models_changed()
         return False
 
     def new_conversation(self) -> None:
