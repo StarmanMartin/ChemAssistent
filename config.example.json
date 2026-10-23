@@ -9,5 +9,10 @@
   "execution_timeout": 300,
   "prompt_width": 640,
   "hotkey": "<Control>space",
-  "auto_run": "off"
+  "auto_run": "off",
+  "jupyter_url": "",
+  "jupyter_token": "",
+  "jupyter_password": "",
+  "jupyter_folder": "ChemAssistent",
+  "jupyter_verify_tls": true
 }

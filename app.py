@@ -5,9 +5,12 @@ confirmed it — unless an auto-run mode is on (config key `auto_run`, and the
 menu in the conversation header): then read-only or all code starts by
 itself, and the card shows what ran. The header also switches the model of
 the conversation, e.g. when the configured one fails; an error note offers
-Retry, which repeats the request without a new message."""
+Retry, which repeats the request without a new message. With JupyterLab
+configured, the agent's execute_jupyter code runs there on the same cards
+(jupyter.py), and both sides share the conversation's exchange folder."""
 from __future__ import annotations
 
+import base64
 import importlib
 import json
 import logging
@@ -63,6 +66,7 @@ import workspace  # noqa: E402
 from agent import (  # noqa: E402
     ATTACHMENT_NOTE, STOPPED_NOTE, Agent, AgentError, list_models, looks_read_only, tool_summary,
 )
+from jupyter import JupyterBridge, JupyterError  # noqa: E402
 from config import (  # noqa: E402
     AUTO_RUN_LABELS, AUTO_RUN_MODES, CONFIG_FILE, STATE_DIR, WINDOWS, WORKSPACE_DIR, Config,
     ai_problem, load_config, read_raw_config,
@@ -95,6 +99,8 @@ HOTKEY_DOUBLE_S = 0.6
 # What the agent gets back from one snippet; the panel shows everything.
 MAX_ANSWER_CHARS = 20000
 MAX_TABLE_COLUMNS = 12
+# Figures from JupyterLab are scaled down to this width in the result tab.
+MAX_IMAGE_WIDTH = 720
 MAX_CELL_CHARS = 120
 # Result tabs kept in the panel; older ones are dropped.
 MAX_RESULT_TABS = 10
@@ -157,6 +163,11 @@ CSS = b"""
 }
 .request-card.done {
     border-color: #2a9fd8;
+}
+.request-target {
+    color: #f0b35a;
+    font-size: 11px;
+    font-weight: bold;
 }
 .request-purpose {
     color: #ffffff;
@@ -262,11 +273,14 @@ def open_settings() -> None:
 
 # --- requests from the agent -------------------------------------------------
 class PendingRequest:
-    """One execute_python call, waiting in the agent's thread for the user."""
+    """One execute_python/execute_jupyter call, waiting in the agent's thread for the user."""
 
-    def __init__(self, purpose: str, code: str) -> None:
+    def __init__(self, purpose: str, code: str, target: str = "chemotion") -> None:
         self.purpose = purpose
         self.code = code
+        self.target = target  # "chemotion" or "jupyter"
+        # Set by AssistantWindow._show_request(): code -> Execution/JupyterExecution.
+        self.new_execution = Execution
         self.reply: dict | None = None
         self.done = threading.Event()
         # Set by the card; called on the main loop when the agent stopped waiting.
@@ -348,10 +362,13 @@ class RequestServer:
 
 # --- running confirmed code ---------------------------------------------------
 class Execution:
-    """Runs one snippet in chemotion_runner.py; cancel() kills it."""
+    """Runs one snippet in chemotion_runner.py; cancel() kills it.
+    `exchange`: the conversation's exchange folder (JupyterLab on), predefined
+    in the snippet; a `result` is saved there too."""
 
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, exchange: Path | None = None) -> None:
         self.code = code
+        self.exchange = exchange
         self.process: subprocess.Popen | None = None
         self.cancelled = False
 
@@ -367,6 +384,7 @@ class Execution:
             "password": config.password,
             "verify_tls": config.verify_tls,
             "code": self.code,
+            "exchange": str(self.exchange) if self.exchange else None,
         }
         try:
             self.process = subprocess.Popen(
@@ -391,16 +409,75 @@ class Execution:
         if self.cancelled:
             return {"ok": False, "stdout": "", "result": None, "error": "Cancelled by the user."}
         try:
-            return json.loads(stdout)
+            outcome = json.loads(stdout)
         except ValueError:
             detail = (stderr or stdout or "").strip()[-3000:]
             return {"ok": False, "stdout": "", "result": None,
                     "error": f"The runner ended unexpectedly (exit code {self.process.returncode}).\n{detail}"}
+        if self.exchange is not None and outcome.get("ok") and outcome.get("result") is not None:
+            path = free_name(self.exchange, "chemotion_result_{}.json")
+            try:
+                path.write_text(json.dumps(outcome["result"], ensure_ascii=False, indent=1), encoding="utf-8")
+                outcome["saved"] = [path.name]
+                outcome["exchange"] = str(self.exchange)
+            except OSError as exc:
+                LOG.warning("Could not save the result in %s: %s", self.exchange, exc)
+        return outcome
 
     def cancel(self) -> None:
         self.cancelled = True
         if self.process is not None and self.process.poll() is None:
             self.process.kill()
+
+
+def free_name(folder: Path, pattern: str) -> Path:
+    """The first folder/pattern.format(n), n = 1, 2, ..., that does not exist."""
+    folder.mkdir(parents=True, exist_ok=True)
+    number = 1
+    while (folder / pattern.format(number)).exists():
+        number += 1
+    return folder / pattern.format(number)
+
+
+class JupyterExecution:
+    """Runs one snippet in the conversation's JupyterLab kernel (jupyter.py);
+    the same interface as Execution. Figures are saved in the exchange folder."""
+
+    def __init__(self, code: str, purpose: str, bridge: JupyterBridge) -> None:
+        self.code = code
+        self.purpose = purpose
+        self.bridge = bridge
+        self.cancel_event = threading.Event()
+
+    def run(self) -> dict:
+        # Runs in a thread: no GTK calls here.
+        try:
+            timeout = load_config().execution_timeout
+        except ValueError:
+            timeout = 300
+        try:
+            outcome = self.bridge.run(self.code, self.purpose, timeout, self.cancel_event)
+        except JupyterError as exc:
+            return {"ok": False, "stdout": "", "result": None, "error": str(exc)}
+        except Exception as exc:  # a bug must not leave the card running forever
+            LOG.exception("JupyterLab run failed")
+            return {"ok": False, "stdout": "", "result": None, "error": f"{type(exc).__name__}: {exc}"}
+        figures = []
+        for image in outcome.get("images") or []:
+            path = free_name(self.bridge.local_dir, "figure_{}.png")
+            try:
+                path.write_bytes(base64.b64decode(image))
+                figures.append(path)
+            except (OSError, ValueError) as exc:
+                LOG.warning("Could not save a figure: %s", exc)
+        if figures:
+            self.bridge.mark_local(figures)
+        outcome["figures"] = [path.name for path in figures]
+        outcome["exchange"] = str(self.bridge.local_dir)
+        return outcome
+
+    def cancel(self) -> None:
+        self.cancel_event.set()
 
 
 # --- result widgets ----------------------------------------------------------
@@ -475,8 +552,62 @@ def result_widget(value) -> Gtk.Widget:
     return text_block(text)
 
 
-def result_page(stdout: str, error: str, result) -> Gtk.Widget:
-    """The content of one result tab: printed output, error and `result`."""
+def image_widget(data: str) -> Gtk.Widget | None:
+    """A base64 PNG (a JupyterLab figure), at most MAX_IMAGE_WIDTH wide."""
+    from gi.repository import GdkPixbuf  # type: ignore
+
+    try:
+        loader = GdkPixbuf.PixbufLoader.new_with_type("png")
+        loader.write(base64.b64decode(data))
+        loader.close()
+        pixbuf = loader.get_pixbuf()
+    except (GLib.Error, ValueError):
+        return None
+    if pixbuf is None:
+        return None
+    if pixbuf.get_width() > MAX_IMAGE_WIDTH:
+        height = round(pixbuf.get_height() * MAX_IMAGE_WIDTH / pixbuf.get_width())
+        pixbuf = pixbuf.scale_simple(MAX_IMAGE_WIDTH, height, GdkPixbuf.InterpType.BILINEAR)
+    image = Gtk.Image.new_from_pixbuf(pixbuf)
+    image.set_halign(Gtk.Align.START)
+    return image
+
+
+def link_row(text: str, tooltip: str, target: str) -> Gtk.Widget:
+    """A flat button that opens `target` (a URL or file URI) on click."""
+    button = Gtk.Button(label=text)
+    button.set_relief(Gtk.ReliefStyle.NONE)
+    button.set_halign(Gtk.Align.START)
+    button.set_tooltip_text(tooltip)
+    button.connect("clicked", lambda *_: open_url(target))
+    return button
+
+
+def exchange_section(box: Gtk.Box, outcome: dict) -> None:
+    """Figures, exchanged files and the notebook link of one run (JupyterLab on)."""
+    for data in outcome.get("images") or []:
+        image = image_widget(data)
+        if image is not None:
+            box.pack_start(image, False, False, 0)
+    folder = outcome.get("exchange")
+    names = []
+    for key in ("figures", "saved", "uploaded", "downloaded"):
+        names += [name for name in outcome.get(key) or [] if name not in names]
+    if names and folder:
+        box.pack_start(label("Files in the exchange folder", "dim"), False, False, 0)
+        for name in names:
+            path = Path(folder) / name
+            box.pack_start(link_row(name, str(path), path.as_uri()), False, False, 0)
+    for note in outcome.get("notes") or []:
+        box.pack_start(label(note, "dim", selectable=True), False, False, 0)
+    if outcome.get("notebook_url"):
+        box.pack_start(link_row("Open the notebook in JupyterLab", outcome["notebook_url"],
+                                outcome["notebook_url"]), False, False, 0)
+
+
+def result_page(stdout: str, error: str, result, outcome: dict | None = None) -> Gtk.Widget:
+    """The content of one result tab: printed output, error, `result`, and
+    with JupyterLab figures and exchanged files (`outcome`)."""
     box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, border_width=10)
     if stdout.strip():
         box.pack_start(label("Output", "dim"), False, False, 0)
@@ -495,6 +626,7 @@ def result_page(stdout: str, error: str, result) -> Gtk.Widget:
         row.pack_end(copy, False, False, 0)
         box.pack_start(row, False, False, 0)
         box.pack_start(result_widget(result), False, False, 0)
+    exchange_section(box, outcome or {})
     if not box.get_children():
         box.pack_start(label("Nothing was printed and `result` was not set.", "dim"), False, False, 0)
     scroller = Gtk.ScrolledWindow()
@@ -552,7 +684,7 @@ class RequestCard(Gtk.Box):
         self.pending = pending
         self.on_state_change = on_state_change
         self.on_result = on_result
-        self.execution: Execution | None = None
+        self.execution: Execution | JupyterExecution | None = None
         self.state = "waiting"
         pending.on_abandoned = self._on_abandoned
         self.get_style_context().add_class("request-card")
@@ -560,8 +692,12 @@ class RequestCard(Gtk.Box):
 
         head = Gtk.Box(spacing=8)
         head.pack_start(label(f"#{number}", "dim", wrap=False), False, False, 0)
-        purpose = label(pending.purpose or "Run code against Chemotion", "request-purpose")
+        jupyter = pending.target == "jupyter"
+        purpose = label(pending.purpose or ("Run code in JupyterLab" if jupyter else "Run code against Chemotion"),
+                        "request-purpose")
         head.pack_start(purpose, True, True, 0)
+        if jupyter:
+            head.pack_end(label("JupyterLab", "request-target", wrap=False), False, False, 0)
         if pending.auto:
             # pack_end: goes left of the time below.
             head.pack_end(label("auto · read-only" if pending.auto == "readonly" else "auto-run",
@@ -586,7 +722,8 @@ class RequestCard(Gtk.Box):
         self.actions.pack_start(reject, False, False, 0)
         self.run_button = Gtk.Button(label="Run")
         self.run_button.get_style_context().add_class("suggested-action")
-        self.run_button.set_tooltip_text("Run this code against Chemotion (Ctrl+Enter in the code)")
+        self.run_button.set_tooltip_text(("Run this code in JupyterLab" if jupyter else "Run this code against Chemotion")
+                                         + " (Ctrl+Enter in the code)")
         self.run_button.connect("clicked", lambda *_: self.run())
         self.actions.pack_start(self.run_button, False, False, 0)
         self.pack_start(self.actions, False, False, 0)
@@ -659,7 +796,7 @@ class RequestCard(Gtk.Box):
         self.spinner.show()
         self.spinner.start()
         self.cancel_button.show()
-        self.execution = Execution(code)
+        self.execution = self.pending.new_execution(code)
         started = time.monotonic()
 
         def worker() -> None:
@@ -677,7 +814,7 @@ class RequestCard(Gtk.Box):
         error = str(outcome.get("error") or "")
         result = outcome.get("result")
 
-        self.on_result(self, result_page(stdout, error, result if ok else None))
+        self.on_result(self, result_page(stdout, error, result if ok else None, outcome))
 
         abandoned = self.pending.done.is_set() and self.pending.reply is None
         note = " The assistant had stopped waiting, so it did not get this output." if abandoned else ""
@@ -685,21 +822,34 @@ class RequestCard(Gtk.Box):
             self._set_state("done", f"Ran in {elapsed:.1f} s.{note}")
         else:
             self._set_state("failed", f"Failed after {elapsed:.1f} s.{note}")
-        self.pending.answer(ok, self._answer_text(code, ok, stdout, error, result))
+        self.pending.answer(ok, self._answer_text(code, ok, stdout, error, result, outcome))
         return False
 
-    def _answer_text(self, code: str, ok: bool, stdout: str, error: str, result) -> str:
+    def _answer_text(self, code: str, ok: bool, stdout: str, error: str, result, outcome: dict) -> str:
         parts = []
+        jupyter = self.pending.target == "jupyter"
         if code != self.pending.code:
             parts.append(f"The user edited the code before running it. This code ran:\n```python\n{code}\n```")
+        if outcome.get("new_kernel"):
+            parts.append("The JupyterLab kernel is new (restarted): variables of earlier runs are gone.")
         parts.append("The code ran successfully." if ok else f"The code failed:\n{error}")
         if stdout.strip():
             parts.append(f"Printed output:\n{stdout}")
         if ok:
-            if result is None:
+            if jupyter:
+                parts.append("Value of the last expression: " + (str(result) if result is not None else "none"))
+            elif result is None:
                 parts.append("`result` was not set.")
             else:
                 parts.append("result = " + json.dumps(result, ensure_ascii=False, indent=1, default=str))
+        exchanged = [
+            ("Figures the user saw, saved in `exchange`", outcome.get("figures")),
+            ("Saved in `exchange`", outcome.get("saved")),
+            ("Sent from `exchange` to JupyterLab", outcome.get("uploaded")),
+            ("New or changed in `exchange` from JupyterLab", outcome.get("downloaded")),
+        ]
+        parts.extend(f"{title}: {', '.join(names)}" for title, names in exchanged if names)
+        parts.extend(outcome.get("notes") or [])
         parts.append("The user sees this output in the result panel.")
         return clip("\n\n".join(parts))
 
@@ -1124,7 +1274,7 @@ class ChatPanel(Gtk.Box):
                         arguments = {}
                     if not isinstance(arguments, dict):
                         arguments = {}
-                    if function.get("name") == "execute_python":
+                    if function.get("name") in ("execute_python", "execute_jupyter"):
                         self.add_note(arguments.get("purpose") or "Code", "system-run-symbolic")
                     else:
                         self.add_note(tool_summary(str(function.get("name")), arguments))
@@ -1193,6 +1343,9 @@ class AssistantWindow(Gtk.Window):
         self.run_mode_button: Gtk.MenuButton | None = None
         self.model_button: Gtk.MenuButton | None = None
         self.model_label: Gtk.Label | None = None
+        # JupyterLab (config.jupyter_url): the conversation's notebook/kernel and exchange folder.
+        self.jupyter: JupyterBridge | None = None
+        self.exchange: Path | None = None
 
         self.set_decorated(False)
         self.set_resizable(False)
@@ -1511,14 +1664,18 @@ class AssistantWindow(Gtk.Window):
     def _start_conversation(self, config: Config, text: str | None, conversation_id: str | None = None,
                             saved: dict | None = None) -> None:
         """A new conversation starting with `text`, or a `saved` one from the history."""
+        self.conversation_id = conversation_id or history.new_id()
+        if config.jupyter:
+            self.exchange = history.exchange_dir(self.conversation_id)
+            self.jupyter = JupyterBridge(config, self.conversation_id, self.exchange)
         self.agent = Agent(
             config,
-            workspace.system_prompt(),
+            workspace.system_prompt(self.exchange),
             self._execute,
             lambda kind, data: GLib.idle_add(self._on_agent_event, kind, data),
             auto_run=config.auto_run,
+            exchange=self.exchange,
         )
-        self.conversation_id = conversation_id or history.new_id()
         self.conversation_title = str(saved.get("title") or "") if saved else text
         self.auto_run = config.auto_run  # the header menu can change it for this conversation
         self.stack.add_named(self._build_conversation(config.ai_model), "conversation")
@@ -1545,8 +1702,8 @@ class AssistantWindow(Gtk.Window):
         messages = list(self.agent.messages[1:])  # without the system prompt
         if len(messages) == self.saved_messages or not any(message.get("role") == "user" for message in messages):
             return
-        workspace_root = WORKSPACE_DIR.resolve()
-        roots = [str(root) for root in self.agent.roots if root != workspace_root]
+        own = {WORKSPACE_DIR.resolve(), self.exchange.resolve() if self.exchange else None}
+        roots = [str(root) for root in self.agent.roots if root not in own]
         try:
             history.save(self.conversation_id, self.conversation_title, self.agent.config.ai_model, messages, roots)
         except OSError as exc:
@@ -1602,11 +1759,11 @@ class AssistantWindow(Gtk.Window):
             self.chat.focus_input()
         return False
 
-    def _execute(self, purpose: str, code: str, cancelled: threading.Event) -> str:
-        """The agent's execute_python: a card in the result panel; returns the
-        text for the model once the user ran or rejected it."""
+    def _execute(self, purpose: str, code: str, cancelled: threading.Event, target: str = "chemotion") -> str:
+        """The agent's execute_python/execute_jupyter: a card in the result
+        panel; returns the text for the model once the user ran or rejected it."""
         # Runs in the agent's thread: GTK only through GLib.idle_add.
-        pending = PendingRequest(purpose, code)
+        pending = PendingRequest(purpose, code, target)
         GLib.idle_add(self._show_request, pending)
         while not pending.done.wait(0.2):
             if cancelled.is_set():
@@ -1621,9 +1778,20 @@ class AssistantWindow(Gtk.Window):
         if self.closed or self.results is None:
             pending.answer(False, "ChemAssistent has no open conversation; the code did not run.")
             return False
+        if pending.target == "jupyter":
+            if self.jupyter is None:
+                pending.answer(False, "JupyterLab is not configured; the code did not run.")
+                return False
+            bridge = self.jupyter
+            pending.new_execution = lambda code: JupyterExecution(code, pending.purpose, bridge)
+        else:
+            exchange = self.exchange
+            pending.new_execution = lambda code: Execution(code, exchange)
         # Decide about auto-run here on the main loop, with the current mode.
         if self.auto_run == "always":
             pending.auto = "always"
+        elif self.auto_run == "readonly" and pending.target == "jupyter":
+            pending.auto_reason = "JupyterLab code is never checked for read-only"
         elif self.auto_run == "readonly":
             ok, reason = looks_read_only(pending.code)
             if ok:
@@ -1632,6 +1800,7 @@ class AssistantWindow(Gtk.Window):
                 pending.auto_reason = reason
         card = self.results.add_request(pending)
         self.chat.add_note(f"#{card.number} {pending.purpose or 'Code'}"
+                           + (" · JupyterLab" if pending.target == "jupyter" else "")
                            + (" · auto-run" if pending.auto else ""), "system-run-symbolic")
         self.chat.set_busy(True, "Running code automatically…" if pending.auto else
                            "Waiting for you to Run or Reject the code on the right…")

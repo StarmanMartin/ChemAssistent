@@ -81,8 +81,45 @@ def skill_lines() -> str:
             "  before writing code (it may point to files in its references/ directory):\n" + "".join(lines))
 
 
-def system_prompt() -> str:
-    return SYSTEM_PROMPT.format(skills=skill_lines())
+# Appended with JupyterLab configured (config.jupyter_url); {exchange} is the
+# conversation's local exchange folder.
+JUPYTER_PROMPT = """
+JupyterLab (for analyses):
+- `execute_jupyter` runs Python in the user's JupyterLab, in the kernel of this
+  conversation's notebook: use it for chemistry and data analysis (RDKit,
+  pandas, numpy, matplotlib, spectra). It has no access to Chemotion. Check that
+  a package is there (`import rdkit`) before relying on it; `%pip install` only
+  if the user agrees.
+- Both tools share the exchange folder: `exchange` is a predefined
+  pathlib.Path in both. Always use that variable, never redefine it and never
+  write a path of this computer into Jupyter code: JupyterLab may run on
+  another machine, and only files in its own `exchange` are copied back.
+  The workflow:
+  1. fetch data with `execute_python` and save it into `exchange` (JSON/CSV, or
+     downloaded analysis/attachment files);
+  2. analyse it with `execute_jupyter`, reading from and saving results
+     (figures as PNG, tables as CSV, values as JSON) into `exchange`; show
+     figures with `plt.show()` or `display(fig)` (keep matplotlib's inline
+     backend, no `matplotlib.use(...)`), so the user sees them;
+  3. to store results in Chemotion, open those files in `execute_python`
+     (from `exchange`) and attach or write them to the element the user
+     named, with the chemotion_api methods from the reference.
+  The app copies new files between both sides before and after every
+  `execute_jupyter` run; figures a Jupyter snippet shows are saved there as
+  `figure_<n>.png`, and a Chemotion snippet's `result` as
+  `chemotion_result_<n>.json`. Only for `read_file` and `list_files`: the
+  folder is {exchange} on this computer.
+- Writing to Chemotion stays a separate, visible `execute_python` step: say in
+  its `purpose` which element gets what.
+"""
+
+
+def system_prompt(exchange: Path | None = None) -> str:
+    """`exchange`: the conversation's exchange folder when JupyterLab is on."""
+    prompt = SYSTEM_PROMPT.format(skills=skill_lines())
+    if exchange is not None:
+        prompt += JUPYTER_PROMPT.format(exchange=exchange)
+    return prompt
 
 
 # The programs of the Windows build (windows/chem-assistent.spec) that run
