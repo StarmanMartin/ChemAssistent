@@ -40,7 +40,12 @@ gi.require_version("Gdk", "3.0")
 # Mutter ignores client window positioning on Wayland; the prompt must be
 # centered and then grow to the work area, so run through XWayland (as
 # vikunja-popups does). Must be set before Gtk is imported.
-if sys.platform.startswith("linux") and os.environ.get("DISPLAY"):
+# Not under WSLg: once an X11 client sets a blank cursor, which GTK does while
+# the user types, its Weston shows no mouse pointer over any X11 window until
+# WSL restarts. GTK's Wayland backend hides it properly; Weston places the
+# window itself (_grow() then just maximizes).
+WSLG = bool(os.environ.get("WSL_DISTRO_NAME") and os.environ.get("WAYLAND_DISPLAY"))
+if sys.platform.startswith("linux") and os.environ.get("DISPLAY") and not WSLG:
     os.environ["GDK_BACKEND"] = "x11"
 
 from gi.repository import Gdk, Gio, GLib, Gtk, Pango  # type: ignore  # noqa: E402
@@ -2035,19 +2040,22 @@ class AssistantWindow(Gtk.Window):
         return True
 
     def _grow(self) -> None:
-        """Animate from the prompt to the work area, then maximize."""
+        """Animate from the prompt to the work area, then maximize (on
+        Wayland, which ignores client positioning, just maximize)."""
         area = work_area()
         x0, y0 = self.get_position()
         w0, h0 = self.get_size()
         self.set_resizable(True)
-        step = 0
+        animate = "Wayland" not in type(self.get_display()).__name__  # GdkWaylandDisplay
+        step = 0 if animate else GROW_STEPS - 1
 
         def tick() -> bool:
             nonlocal step
             step += 1
-            t = 1 - (1 - step / GROW_STEPS) ** 3  # ease out
-            self.move(round(x0 + (area.x - x0) * t), round(y0 + (area.y - y0) * t))
-            self.resize(max(1, round(w0 + (area.width - w0) * t)), max(1, round(h0 + (area.height - h0) * t)))
+            if animate:
+                t = 1 - (1 - step / GROW_STEPS) ** 3  # ease out
+                self.move(round(x0 + (area.x - x0) * t), round(y0 + (area.y - y0) * t))
+                self.resize(max(1, round(w0 + (area.width - w0) * t)), max(1, round(h0 + (area.height - h0) * t)))
             if step < GROW_STEPS:
                 return True
             self.maximize()
