@@ -267,6 +267,38 @@ def icon_button(icon: str, tooltip: str, callback) -> Gtk.Button:
     return button
 
 
+def _chosen(popover: Gtk.Popover, callback) -> None:
+    popover.popdown()
+    # Later: the callback may replace this popover (a new menu for the new state).
+    GLib.idle_add(lambda: callback() and False)
+
+
+def menu_popover(button: Gtk.MenuButton, rows) -> None:
+    """Give `button` a popover menu. `rows`: (label, callback, active) with
+    active True/False for a radio entry or None for a plain one, a label
+    without callback (greyed out), or None for a separator.
+
+    A popover, not a Gtk.Menu: on Wayland (WSLg) GDK refuses to map a menu
+    while the button's tooltip is the topmost popup, and the invisible
+    menu's grab then freezes the window. A popover is part of the window."""
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, border_width=6)
+    popover = Gtk.Popover(relative_to=button)
+    for row in rows:
+        if row is None:
+            box.pack_start(Gtk.Separator(margin_top=4, margin_bottom=4), False, False, 0)
+            continue
+        text, callback, active = row
+        item = Gtk.ModelButton(text=text, role=Gtk.ButtonRole.NORMAL if active is None else Gtk.ButtonRole.RADIO)
+        item.set_property("active", bool(active))
+        item.set_sensitive(callback is not None)
+        if callback is not None:
+            item.connect("clicked", lambda _item, callback=callback: _chosen(popover, callback))
+        box.pack_start(item, False, False, 0)
+    box.show_all()
+    popover.add(box)
+    button.set_popover(popover)
+
+
 def open_settings() -> None:
     subprocess.Popen(workspace.command("settings.py"), start_new_session=True, creationflags=NO_WINDOW)
 
@@ -963,13 +995,8 @@ class ChatPanel(Gtk.Box):
         attach.set_image(Gtk.Image.new_from_icon_name("mail-attachment-symbolic", Gtk.IconSize.BUTTON))
         attach.set_tooltip_text("Attach a file or a folder (or drop it here)")
         attach.set_valign(Gtk.Align.END)
-        menu = Gtk.Menu()
-        for text, folder in (("File…", False), ("Folder…", True)):
-            item = Gtk.MenuItem(label=text)
-            item.connect("activate", lambda _item, folder=folder: self._choose(folder))
-            menu.append(item)
-        menu.show_all()
-        attach.set_popup(menu)
+        menu_popover(attach, [(text, lambda folder=folder: self._choose(folder), None)
+                              for text, folder in (("File…", False), ("Folder…", True))])
         input_row.pack_start(attach, False, False, 0)
         self.input = Gtk.TextView()
         self.input.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
@@ -1422,25 +1449,9 @@ class AssistantWindow(Gtk.Window):
         """The header menu that switches this conversation's auto-run mode."""
         button = Gtk.MenuButton()
         button.set_relief(Gtk.ReliefStyle.NONE)
-        menu = Gtk.Menu()
-        first: Gtk.RadioMenuItem | None = None
-        for mode in AUTO_RUN_MODES:
-            item = Gtk.RadioMenuItem(label=AUTO_RUN_LABELS[mode], group=first)
-            first = first or item
-            if mode == self.auto_run:
-                item.set_active(True)  # before connecting "toggled": no spurious handler call
-            item.connect("toggled", self._on_run_mode_toggled, mode)
-            menu.append(item)
-        menu.show_all()
-        button.set_popup(menu)
         self.run_mode_button = button
         self._update_run_mode_icon()
         return button
-
-    def _on_run_mode_toggled(self, item: Gtk.RadioMenuItem, mode: str) -> bool:
-        if item.get_active():
-            self._set_auto_run(mode)
-        return False
 
     def _set_auto_run(self, mode: str) -> None:
         """Switch the mode for this conversation (and the agent's tool
@@ -1453,9 +1464,12 @@ class AssistantWindow(Gtk.Window):
         self._update_run_mode_icon()
 
     def _update_run_mode_icon(self) -> None:
+        """The button's icon, tooltip and menu for the current mode."""
         if self.run_mode_button is None:
             return
         mode = self.auto_run if self.auto_run in RUN_MODE_ICONS else "off"
+        menu_popover(self.run_mode_button, [(AUTO_RUN_LABELS[item], lambda item=item: self._set_auto_run(item),
+                                             item == mode) for item in AUTO_RUN_MODES])
         self.run_mode_button.set_image(Gtk.Image.new_from_icon_name(
             RUN_MODE_ICONS[mode], Gtk.IconSize.BUTTON))
         self.run_mode_button.set_tooltip_text(f"Code execution: {AUTO_RUN_LABELS[mode]}")
@@ -1486,37 +1500,18 @@ class AssistantWindow(Gtk.Window):
             return
         current = self.agent.config.ai_model
         models, error = self.app.models, self.app.models_error
-        menu = Gtk.Menu()
-        first: Gtk.RadioMenuItem | None = None
-        for model in sorted(set(models or ()) | {current}):
-            item = Gtk.RadioMenuItem(label=model_name(model), group=first)
-            first = first or item
-            if model == current:
-                item.set_active(True)  # before connecting "toggled": no spurious handler call
-            item.connect("toggled", self._on_model_toggled, model)
-            menu.append(item)
+        rows = [(model_name(model), lambda model=model: self._set_model(model), model == current)
+                for model in sorted(set(models or ()) | {current})]
         if models is None:
-            menu.append(Gtk.SeparatorMenuItem())
+            rows.append(None)
             if error:
                 if len(error) > MAX_MODEL_ERROR_CHARS:
                     error = error[: MAX_MODEL_ERROR_CHARS - 1] + "…"
-                failed = Gtk.MenuItem(label=f"Could not load the models: {error}")
-                failed.set_sensitive(False)
-                menu.append(failed)
-                again = Gtk.MenuItem(label="Load again")
-                again.connect("activate", lambda *_: self.agent and self.app.load_models(self.agent.config, True))
-                menu.append(again)
+                rows.append((f"Could not load the models: {error}", None, None))
+                rows.append(("Load again", lambda: self.agent and self.app.load_models(self.agent.config, True), None))
             else:
-                loading = Gtk.MenuItem(label="Loading models…")
-                loading.set_sensitive(False)
-                menu.append(loading)
-        menu.show_all()
-        self.model_button.set_popup(menu)
-
-    def _on_model_toggled(self, item: Gtk.RadioMenuItem, model: str) -> bool:
-        if item.get_active():
-            self._set_model(model)
-        return False
+                rows.append(("Loading models…", None, None))
+        menu_popover(self.model_button, rows)
 
     def _set_model(self, model: str) -> None:
         """Switch the model for this conversation from the next request on;
@@ -1528,7 +1523,7 @@ class AssistantWindow(Gtk.Window):
             self.model_label.set_text(self._model_text(model))
         if self.chat is not None:
             self.chat.add_note(f"Model: {model_name(model)}", "emblem-synchronizing-symbolic")
-        GLib.idle_add(self.models_changed)  # not inside the menu's own signal
+        self.models_changed()
 
     def _choose_model(self) -> None:
         if self.model_button is not None:
