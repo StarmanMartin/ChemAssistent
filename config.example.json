@@ -9,5 +9,12 @@
   "execution_timeout": 300,
   "prompt_width": 640,
   "hotkey": "<Control>space",
-  "auto_run": "off"
+  "auto_run": "off",
+  "agent": "api",
+  "ollama_url": "http://localhost:11434/v1",
+  "ollama_model": "",
+  "claude_command": "claude",
+  "claude_model": "",
+  "codex_command": "codex",
+  "codex_model": ""
 }

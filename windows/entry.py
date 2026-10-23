@@ -6,6 +6,8 @@ Both programs of the bundle run this file:
     ChemAssistent.exe --settings             the settings (settings.py)
     chem-assistent-runner.exe                one confirmed snippet (chemotion_runner.py, stdio)
     chem-assistent-runner.exe --setup-ai     install.ps1: AI endpoint and token (setup_ai.py)
+    chem-assistent-runner.exe --mcp-bridge --session-file <path>
+                                             a CLI agent's tools (mcp_bridge.py, stdio)
     chem-assistent-runner.exe --self-test    build.ps1: checks that the bundle is complete
 
 ChemAssistent.exe has no console; chem-assistent-runner.exe is a console
@@ -31,6 +33,7 @@ def self_test() -> int:
 
     import app  # noqa: F401  (GTK, agent, history, ipc, ...)
     import chemotion_api  # noqa: F401
+    import mcp_bridge  # noqa: F401
     import settings  # noqa: F401
     import workspace
 
@@ -62,6 +65,11 @@ def main() -> int:
             return 0
         if args == ["--self-test"]:
             return self_test()
+        if args[:1] == ["--mcp-bridge"]:
+            import mcp_bridge
+
+            mcp_bridge.main(args[1:])
+            return 0
         import chemotion_runner
 
         chemotion_runner.main()
