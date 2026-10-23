@@ -1,7 +1,9 @@
 """ChemAssistent: a Chemotion icon in the top bar (the tray on Windows) that
 opens a chat with an AI agent (agent.py) about the Chemotion ELN. Code the
 agent wants to run is shown on the right and runs only after the user
-confirmed it."""
+confirmed it — unless an auto-run mode is on (config key `auto_run`, and the
+menu in the conversation header): then read-only or all code starts by
+itself, and the card shows what ran."""
 from __future__ import annotations
 
 import importlib
@@ -56,9 +58,10 @@ import history  # noqa: E402
 import hotkey  # noqa: E402
 import ipc  # noqa: E402
 import workspace  # noqa: E402
-from agent import ATTACHMENT_NOTE, STOPPED_NOTE, Agent, tool_summary  # noqa: E402
+from agent import ATTACHMENT_NOTE, STOPPED_NOTE, Agent, looks_read_only, tool_summary  # noqa: E402
 from config import (  # noqa: E402
-    CONFIG_FILE, STATE_DIR, WINDOWS, WORKSPACE_DIR, Config, ai_problem, load_config, read_raw_config,
+    AUTO_RUN_LABELS, AUTO_RUN_MODES, CONFIG_FILE, STATE_DIR, WINDOWS, WORKSPACE_DIR, Config,
+    ai_problem, load_config, read_raw_config,
 )
 
 
@@ -78,6 +81,9 @@ GROW_STEPS = 14
 GROW_STEP_MS = 16
 # The chat's share of the window width; the results get the rest.
 CHAT_SHARE = 0.45
+# Header icon for each auto-run mode (config.AUTO_RUN_MODES).
+RUN_MODE_ICONS = {"off": "dialog-question-symbolic", "readonly": "emblem-readonly-symbolic",
+                  "always": "system-run-symbolic"}
 # Two presses of the global hotkey within this time open the prompt.
 HOTKEY_DOUBLE_S = 0.6
 # What the agent gets back from one snippet; the panel shows everything.
@@ -259,6 +265,11 @@ class PendingRequest:
         self.done = threading.Event()
         # Set by the card; called on the main loop when the agent stopped waiting.
         self.on_abandoned = None
+        # Auto-run, decided by AssistantWindow._show_request() on the main loop:
+        # "readonly"/"always" = run without confirmation; None = wait for Run/Reject.
+        # auto_reason says why auto-run was skipped (shown on the card).
+        self.auto: str | None = None
+        self.auto_reason = ""
 
     def answer(self, ok: bool, text: str) -> None:
         if not self.done.is_set():
@@ -545,10 +556,16 @@ class RequestCard(Gtk.Box):
         head.pack_start(label(f"#{number}", "dim", wrap=False), False, False, 0)
         purpose = label(pending.purpose or "Run code against Chemotion", "request-purpose")
         head.pack_start(purpose, True, True, 0)
+        if pending.auto:
+            # pack_end: goes left of the time below.
+            head.pack_end(label("auto · read-only" if pending.auto == "readonly" else "auto-run",
+                                "dim", wrap=False), False, False, 0)
         head.pack_end(label(time.strftime("%H:%M:%S"), "dim", wrap=False), False, False, 0)
         self.pack_start(head, False, False, 0)
 
         editor, self.view = code_editor(pending.code)
+        if pending.auto:
+            self.view.set_editable(False)  # the code runs as it arrived
         self.view.connect("key-press-event", self._on_code_key)
         self.pack_start(editor, False, False, 0)
 
@@ -572,7 +589,14 @@ class RequestCard(Gtk.Box):
         self.spinner = Gtk.Spinner()
         self.spinner.set_no_show_all(True)
         status_row.pack_start(self.spinner, False, False, 0)
-        self.status = label("Waiting for your confirmation. Nothing runs before you click Run.", "request-status")
+        if pending.auto:
+            waiting = "Auto-run: this code runs without your confirmation."
+        elif pending.auto_reason:
+            waiting = (f"Waiting for your confirmation (auto-run skipped: {pending.auto_reason}). "
+                       "Nothing runs before you click Run.")
+        else:
+            waiting = "Waiting for your confirmation. Nothing runs before you click Run."
+        self.status = label(waiting, "request-status")
         status_row.pack_start(self.status, True, True, 0)
         self.cancel_button = Gtk.Button(label="Cancel")
         self.cancel_button.set_no_show_all(True)
@@ -677,6 +701,9 @@ class RequestCard(Gtk.Box):
         if self.state == "waiting":
             self._lock()
             self._set_state("failed", "Not run: the assistant was stopped.")
+        elif self.state == "running" and self.pending.auto and self.execution is not None:
+            # Auto-run was going while the agent stopped; nothing listens any more.
+            self.execution.cancel()
 
     def close(self) -> None:
         """The conversation ends: answer the agent if it still waits."""
@@ -749,7 +776,10 @@ class ResultsPanel(Gtk.Box):
         card.show_all()
         self._update_counter()
         self.follower.active = True
-        card.focus_code()
+        if pending.auto:
+            GLib.idle_add(card.run)  # auto-run: start as soon as the card is on screen
+        else:
+            card.focus_code()
         return card
 
     def _prune(self) -> None:
@@ -1128,6 +1158,8 @@ class AssistantWindow(Gtk.Window):
         self.saved_messages = 0  # how many messages history has; saves only on change
         self.expanded = False
         self.closed = False
+        self.auto_run = "off"  # the conversation's auto-run mode; set in _start_conversation
+        self.run_mode_button: Gtk.MenuButton | None = None
 
         self.set_decorated(False)
         self.set_resizable(False)
@@ -1318,6 +1350,7 @@ class AssistantWindow(Gtk.Window):
         header.pack_end(icon_button("emblem-system-symbolic", "Settings", open_settings), False, False, 0)
         header.pack_end(icon_button("document-new-symbolic", "New conversation", self.app.new_conversation),
                         False, False, 0)
+        header.pack_end(self._build_run_mode_button(), False, False, 0)
         main.pack_start(handle, False, False, 0)
 
         self.chat = ChatPanel(self._send, self._stop)
@@ -1329,6 +1362,50 @@ class AssistantWindow(Gtk.Window):
         main.pack_start(self.paned, True, True, 0)
         return main
 
+    # --- auto-run mode ----------------------------------------------------------
+    def _build_run_mode_button(self) -> Gtk.MenuButton:
+        """The header menu that switches this conversation's auto-run mode."""
+        button = Gtk.MenuButton()
+        button.set_relief(Gtk.ReliefStyle.NONE)
+        menu = Gtk.Menu()
+        first: Gtk.RadioMenuItem | None = None
+        for mode in AUTO_RUN_MODES:
+            item = Gtk.RadioMenuItem(label=AUTO_RUN_LABELS[mode], group=first)
+            first = first or item
+            if mode == self.auto_run:
+                item.set_active(True)  # before connecting "toggled": no spurious handler call
+            item.connect("toggled", self._on_run_mode_toggled, mode)
+            menu.append(item)
+        menu.show_all()
+        button.set_popup(menu)
+        self.run_mode_button = button
+        self._update_run_mode_icon()
+        return button
+
+    def _on_run_mode_toggled(self, item: Gtk.RadioMenuItem, mode: str) -> bool:
+        if item.get_active():
+            self._set_auto_run(mode)
+        return False
+
+    def _set_auto_run(self, mode: str) -> None:
+        """Switch the mode for this conversation (and the agent's tool
+        descriptions); the config default for new conversations is unchanged."""
+        if mode not in AUTO_RUN_MODES or mode == self.auto_run:
+            return
+        self.auto_run = mode
+        if self.agent is not None:
+            self.agent.set_auto_run(mode)
+        self._update_run_mode_icon()
+
+    def _update_run_mode_icon(self) -> None:
+        if self.run_mode_button is None:
+            return
+        mode = self.auto_run if self.auto_run in RUN_MODE_ICONS else "off"
+        self.run_mode_button.set_image(Gtk.Image.new_from_icon_name(
+            RUN_MODE_ICONS[mode], Gtk.IconSize.BUTTON))
+        self.run_mode_button.set_tooltip_text(f"Code execution: {AUTO_RUN_LABELS[mode]}")
+        self.run_mode_button.show_all()
+
     def _start_conversation(self, config: Config, text: str | None, conversation_id: str | None = None,
                             saved: dict | None = None) -> None:
         """A new conversation starting with `text`, or a `saved` one from the history."""
@@ -1337,9 +1414,11 @@ class AssistantWindow(Gtk.Window):
             workspace.system_prompt(),
             self._execute,
             lambda kind, data: GLib.idle_add(self._on_agent_event, kind, data),
+            auto_run=config.auto_run,
         )
         self.conversation_id = conversation_id or history.new_id()
         self.conversation_title = str(saved.get("title") or "") if saved else text
+        self.auto_run = config.auto_run  # the header menu can change it for this conversation
         self.stack.add_named(self._build_conversation(config.ai_model), "conversation")
         self.stack.show_all()
         self.stack.set_visible_child_name("conversation")
@@ -1429,9 +1508,20 @@ class AssistantWindow(Gtk.Window):
         if self.closed or self.results is None:
             pending.answer(False, "ChemAssistent has no open conversation; the code did not run.")
             return False
+        # Decide about auto-run here on the main loop, with the current mode.
+        if self.auto_run == "always":
+            pending.auto = "always"
+        elif self.auto_run == "readonly":
+            ok, reason = looks_read_only(pending.code)
+            if ok:
+                pending.auto = "readonly"
+            else:
+                pending.auto_reason = reason
         card = self.results.add_request(pending)
-        self.chat.add_note(f"#{card.number} {pending.purpose or 'Code'}", "system-run-symbolic")
-        self.chat.set_busy(True, "Waiting for you to Run or Reject the code on the right…")
+        self.chat.add_note(f"#{card.number} {pending.purpose or 'Code'}"
+                           + (" · auto-run" if pending.auto else ""), "system-run-symbolic")
+        self.chat.set_busy(True, "Running code automatically…" if pending.auto else
+                           "Waiting for you to Run or Reject the code on the right…")
         return False
 
     def _on_header_press(self, _widget, event) -> bool:

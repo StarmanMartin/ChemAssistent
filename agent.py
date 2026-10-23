@@ -5,14 +5,17 @@ Only standard endpoints are used: GET <ai_url>/models and POST
 <ai_url>/chat/completions with `stream`, `tools` and `tool_choice`, so the
 KIT KI-Toolbox, OpenAI, Ollama, vLLM, LiteLLM, ... all work.
 
-The model gets exactly four tools: `execute_python` (runs only after the
-user confirmed it in the result panel; the app provides it as a callback)
+The model gets exactly four tools: `execute_python` (the app provides it as a
+callback; whether the user must confirm first depends on the auto-run mode:
+"off" always asks, "readonly" runs read-only snippets automatically —
+`looks_read_only()` decides — and "always" runs everything)
 and read-only `read_file`, `grep` and `list_files`, which cannot leave the
 workspace (the API reference and the chemotionapi checkout) and the files
 and folders the user attached.
 """
 from __future__ import annotations
 
+import ast
 import json
 import os
 import re
@@ -22,7 +25,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from config import WORKSPACE_DIR, Config
+from config import AUTO_RUN_MODES, WORKSPACE_DIR, Config
 
 
 REQUEST_TIMEOUT_S = 300
@@ -41,18 +44,37 @@ ATTACHMENT_NOTE = ("\n\nAttached by the user (read them with read_file / list_fi
                    "Chemotion):\n")
 STOPPED_NOTE = "(Stopped after many tool calls.)"
 
-TOOLS = [
-    {
+
+def execute_python_tool(mode: str) -> dict:
+    """The execute_python tool for one auto-run mode (config.AUTO_RUN_MODES):
+    what the description says about running depends on it."""
+    if mode == "readonly":
+        confirm = (
+            "Read-only code (fetching data only) runs automatically; code that creates, changes "
+            "or deletes data, or writes files, waits for the user to confirm it in the result "
+            "panel; they may edit it first or reject it with a reason."
+        )
+    elif mode == "always":
+        confirm = (
+            "The code runs automatically; the user still sees it in the result panel. Prefer "
+            "read-only code, and be careful with anything that changes or deletes data."
+        )
+    else:
+        confirm = (
+            "The user sees the code in the result panel and must confirm it before it runs; "
+            "they may edit it first or reject it with a reason."
+        )
+    return {
         "type": "function",
         "function": {
             "name": "execute_python",
             "description": (
                 "Run Python code against the user's Chemotion ELN with the chemotion_api package. "
                 "A logged-in `instance` (chemotion_api.Instance) is predefined; never log in. "
-                "The user sees the code in the result panel and must confirm it before it runs; "
-                "they may edit it first or reject it with a reason. Assign what the user should "
-                "see to `result`. The answer contains the printed output, `result` as JSON, the "
-                "error traceback, or the user's reason for rejecting the code."
+                + confirm +
+                " Assign what the user should see to `result`. The answer contains the printed "
+                "output, `result` as JSON, the error traceback, or the user's reason for rejecting "
+                "the code."
             ),
             "parameters": {
                 "type": "object",
@@ -67,7 +89,16 @@ TOOLS = [
                 "required": ["purpose", "code"],
             },
         },
-    },
+    }
+
+
+def build_tools(mode: str) -> list[dict]:
+    """The four tools with the execute_python description for `mode`."""
+    return [execute_python_tool(mode)] + READ_ONLY_TOOLS
+
+# The read-only tools; build_tools() prepends execute_python with the
+# description for the current auto-run mode.
+READ_ONLY_TOOLS = [
     {
         "type": "function",
         "function": {
@@ -268,6 +299,95 @@ def tool_summary(name: str, arguments: dict) -> str:
     return f"Listed {arguments.get('path') or 'the workspace'}"
 
 
+# --- the auto-run guard ---------------------------------------------------------
+# Auto-run executes a snippet without the user's confirmation, so it may only
+# run when it looks strictly read-only. This is a best-effort static check,
+# not a sandbox: anything it does not recognize counts as writing (fail
+# closed, it just falls back to a confirmation card).
+
+# Methods that change data in Chemotion or on this machine; grounded in the
+# chemotionapi checkout (save, delete, update, set_*, upload_*, add_*, ...).
+MUTATING_CALLS = {
+    "save", "delete", "destroy", "restore", "undelete", "copy", "move", "move_to", "move_elements",
+    "assign_to", "assign_elements", "remove", "remove_elements", "remove_from", "update",
+    "upload", "login", "login_token", "commit", "revert", "abort",
+    # files, processes and code execution
+    "write", "writelines", "write_text", "write_bytes", "unlink", "truncate", "touch", "mkdir",
+    "makedirs", "rmdir", "rmtree", "rename", "replace", "removedirs", "symlink", "link",
+    "chmod", "chown", "system", "popen", "spawn", "execv", "execve", "kill", "terminate",
+    "send_signal", "Popen", "run", "check_call", "check_output", "eval", "exec", "compile",
+    "__import__",
+}
+MUTATING_PREFIXES = (
+    "create_", "new_", "add_", "delete_", "remove_", "update_", "set_", "assign_", "upload_",
+    "move_", "replace_", "write_", "save_", "insert_", "unassign_",
+)
+# Methods whose name looks mutating but that only build a local search query
+# (chemotionapi's Search; see the "Search" section of the skill).
+ALLOWED_CALLS = {"add_search_condition"}
+# Modules a read-only snippet has no business importing.
+BANNED_MODULES = {"os", "subprocess", "shutil", "ctypes", "importlib", "multiprocessing",
+                  "pickle", "socket"}
+
+
+def looks_read_only(code: str) -> tuple[bool, str]:
+    """(True, "") if the snippet only reads data, else (False, why).
+
+    Used by auto-run mode ("readonly"): code the check does not clear waits
+    for the user's confirmation like in "off" mode.
+    """
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as exc:
+        return False, f"the code does not parse ({exc.msg}, line {exc.lineno})"
+    except (ValueError, RecursionError):
+        return False, "the code could not be parsed"
+
+    modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            modules.add(node.module.split(".")[0])
+    banned = sorted(modules & BANNED_MODULES)
+    if banned:
+        return False, f"it imports {', '.join(banned)}"
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Delete):
+            return False, "it deletes something"
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Name):
+            name = func.id
+        elif isinstance(func, ast.Attribute):
+            name = func.attr
+        else:
+            # getattr(...)() and friends: not recognizable, so not read-only.
+            return False, "it calls something that is not a plain name or method"
+        if name in ALLOWED_CALLS:
+            continue
+        if name == "open":
+            mode_arg = None
+            if len(node.args) > 1:
+                mode_arg = node.args[1]
+            else:
+                mode_arg = next((kw.value for kw in node.keywords if kw.arg == "mode"), None)
+            if mode_arg is None:
+                continue  # open(path) defaults to reading
+            if not isinstance(mode_arg, ast.Constant) or not isinstance(mode_arg.value, str):
+                return False, "it opens a file with a computed mode"
+            if set(mode_arg.value) & set("wax+"):
+                return False, f'it opens a file for writing (mode "{mode_arg.value}")'
+            continue
+        if name in MUTATING_CALLS:
+            return False, f"it calls {name}()"
+        if any(name.startswith(prefix) for prefix in MUTATING_PREFIXES):
+            return False, f"it calls {name}()"
+    return True, ""
+
+
 def describe_attachment(path: Path) -> str:
     if path.is_dir():
         count = sum(1 for _ in _files(path, None))
@@ -291,10 +411,14 @@ class Agent:
     for the model; it must return when the `cancelled` event is set.
     """
 
-    def __init__(self, config: Config, system_prompt: str, execute, on_event) -> None:
+    def __init__(self, config: Config, system_prompt: str, execute, on_event,
+                 auto_run: str = "off") -> None:
         self.config = config
         self.execute = execute
         self.on_event = on_event
+        self.auto_run = auto_run if auto_run in AUTO_RUN_MODES else "off"
+        # The tool descriptions depend on the auto-run mode (execute_python).
+        self.tools = build_tools(self.auto_run)
         self.messages: list[dict] = [{"role": "system", "content": system_prompt}]
         # What the read-only tools may read: the workspace and every attachment.
         self.roots: list[Path] = [WORKSPACE_DIR.resolve()]
@@ -302,6 +426,12 @@ class Agent:
         self.busy = False
         self._response = None
         self._call_counter = 0
+
+    def set_auto_run(self, mode: str) -> None:
+        """Switch the auto-run mode mid-conversation (the header menu); the
+        changed tool description goes out with the next request."""
+        self.auto_run = mode if mode in AUTO_RUN_MODES else "off"
+        self.tools = build_tools(self.auto_run)
 
     def restore(self, messages: list[dict], roots: list[str]) -> None:
         """Continue a saved conversation (history.py): its messages after the
@@ -384,7 +514,7 @@ class Agent:
         body = {
             "model": self.config.ai_model,
             "messages": self.messages,
-            "tools": TOOLS,
+            "tools": self.tools,
             "tool_choice": "auto",
             "stream": True,
         }

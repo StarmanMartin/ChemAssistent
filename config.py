@@ -35,6 +35,16 @@ KI_TOOLBOX_URL = "https://ki-toolbox.scc.kit.edu/api/v1"
 DEFAULT_AI_MODEL = "alias.complex-local"
 # Pressed twice, opens the prompt from anywhere (GTK accelerator syntax; "" = off).
 DEFAULT_HOTKEY = "<Control>space"
+# How the assistant's execute_python code runs (config key auto_run):
+# off: every snippet waits for Run/Reject in the result panel,
+# readonly: read-only snippets run automatically, the rest still waits,
+# always: every snippet runs automatically.
+AUTO_RUN_MODES = ("off", "readonly", "always")
+AUTO_RUN_LABELS = {
+    "off": "Ask before every run",
+    "readonly": "Auto-run read-only code",
+    "always": "Auto-run everything",
+}
 # Used when ai_token is empty (older installs put the key there).
 AI_TOKEN_ENV = "KI_TOOLBOX_API_KEY"
 # ai_model ids of the opencode era ("<provider>/<model>") -> KI-Toolbox ids.
@@ -63,6 +73,7 @@ class Config:
     execution_timeout: int = 300
     prompt_width: int = 640
     hotkey: str = DEFAULT_HOTKEY
+    auto_run: str = "off"
 
 
 EXAMPLE = {
@@ -76,6 +87,7 @@ EXAMPLE = {
     "execution_timeout": 300,
     "prompt_width": 640,
     "hotkey": DEFAULT_HOTKEY,
+    "auto_run": "off",
 }
 
 
@@ -156,6 +168,9 @@ def load_config() -> Config:
         width = int(data.get("prompt_width", 640))
     except (TypeError, ValueError):
         timeout, width = 300, 640
+    auto_run = str(data.get("auto_run") or "off").strip()
+    if auto_run not in AUTO_RUN_MODES:
+        auto_run = "off"
     return Config(
         url=str(data["url"]).strip().rstrip("/"),
         user=str(data["user"]).strip(),
@@ -167,4 +182,5 @@ def load_config() -> Config:
         execution_timeout=max(10, timeout),
         prompt_width=max(360, width),
         hotkey=str(data.get("hotkey") or "").strip(),
+        auto_run=auto_run,
     )
