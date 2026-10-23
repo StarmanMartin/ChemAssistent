@@ -4,7 +4,8 @@
 #
 # One folder with two programs on the same _internal\ (both run entry.py):
 #   ChemAssistent.exe          windowed: the app and the settings
-#   chem-assistent-runner.exe  console: runs confirmed snippets over stdio
+#   chem-assistent-runner.exe  console: runs confirmed snippets over stdio, and
+#                              the CLI agents' MCP server (mcp_bridge.py)
 import importlib.util
 import sys
 from pathlib import Path
@@ -40,7 +41,7 @@ datas += [
 ]
 hiddenimports += stdlib + [
     # entry.py imports them inside functions.
-    "app", "settings", "chemotion_runner", "setup_ai",
+    "app", "settings", "chemotion_runner", "setup_ai", "mcp_bridge",
     "gi._gi_cairo", "cairo",
 ]
 

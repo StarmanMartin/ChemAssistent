@@ -54,6 +54,32 @@ DEFAULT_JUPYTER_FOLDER = "ChemAssistent"
 # Files the two sides of a conversation exchange (jupyter.py syncs them);
 # one subfolder per conversation.
 EXCHANGE_DIR = STATE_DIR / "exchange"
+# Which agent answers (config key `agent`): the built-in one (agent.py) against
+# an OpenAI-compatible API or a local Ollama, or a CLI agent (cli_agent.py).
+AGENTS = ("api", "ollama", "claude", "codex")
+AGENT_LABELS = {
+    "api": "Built-in agent · OpenAI-compatible API",
+    "ollama": "Built-in agent · Ollama (local)",
+    "claude": "Claude Code CLI",
+    "codex": "Codex CLI",
+}
+# How the prompt and the conversation header name them.
+AGENT_SHORT = {"api": "Model", "ollama": "Ollama", "claude": "Claude Code", "codex": "Codex"}
+CLI_AGENTS = ("claude", "codex")
+# Ollama's OpenAI-compatible endpoint.
+OLLAMA_URL = "http://localhost:11434/v1"
+# Per agent: the config keys that hold its url, token, model and command.
+# load_config() puts the chosen agent's values into Config.ai_url etc.
+AGENT_KEYS = {
+    "api": {"url": "ai_url", "token": "ai_token", "model": "ai_model"},
+    "ollama": {"url": "ollama_url", "model": "ollama_model"},
+    "claude": {"command": "claude_command", "model": "claude_model"},
+    "codex": {"command": "codex_command", "model": "codex_model"},
+}
+# Model names the CLIs accept, offered in the menus ("" = the CLI's default
+# model; any other name can be typed in the settings). cli_agent.cli_models()
+# adds the models Codex cached for the logged-in account.
+CLI_MODELS = {"claude": ["", "opus", "sonnet", "haiku"], "codex": [""]}
 # Used when ai_token is empty (older installs put the key there).
 AI_TOKEN_ENV = "KI_TOOLBOX_API_KEY"
 # ai_model ids of the opencode era ("<provider>/<model>") -> KI-Toolbox ids.
@@ -88,6 +114,9 @@ class Config:
     jupyter_password: str = ""
     jupyter_folder: str = DEFAULT_JUPYTER_FOLDER
     jupyter_verify_tls: bool = True
+    agent: str = "api"
+    # CLI agents: the program (a name on the PATH or a full path).
+    agent_command: str = ""
 
     @property
     def jupyter(self) -> bool:
@@ -111,6 +140,13 @@ EXAMPLE = {
     "jupyter_password": "",
     "jupyter_folder": DEFAULT_JUPYTER_FOLDER,
     "jupyter_verify_tls": True,
+    "agent": "api",
+    "ollama_url": OLLAMA_URL,
+    "ollama_model": "",
+    "claude_command": "claude",
+    "claude_model": "",
+    "codex_command": "codex",
+    "codex_model": "",
 }
 
 
@@ -141,8 +177,29 @@ def ai_token(data: dict) -> str:
     return str(data.get("ai_token") or "").strip() or os.environ.get(AI_TOKEN_ENV, "").strip()
 
 
+def agent_of(data: dict) -> str:
+    agent = str(data.get("agent") or "api").strip()
+    return agent if agent in AGENTS else "api"
+
+
+def model_name(model: str) -> str:
+    """How menus show a model; "" is a CLI agent's own default."""
+    return model or "default model"
+
+
 def ai_problem(data: dict) -> str | None:
     """Why `data` cannot be used to talk to the AI model, or None."""
+    agent = agent_of(data)
+    if agent in CLI_AGENTS:
+        if not str(data.get(AGENT_KEYS[agent]["command"]) or "").strip():
+            return f"Set the {AGENT_LABELS[agent]} command in the settings."
+        return None
+    if agent == "ollama":
+        if not str(data.get("ollama_url") or "").strip():
+            return "Set the Ollama URL in the settings."
+        if not str(data.get("ollama_model") or "").strip():
+            return "Choose an Ollama model in the settings."
+        return None
     if not str(data.get("ai_url", "")).strip():
         return "Set the AI URL in the settings."
     if not str(data.get("ai_model", "")).strip():
@@ -208,14 +265,16 @@ def load_config() -> Config:
     auto_run = str(data.get("auto_run") or "off").strip()
     if auto_run not in AUTO_RUN_MODES:
         auto_run = "off"
+    agent = agent_of(data)
+    keys = AGENT_KEYS[agent]
     return Config(
         url=str(data["url"]).strip().rstrip("/"),
         user=str(data["user"]).strip(),
         password=os.environ.get("CHEMOTION_PASSWORD") or str(data["password"]),
         verify_tls=bool(data.get("verify_tls", True)),
-        ai_url=str(data.get("ai_url") or "").strip().rstrip("/"),
-        ai_token=ai_token(data),
-        ai_model=str(data.get("ai_model") or "").strip(),
+        ai_url=str(data.get(keys.get("url", "")) or "").strip().rstrip("/"),
+        ai_token=ai_token(data) if agent == "api" else "",
+        ai_model=str(data.get(keys["model"]) or "").strip(),
         execution_timeout=max(10, timeout),
         prompt_width=max(360, width),
         hotkey=str(data.get("hotkey") or "").strip(),
@@ -226,4 +285,6 @@ def load_config() -> Config:
         jupyter_password=str(data.get("jupyter_password") or ""),
         jupyter_folder=jupyter_folder(data),
         jupyter_verify_tls=bool(data.get("jupyter_verify_tls", True)),
+        agent=agent,
+        agent_command=str(data.get(keys.get("command", "")) or "").strip(),
     )

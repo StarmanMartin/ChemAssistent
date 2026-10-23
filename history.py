@@ -38,8 +38,10 @@ def _path(conversation_id: str) -> Path:
     return HISTORY_DIR / f"{Path(conversation_id).name}.json"
 
 
-def save(conversation_id: str, title: str, model: str, messages: list[dict], roots: list[str]) -> None:
-    """`messages` without the system prompt; `roots` are the attachments."""
+def save(conversation_id: str, title: str, model: str, messages: list[dict], roots: list[str],
+         agent: str = "api", session: str = "") -> None:
+    """`messages` without the system prompt; `roots` are the attachments;
+    `agent` is config.AGENTS' name, `session` a CLI agent's own session id."""
     path = _path(conversation_id)
     created = time.time()
     try:
@@ -54,6 +56,8 @@ def save(conversation_id: str, title: str, model: str, messages: list[dict], roo
         "updated": time.time(),
         "messages": messages,
         "roots": roots,
+        "agent": agent,
+        "session": session,
     })
     _prune()
 

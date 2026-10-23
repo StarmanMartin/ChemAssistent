@@ -15,16 +15,30 @@ import app_control  # noqa: E402
 import history  # noqa: E402
 import hotkey  # noqa: E402
 from agent import AgentError, list_models  # noqa: E402
+from cli_agent import check_command, cli_models  # noqa: E402
 from config import (  # noqa: E402
-    AI_TOKEN_ENV, AUTO_RUN_LABELS, AUTO_RUN_MODES, CONFIG_FILE, DEFAULT_JUPYTER_FOLDER, EXAMPLE, KI_TOOLBOX_URL,
-    Config, ai_problem, ai_token, config_problem, jupyter_folder, jupyter_problem, WINDOWS, read_raw_config,
-    save_raw_config,
+    AGENT_KEYS, AGENT_LABELS, AGENTS, AI_TOKEN_ENV, AUTO_RUN_LABELS, AUTO_RUN_MODES, CLI_AGENTS,
+    CONFIG_FILE, DEFAULT_JUPYTER_FOLDER, EXAMPLE, KI_TOOLBOX_URL, OLLAMA_URL, Config, agent_of, ai_problem,
+    ai_token, config_problem, jupyter_folder, jupyter_problem, WINDOWS, read_raw_config, save_raw_config,
 )
 from jupyter import JupyterClient, JupyterError, split_url  # noqa: E402
 
 
 PRGNAME = "chem-assistent-settings"
 ICON_FILE = Path(__file__).with_name("chem-assistent.svg")
+
+# What the settings say below the agent's fields.
+AGENT_NOTES = {
+    "api": f"Any OpenAI-compatible API. KIT KI-Toolbox: create an API key at {KI_TOOLBOX_URL.split('/api')[0]}.",
+    "ollama": "A local Ollama (ollama serve); “Load models” lists the models you pulled. "
+              "Pick one that supports tool calls.",
+    "claude": "Uses your Claude Code login (run claude once in a terminal to sign in). Its own tools "
+              "are switched off: like the built-in agent it reads the workspace and the attachments, "
+              "and its code runs only through the result panel. Empty model: Claude Code's default.",
+    "codex": "Uses your Codex login (codex login). Its shell and web tools are switched off: like the "
+             "built-in agent it reads the workspace and the attachments, and its code runs only "
+             "through the result panel. Empty model: Codex's default.",
+}
 
 # key, label, lower bound, upper bound (the same lower bounds load_config() clamps to)
 NUMBER_FIELDS = (
@@ -84,42 +98,62 @@ class SettingsWindow(Gtk.Window):
         grid.attach(self.test_button, 1, row, 1, 1)
         row += 1
 
-        grid, row = self._page("AI model", "Any OpenAI-compatible API."), 1
+        grid, row = self._page("AI agent", "The built-in agent against an OpenAI-compatible API or Ollama, "
+                                           "or a CLI agent."), 1
 
-        # The KI-Toolbox is offered in the list; any other URL can be typed.
+        # Every agent keeps its own url/token/model/command (config.AGENT_KEYS);
+        # the fields below show the chosen one's.
+        self.agent_values = {key: str(self.data.get(key) or "") for keys in AGENT_KEYS.values()
+                             for key in keys.values()}
+        self.current_agent = agent_of(self.data)
+        self.agent = Gtk.ComboBoxText()
+        for agent in AGENTS:
+            self.agent.append_text(AGENT_LABELS[agent])
+        self.agent.set_active(AGENTS.index(self.current_agent))
+        self.agent.connect("changed", lambda *_: self._on_agent_changed())
+        row = self._add_row(grid, row, "Agent", self.agent)
+        self.agent_rows: dict[str, tuple[Gtk.Widget, Gtk.Widget]] = {}
+
+        # The KI-Toolbox (or Ollama) is offered in the list; any other URL can be typed.
         self.ai_url = Gtk.ComboBoxText.new_with_entry()
         self.ai_url.set_hexpand(True)
-        self.ai_url.append_text(KI_TOOLBOX_URL)
-        self.ai_url.get_child().set_placeholder_text(KI_TOOLBOX_URL)
-        self.ai_url.get_child().set_text(str(self.data.get("ai_url") or ""))
-        row = self._add_row(grid, row, "API URL", self.ai_url)
+        row = self._add_agent_row(grid, row, "url", "API URL", self.ai_url)
 
-        self.ai_token = self._secret_entry(str(self.data.get("ai_token") or ""))
+        self.ai_token = self._secret_entry("")
         self.ai_token.set_placeholder_text(
             f"From {AI_TOKEN_ENV}" if os.environ.get(AI_TOKEN_ENV) else "API key (Bearer token)"
         )
-        row = self._add_row(grid, row, "API token", self.ai_token)
+        row = self._add_agent_row(grid, row, "token", "API token", self.ai_token)
+
+        self.command = Gtk.Entry(hexpand=True)
+        self.command.set_placeholder_text("Name on the PATH or full path")
+        self.check_button = Gtk.Button(label="Check")
+        self.check_button.set_tooltip_text("Run the program with --version")
+        self.check_button.connect("clicked", lambda *_: self._check_command())
+        command_row = Gtk.Box(spacing=6)
+        command_row.pack_start(self.command, True, True, 0)
+        command_row.pack_start(self.check_button, False, False, 0)
+        row = self._add_agent_row(grid, row, "command", "Command", command_row)
 
         # The entry keeps any model id usable, also before the list is loaded.
         self.ai_model = Gtk.ComboBoxText.new_with_entry()
         self.ai_model.set_hexpand(True)
-        self.ai_model.get_child().set_text(str(self.data.get("ai_model") or ""))
         self.models_button = Gtk.Button(label="Load models")
         self.models_button.set_tooltip_text("Ask the API for its models (also tests URL and token)")
         self.models_button.connect("clicked", lambda *_: self._load_models())
+        self.models_button.set_no_show_all(True)
         model_row = Gtk.Box(spacing=6)
         model_row.pack_start(self.ai_model, True, True, 0)
         model_row.pack_start(self.models_button, False, False, 0)
         row = self._add_row(grid, row, "Model", model_row)
 
-        self.ai_note = Gtk.Label(
-            label=f"KIT KI-Toolbox: create an API key at {KI_TOOLBOX_URL.split('/api')[0]}.",
-            xalign=0, wrap=True, max_width_chars=60,
-        )
+        self.ai_note = Gtk.Label(xalign=0, wrap=True, max_width_chars=60)
         self.ai_note.get_style_context().add_class("dim-label")
         grid.attach(self.ai_note, 1, row, 1, 1)
         row += 1
         self.loading_models = False
+        self.checking = False
+        self._show_agent()
 
         jupyter_grid = self._page("JupyterLab", "Optional: analyses (RDKit, pandas, plots, ...) in your JupyterLab.")
         run_grid, run_row = self._page("Running code"), 0
@@ -245,7 +279,9 @@ class SettingsWindow(Gtk.Window):
         box.pack_start(buttons, False, False, 0)
         self.add(box)
         self._update_service_button()
-        if ai_token(self.data):
+        if self.current_agent in CLI_AGENTS:
+            self._check_command()
+        elif self.current_agent == "ollama" or ai_token(self.data):
             self._load_models()
 
     def _page(self, title: str, intro: str = "") -> Gtk.Grid:
@@ -264,6 +300,91 @@ class SettingsWindow(Gtk.Window):
         grid.attach(label, 0, row, 1, 1)
         grid.attach(widget, 1, row, 1, 1)
         return row + 1
+
+    def _add_agent_row(self, grid: Gtk.Grid, row: int, field: str, text: str, widget: Gtk.Widget) -> int:
+        """A row only some agents have (`field` of config.AGENT_KEYS); _show_agent() shows it."""
+        row = self._add_row(grid, row, text, widget)
+        label = grid.get_child_at(0, row - 1)
+        for item in (label, widget):
+            item.show_all()  # its children; the row itself only through _show_agent()
+            item.set_no_show_all(True)  # the window's show_all() must not show it
+        self.agent_rows[field] = (label, widget)
+        return row
+
+    # --- agent ----------------------------------------------------------------
+    def _agent_fields(self) -> dict[str, str]:
+        """The visible fields' values, by AGENT_KEYS field."""
+        return {
+            "url": self.ai_url.get_child().get_text().strip().rstrip("/"),
+            "token": self.ai_token.get_text().strip(),
+            "command": self.command.get_text().strip(),
+            "model": self.ai_model.get_child().get_text().strip(),
+        }
+
+    def _store_agent_fields(self) -> None:
+        fields = self._agent_fields()
+        for field, key in AGENT_KEYS[self.current_agent].items():
+            self.agent_values[key] = fields[field]
+
+    def _on_agent_changed(self) -> None:
+        active = self.agent.get_active()
+        if active not in range(len(AGENTS)) or AGENTS[active] == self.current_agent:
+            return
+        self._store_agent_fields()
+        self.current_agent = AGENTS[active]
+        self._show_agent()
+        self.resize(self.get_size()[0], 1)  # shrink to the new fields
+        if self.current_agent in CLI_AGENTS:
+            self._check_command()
+
+    def _show_agent(self) -> None:
+        """Fill and show the fields of the chosen agent."""
+        agent = self.current_agent
+        keys = AGENT_KEYS[agent]
+        for field, (label, widget) in self.agent_rows.items():
+            for item in (label, widget):
+                item.set_visible(field in keys)
+        self.ai_url.remove_all()
+        self.ai_url.append_text(OLLAMA_URL if agent == "ollama" else KI_TOOLBOX_URL)
+        self.ai_url.get_child().set_placeholder_text(OLLAMA_URL if agent == "ollama" else KI_TOOLBOX_URL)
+        self.ai_url.get_child().set_text(self.agent_values.get(keys.get("url", ""), ""))
+        self.ai_token.set_text(self.agent_values.get(keys.get("token", ""), ""))
+        self.command.set_text(self.agent_values.get(keys.get("command", ""), ""))
+        self.ai_model.remove_all()
+        for model in cli_models(agent) if agent in CLI_AGENTS else []:
+            if model:
+                self.ai_model.append_text(model)
+        self.ai_model.get_child().set_text(self.agent_values.get(keys["model"], ""))
+        self.ai_model.get_child().set_placeholder_text("Default model of the CLI" if agent in CLI_AGENTS else "")
+        self.models_button.set_visible(agent not in CLI_AGENTS)
+        self.ai_note.set_text(AGENT_NOTES[agent])
+
+    def _check_command(self) -> None:
+        if self.checking:
+            return
+        agent, command = self.current_agent, self.command.get_text().strip()
+        if not command:
+            self.ai_note.set_text(f"Set the command of {AGENT_LABELS[agent]}.")
+            return
+        self.checking = True
+        self.check_button.set_sensitive(False)
+        self.ai_note.set_text(f"Checking {command}...")
+        threading.Thread(target=self._check_worker, args=(agent, command), daemon=True).start()
+
+    def _check_worker(self, agent: str, command: str) -> None:
+        # Runs in a thread: no GTK calls here.
+        try:
+            text = f"Found {check_command(agent, command)}. {AGENT_NOTES[agent]}"
+        except AgentError as exc:
+            text = str(exc)
+        GLib.idle_add(self._check_done, agent, text)
+
+    def _check_done(self, agent: str, text: str) -> bool:
+        self.checking = False
+        self.check_button.set_sensitive(True)
+        if agent == self.current_agent:
+            self.ai_note.set_text(text)
+        return False
 
     def _int_value(self, key: str, lower: int) -> int:
         try:
@@ -295,9 +416,6 @@ class SettingsWindow(Gtk.Window):
             "user": self.user.get_text().strip(),
             "password": self.password.get_text(),
             "verify_tls": self.verify_tls.get_active(),
-            "ai_url": self.ai_url.get_child().get_text().strip().rstrip("/"),
-            "ai_token": self.ai_token.get_text().strip(),
-            "ai_model": self.ai_model.get_child().get_text().strip(),
             "hotkey": self.hotkey.get_text().strip(),
             "jupyter_url": self.jupyter_url.get_text().strip(),
             "jupyter_token": self.jupyter_token.get_text().strip(),
@@ -305,6 +423,9 @@ class SettingsWindow(Gtk.Window):
             "jupyter_folder": self.jupyter_folder.get_text().strip(),
             "jupyter_verify_tls": self.jupyter_verify_tls.get_active(),
         }
+        self._store_agent_fields()
+        values.update(self.agent_values)
+        values["agent"] = self.current_agent
         if values["jupyter_url"]:
             # A URL as Jupyter prints it carries the token: keep them apart.
             values["jupyter_url"], url_token = split_url(values["jupyter_url"])
@@ -320,27 +441,32 @@ class SettingsWindow(Gtk.Window):
     def _load_models(self) -> None:
         if self.loading_models:
             return
-        values = self._form_values()
-        if not values["ai_url"]:
+        agent, fields = self.current_agent, self._agent_fields()
+        if agent in CLI_AGENTS:
+            return
+        if not fields["url"]:
             self.ai_note.set_text("Set the API URL first.")
             return
-        config = dataclasses.replace(Config("", "", ""), ai_url=values["ai_url"], ai_token=ai_token(values))
+        token = ai_token({"ai_token": fields["token"]}) if agent == "api" else ""
+        config = dataclasses.replace(Config("", "", ""), ai_url=fields["url"], ai_token=token)
         self.loading_models = True
         self.models_button.set_sensitive(False)
         self.ai_note.set_text("Loading models...")
-        threading.Thread(target=self._models_worker, args=(config,), daemon=True).start()
+        threading.Thread(target=self._models_worker, args=(agent, config), daemon=True).start()
 
-    def _models_worker(self, config: Config) -> None:
+    def _models_worker(self, agent: str, config: Config) -> None:
         # Runs in a thread: no GTK calls here.
         try:
             models, error = list_models(config), None
         except AgentError as exc:
             models, error = [], str(exc)
-        GLib.idle_add(self._models_done, models, error)
+        GLib.idle_add(self._models_done, agent, models, error)
 
-    def _models_done(self, models: list[str], error: str | None) -> bool:
+    def _models_done(self, agent: str, models: list[str], error: str | None) -> bool:
         self.loading_models = False
         self.models_button.set_sensitive(True)
+        if agent != self.current_agent:
+            return False  # switched to another agent meanwhile
         self.ai_model.remove_all()
         for model in models:
             self.ai_model.append_text(model)
