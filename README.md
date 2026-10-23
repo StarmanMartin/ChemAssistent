@@ -6,7 +6,11 @@ the top bar (the tray on Windows) and
 lets you talk to your [Chemotion ELN](https://chemotion.net) through an AI
 agent. The agent is part of the app (`agent.py`) and talks to any
 OpenAI-compatible API, by default the
-[KIT KI-Toolbox](https://ki-toolbox.scc.kit.edu). It uses the Python package
+[KIT KI-Toolbox](https://ki-toolbox.scc.kit.edu), or to a local
+[Ollama](https://ollama.com). Instead, the settings can hand the conversation
+to [Claude Code](https://claude.com/claude-code) or
+[Codex](https://github.com/openai/codex), with the same tools and the same
+confirmation (see [Agents](#agents)). It uses the Python package
 [chemotion_api](https://github.com/Chemotion/chemotionapi) (branch
 `version-3`) and knows its API from the package documentation and skills.
 
@@ -71,6 +75,42 @@ the settings deletes them all.
   after `execution_timeout` seconds and can be cancelled while it runs.
 - Your prompts, the code and its results are sent to the AI model's
   provider. Choose a local model for sensitive data.
+- Claude Code and Codex get the same four tools and none of their own; see
+  [Agents](#agents).
+
+## Agents
+
+Settings → *AI agent* chooses who answers:
+
+- **Built-in agent · OpenAI-compatible API** (default): `agent.py` against
+  `ai_url` with `ai_token` and `ai_model` (the KI-Toolbox, OpenAI, vLLM,
+  LiteLLM, ...).
+- **Built-in agent · Ollama (local)**: the same agent against a local
+  Ollama's OpenAI-compatible endpoint (`ollama_url`, default
+  `http://localhost:11434/v1`); *Load models* lists the models you pulled.
+  Pick one that supports tool calls.
+- **Claude Code CLI** / **Codex CLI**: the conversation runs in the
+  installed `claude` or `codex` program (`claude_command` / `codex_command`: a
+  name on the PATH or a full path; *Check* runs it with `--version`), logged
+  in with its own account (`claude`, `codex login`). Each message runs the CLI
+  once (`claude -p … --output-format stream-json`, `codex exec --json`); later
+  messages resume its session, also when you continue a conversation from the
+  history. An empty model is the CLI's default; the header menu offers
+  `opus`/`sonnet`/`haiku` for Claude Code and, for Codex, the models it cached
+  for your account (`~/.codex/models_cache.json`); in the settings you can
+  type any model the CLI knows. If Codex's default model (`model` in
+  `~/.codex/config.toml`) is refused for your account, choose one there.
+
+  The CLIs' own tools are switched off (Claude Code: `--tools ""`, only the
+  ChemAssistent MCP server, `--permission-mode dontAsk`; Codex: read-only
+  sandbox, no shell, web search, browser or apps, `approval_policy=never`).
+  Instead they start `mcp_bridge.py`, an MCP server with the built-in agent's
+  four tools: `read_file`, `grep` and `list_files` (workspace and attachments
+  only) and `execute_python`, which goes to the app and becomes the same card
+  in the result panel: it waits for Run/Reject, or runs by itself in an
+  auto-run mode. Your own CLI settings still apply (e.g. Claude Code's
+  `language`, Codex's `config.toml` with its MCP servers), so keep them
+  free of tools you do not want the assistant to use.
 
 ## Install
 
@@ -271,7 +311,15 @@ fill it in before distributing builds.
   "ai_model": "alias.complex-local",
   "execution_timeout": 300,
   "prompt_width": 640,
-  "hotkey": "<Control>space"
+  "hotkey": "<Control>space",
+  "auto_run": "off",
+  "agent": "api",
+  "ollama_url": "http://localhost:11434/v1",
+  "ollama_model": "",
+  "claude_command": "claude",
+  "claude_model": "",
+  "codex_command": "codex",
+  "codex_model": ""
 }
 ```
 
@@ -289,6 +337,10 @@ fill it in before distributing builds.
 - `ai_model`: the model id, e.g. `alias.complex-local` (the KI-Toolbox's
   local GLM), `alias.complex-gpt` or `alias.complex-claude`. The model must
   support tool calls.
+- `agent`: `api` (the three keys above), `ollama`, `claude` or `codex`; see
+  [Agents](#agents). Each keeps its own keys: `ollama_url`/`ollama_model`,
+  `claude_command`/`claude_model`, `codex_command`/`codex_model` (an empty
+  model is the CLI's default).
 - `execution_timeout`: maximum run time of one confirmed snippet, in seconds.
 - `auto_run`: how the assistant's code runs: `off` (ask before every run),
   `readonly` (read-only snippets run automatically, the rest still waits for

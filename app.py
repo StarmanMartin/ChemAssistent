@@ -5,7 +5,10 @@ confirmed it — unless an auto-run mode is on (config key `auto_run`, and the
 menu in the conversation header): then read-only or all code starts by
 itself, and the card shows what ran. The header also switches the model of
 the conversation, e.g. when the configured one fails; an error note offers
-Retry, which repeats the request without a new message."""
+Retry, which repeats the request without a new message. The settings choose
+the agent: the built-in one (agent.py, an OpenAI-compatible API or Ollama) or
+a CLI agent (cli_agent.py: Claude Code, Codex), whose execute_python calls
+arrive from mcp_bridge.py over ipc.py and become the same cards."""
 from __future__ import annotations
 
 import importlib
@@ -13,6 +16,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import signal
 import socket
 import subprocess
@@ -63,9 +67,10 @@ import workspace  # noqa: E402
 from agent import (  # noqa: E402
     ATTACHMENT_NOTE, STOPPED_NOTE, Agent, AgentError, list_models, looks_read_only, tool_summary,
 )
+from cli_agent import CliAgent, cli_models, command_problem  # noqa: E402
 from config import (  # noqa: E402
-    AUTO_RUN_LABELS, AUTO_RUN_MODES, CONFIG_FILE, STATE_DIR, WINDOWS, WORKSPACE_DIR, Config,
-    ai_problem, load_config, read_raw_config,
+    AGENT_SHORT, AUTO_RUN_LABELS, AUTO_RUN_MODES, CLI_AGENTS, CONFIG_FILE, STATE_DIR, WINDOWS,
+    WORKSPACE_DIR, Config, ai_problem, load_config, model_name, read_raw_config,
 )
 
 
@@ -98,7 +103,8 @@ MAX_TABLE_COLUMNS = 12
 MAX_CELL_CHARS = 120
 # Result tabs kept in the panel; older ones are dropped.
 MAX_RESULT_TABS = 10
-MAX_REQUEST_BYTES = 65536
+# An ipc request; a CLI agent's execute_python request carries its code.
+MAX_REQUEST_BYTES = 2_000_000
 # Old conversations the prompt offers to continue.
 RECENT_CONVERSATIONS = 6
 
@@ -290,7 +296,9 @@ class PendingRequest:
 
 
 class RequestServer:
-    """The app's end of ipc.py: a second start of the app asks this one to show the prompt."""
+    """The app's end of ipc.py: a second start of the app asks this one to
+    show the prompt, hotkey.py reports a press, mcp_bridge.py brings a CLI
+    agent's execute_python call and waits for the answer."""
 
     def __init__(self, app: ChemAssistentApp) -> None:
         self.app = app
@@ -344,6 +352,14 @@ class RequestServer:
                 GLib.idle_add(self.app.open_prompt)
             elif request.get("type") == "hotkey":  # hotkey.py, run by the GNOME shortcut
                 GLib.idle_add(self.app.hotkey_pressed)
+            elif request.get("type") == "execute":  # mcp_bridge.py
+                conn.settimeout(None)  # the user may take their time
+                text = self.app.execute_for_bridge(str(request.get("session") or ""),
+                                                   str(request.get("purpose") or ""), str(request.get("code") or ""))
+                try:
+                    conn.sendall(json.dumps({"text": text}).encode("utf-8") + b"\n")
+                except OSError:
+                    pass  # the CLI was stopped meanwhile
 
 
 # --- running confirmed code ---------------------------------------------------
@@ -1266,7 +1282,8 @@ class AssistantWindow(Gtk.Window):
     def open_prompt(self) -> None:
         try:
             config = load_config()
-            self.hint.set_text(f"Enter starts the assistant · Esc closes · Model: {config.ai_model}")
+            self.hint.set_text(f"Enter starts the assistant · Esc closes · {AGENT_SHORT[config.agent]}: "
+                               f"{model_name(config.ai_model)}")
             self.set_default_size(config.prompt_width, -1)
             self.entry.set_width_chars(max(30, config.prompt_width // 11))
         except ValueError:
@@ -1327,7 +1344,7 @@ class AssistantWindow(Gtk.Window):
         except ValueError as exc:
             self.show_error(f"{exc}\nOpen the settings with the gear button.")
             return None
-        problem = ai_problem(read_raw_config())
+        problem = ai_problem(read_raw_config()) or command_problem(config)
         if problem:
             self.show_error(f"{problem}\nOpen the settings with the gear button.")
             return None
@@ -1446,13 +1463,17 @@ class AssistantWindow(Gtk.Window):
         button.set_relief(Gtk.ReliefStyle.NONE)
         button.set_tooltip_text("Model for this conversation")
         box = Gtk.Box(spacing=4)
-        self.model_label = label(f"· {model}", "dim", wrap=False)
+        self.model_label = label(self._model_text(model), "dim", wrap=False)
         box.pack_start(self.model_label, False, False, 0)
         box.pack_start(Gtk.Image.new_from_icon_name("pan-down-symbolic", Gtk.IconSize.MENU), False, False, 0)
         button.add(box)
         self.model_button = button
         self.models_changed()
         return button
+
+    def _model_text(self, model: str) -> str:
+        agent = self.agent.config.agent if self.agent is not None else "api"
+        return f"· {model_name(model)}" if agent == "api" else f"· {AGENT_SHORT[agent]} · {model_name(model)}"
 
     def models_changed(self) -> None:
         """(Re)fill the model menu: the app's model list, or why it is missing."""
@@ -1463,7 +1484,7 @@ class AssistantWindow(Gtk.Window):
         menu = Gtk.Menu()
         first: Gtk.RadioMenuItem | None = None
         for model in sorted(set(models or ()) | {current}):
-            item = Gtk.RadioMenuItem(label=model, group=first)
+            item = Gtk.RadioMenuItem(label=model_name(model), group=first)
             first = first or item
             if model == current:
                 item.set_active(True)  # before connecting "toggled": no spurious handler call
@@ -1499,9 +1520,9 @@ class AssistantWindow(Gtk.Window):
             return
         self.agent.set_model(model)
         if self.model_label is not None:
-            self.model_label.set_text(f"· {model}")
+            self.model_label.set_text(self._model_text(model))
         if self.chat is not None:
-            self.chat.add_note(f"Model: {model}", "emblem-synchronizing-symbolic")
+            self.chat.add_note(f"Model: {model_name(model)}", "emblem-synchronizing-symbolic")
         GLib.idle_add(self.models_changed)  # not inside the menu's own signal
 
     def _choose_model(self) -> None:
@@ -1511,13 +1532,13 @@ class AssistantWindow(Gtk.Window):
     def _start_conversation(self, config: Config, text: str | None, conversation_id: str | None = None,
                             saved: dict | None = None) -> None:
         """A new conversation starting with `text`, or a `saved` one from the history."""
-        self.agent = Agent(
-            config,
-            workspace.system_prompt(),
-            self._execute,
-            lambda kind, data: GLib.idle_add(self._on_agent_event, kind, data),
-            auto_run=config.auto_run,
-        )
+        on_event = lambda kind, data: GLib.idle_add(self._on_agent_event, kind, data)  # noqa: E731
+        if config.agent in CLI_AGENTS:
+            listener = self.app.server.listener
+            self.agent = CliAgent(config, workspace.system_prompt(), on_event, auto_run=config.auto_run,
+                                  endpoint=(listener.address, listener.token))
+        else:
+            self.agent = Agent(config, workspace.system_prompt(), self._execute, on_event, auto_run=config.auto_run)
         self.conversation_id = conversation_id or history.new_id()
         self.conversation_title = str(saved.get("title") or "") if saved else text
         self.auto_run = config.auto_run  # the header menu can change it for this conversation
@@ -1531,7 +1552,13 @@ class AssistantWindow(Gtk.Window):
         self.set_skip_pager_hint(False)
         self.set_title(f"ChemAssistent – {self.conversation_title[:60]}")
         if saved:
-            self.agent.restore(saved["messages"], [str(root) for root in saved.get("roots") or []])
+            roots = [str(root) for root in saved.get("roots") or []]
+            if isinstance(self.agent, CliAgent):
+                # The CLI's session only continues in the same CLI; otherwise it gets a transcript.
+                session = str(saved.get("session") or "") if saved.get("agent") == config.agent else ""
+                self.agent.restore(saved["messages"], roots, session)
+            else:
+                self.agent.restore(saved["messages"], roots)
             self.chat.replay(self.agent.messages[1:])
             self.saved_messages = len(self.agent.messages) - 1
         self._grow()
@@ -1548,7 +1575,8 @@ class AssistantWindow(Gtk.Window):
         workspace_root = WORKSPACE_DIR.resolve()
         roots = [str(root) for root in self.agent.roots if root != workspace_root]
         try:
-            history.save(self.conversation_id, self.conversation_title, self.agent.config.ai_model, messages, roots)
+            history.save(self.conversation_id, self.conversation_title, model_name(self.agent.config.ai_model),
+                         messages, roots, self.agent.config.agent, getattr(self.agent, "session", ""))
         except OSError as exc:
             LOG.warning("Could not save the conversation: %s", exc)
         else:
@@ -1796,7 +1824,13 @@ class ChemAssistentApp:
         return False
 
     def load_models(self, config: Config, again: bool = False) -> None:
-        """Load the model list in a thread (the KI-Toolbox needs ~15 s for it)."""
+        """Load the model list in a thread (the KI-Toolbox needs ~15 s for it).
+        CLI agents have a local list (cli_agent.cli_models())."""
+        if config.agent in CLI_AGENTS:
+            self.models_key, self.models, self.models_error = (config.agent, ""), cli_models(config.agent), ""
+            if self.window is not None:
+                self.window.models_changed()
+            return
         key = (config.ai_url, config.ai_token)
         if key == self.models_key and not (again and self.models_error):
             return  # loaded, or loading
@@ -1820,6 +1854,19 @@ class ChemAssistentApp:
             if self.window is not None:
                 self.window.models_changed()
         return False
+
+    def execute_for_bridge(self, session: str, purpose: str, code: str) -> str:
+        """A CLI agent's execute_python (mcp_bridge.py; in a server thread):
+        the same card as the built-in agent's, if `session` belongs to the
+        open conversation."""
+        window = self.window
+        agent = window.agent if window is not None else None
+        if (not isinstance(agent, CliAgent) or window.closed
+                or not secrets.compare_digest(agent.session_token, session)):
+            return "Not run: this ChemAssistent conversation is closed."
+        if not code.strip():
+            return "No code given."
+        return window._execute(purpose, code, agent.cancelled)
 
     def new_conversation(self) -> None:
         if self.window is not None:
