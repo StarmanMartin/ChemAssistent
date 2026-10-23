@@ -28,6 +28,9 @@ ENDPOINT_FILE = STATE_DIR / "endpoint.json"
 # What the agent may read: CHEMOTION_API.md and the chemotionapi checkout.
 # install.sh fills it; from the source tree setup_workspace.sh does.
 WORKSPACE_DIR = Path(__file__).resolve().with_name("workspace")
+# The app's own agent skills (skills/<name>/SKILL.md); with JupyterLab on,
+# the agent may read them (jupyter-calculations).
+SKILLS_DIR = Path(__file__).resolve().with_name("skills")
 
 # The KIT KI-Toolbox (Open WebUI, OpenAI-compatible) is the default AI endpoint;
 # any other OpenAI-compatible URL works too.

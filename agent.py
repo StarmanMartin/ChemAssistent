@@ -28,7 +28,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from config import AUTO_RUN_MODES, WORKSPACE_DIR, Config
+from config import AUTO_RUN_MODES, SKILLS_DIR, WORKSPACE_DIR, Config
 
 
 REQUEST_TIMEOUT_S = 300
@@ -74,6 +74,8 @@ def execute_python_tool(mode: str) -> dict:
             "description": (
                 "Run Python code against the user's Chemotion ELN with the chemotion_api package. "
                 "A logged-in `instance` (chemotion_api.Instance) is predefined; never log in. "
+                "Only chemotion_api and the standard library are available: never install packages "
+                "or start other programs (pip, subprocess) here. "
                 + confirm +
                 " Assign what the user should see to `result`. The answer contains the printed "
                 "output, `result` as JSON, the error traceback, or the user's reason for rejecting "
@@ -469,6 +471,9 @@ class Agent:
         if exchange is not None:
             exchange.mkdir(parents=True, exist_ok=True)
             self.roots.append(exchange.resolve())
+            # The calculation skills are about execute_jupyter code.
+            if SKILLS_DIR.is_dir():
+                self.roots.append(SKILLS_DIR.resolve())
         self.cancelled = threading.Event()
         self.busy = False
         self._response = None

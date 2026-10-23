@@ -47,8 +47,9 @@ class SettingsWindow(Gtk.Window):
         self.data = read_raw_config()
         self.testing = False
 
-        grid = Gtk.Grid(column_spacing=12, row_spacing=10, border_width=14)
-        row = 0
+        # One tab per topic: the whole form does not fit on small screens.
+        self.notebook = Gtk.Notebook()
+        grid, row = self._page("Chemotion"), 0
 
         self.url = Gtk.Entry(hexpand=True)
         self.url.set_placeholder_text(EXAMPLE["url"])
@@ -77,11 +78,13 @@ class SettingsWindow(Gtk.Window):
         self.verify_tls.set_active(bool(self.data.get("verify_tls", True)))
         row = self._add_row(grid, row, "Verify TLS certificate", self.verify_tls)
 
-        heading = Gtk.Label(xalign=0)
-        heading.set_markup("<b>AI model</b> (any OpenAI-compatible API)")
-        heading.set_margin_top(8)
-        grid.attach(heading, 0, row, 2, 1)
+        self.test_button = Gtk.Button(label="Test connection", halign=Gtk.Align.START)
+        self.test_button.set_tooltip_text("Log in to Chemotion with these settings")
+        self.test_button.connect("clicked", self._on_test)
+        grid.attach(self.test_button, 1, row, 1, 1)
         row += 1
+
+        grid, row = self._page("AI model", "Any OpenAI-compatible API."), 1
 
         # The KI-Toolbox is offered in the list; any other URL can be typed.
         self.ai_url = Gtk.ComboBoxText.new_with_entry()
@@ -118,6 +121,10 @@ class SettingsWindow(Gtk.Window):
         row += 1
         self.loading_models = False
 
+        jupyter_grid = self._page("JupyterLab", "Optional: analyses (RDKit, pandas, plots, ...) in your JupyterLab.")
+        run_grid, run_row = self._page("Running code"), 0
+        grid, row = self._page("General"), 0
+
         self.hotkey = Gtk.Entry(hexpand=True)
         self.hotkey.set_placeholder_text("Off (e.g. <Control>space)")
         self.hotkey.set_text(str(self.data.get("hotkey") or ""))
@@ -138,13 +145,13 @@ class SettingsWindow(Gtk.Window):
             spin.set_halign(Gtk.Align.START)
             spin.set_value(self._int_value(key, lower))
             self.spins[key] = spin
-            row = self._add_row(grid, row, label, spin)
+            if key == "execution_timeout":
+                timeout_row = (label, spin)  # on "Running code", below the mode
+            else:
+                row = self._add_row(grid, row, label, spin)
 
-        heading = Gtk.Label(xalign=0)
-        heading.set_markup("<b>JupyterLab</b> (optional, for analyses)")
-        heading.set_margin_top(8)
-        grid.attach(heading, 0, row, 2, 1)
-        row += 1
+        general_grid, general_row = grid, row
+        grid, row = jupyter_grid, 1
 
         self.jupyter_url = Gtk.Entry(hexpand=True)
         self.jupyter_url.set_placeholder_text("Off (e.g. http://localhost:8888/lab?token=…)")
@@ -165,25 +172,20 @@ class SettingsWindow(Gtk.Window):
         row = self._add_row(grid, row, "Verify TLS certificate", self.jupyter_verify_tls)
         self.jupyter_test_button = Gtk.Button(label="Test JupyterLab")
         self.jupyter_test_button.connect("clicked", lambda *_: self._test_jupyter())
+        self.jupyter_test_button.set_halign(Gtk.Align.START)
+        grid.attach(self.jupyter_test_button, 1, row, 1, 1)
+        row += 1
         self.jupyter_note = Gtk.Label(
             label="Each conversation gets a folder with a notebook there; files the assistant "
                   "exchanges between Chemotion and Jupyter go through it.",
-            xalign=0, wrap=True, max_width_chars=50,
+            xalign=0, wrap=True, max_width_chars=60,
         )
         self.jupyter_note.get_style_context().add_class("dim-label")
-        jupyter_row = Gtk.Box(spacing=10)
-        jupyter_row.pack_start(self.jupyter_test_button, False, False, 0)
-        jupyter_row.pack_start(self.jupyter_note, True, True, 0)
-        grid.attach(jupyter_row, 1, row, 1, 1)
+        grid.attach(self.jupyter_note, 0, row, 2, 1)
         row += 1
         self.testing_jupyter = False
 
-        heading = Gtk.Label(xalign=0)
-        heading.set_markup("<b>Running code</b>")
-        heading.set_margin_top(8)
-        grid.attach(heading, 0, row, 2, 1)
-        row += 1
-
+        grid, row = run_grid, run_row
         self.auto_run = Gtk.ComboBoxText()
         for mode in AUTO_RUN_MODES:
             self.auto_run.append_text(AUTO_RUN_LABELS[mode])
@@ -198,9 +200,11 @@ class SettingsWindow(Gtk.Window):
             xalign=0, wrap=True, max_width_chars=60,
         )
         note.get_style_context().add_class("dim-label")
-        grid.attach(note, 1, row, 1, 1)
+        grid.attach(note, 0, row, 2, 1)
         row += 1
+        row = self._add_row(grid, row, *timeout_row)
 
+        grid, row = general_grid, general_row
         self.clear_history_button = Gtk.Button(label="Clear history")
         self.clear_history_button.set_tooltip_text(f"Delete the saved conversations in {history.HISTORY_DIR}")
         self.clear_history_button.connect("clicked", self._on_clear_history)
@@ -217,8 +221,6 @@ class SettingsWindow(Gtk.Window):
         self.status.set_text(str(CONFIG_FILE))
         self.status.get_style_context().add_class("dim-label")
 
-        self.test_button = Gtk.Button(label="Test connection")
-        self.test_button.connect("clicked", self._on_test)
         close_button = Gtk.Button(label="Close")
         close_button.connect("clicked", lambda *_: self.destroy())
         save_button = Gtk.Button(label="Save")
@@ -233,19 +235,28 @@ class SettingsWindow(Gtk.Window):
         self.service_button.connect("clicked", self._on_service_toggle)
 
         buttons = Gtk.Box(spacing=8)
-        buttons.pack_start(self.test_button, False, False, 0)
         buttons.pack_start(self.service_button, False, False, 0)
         buttons.pack_end(save_button, False, False, 0)
         buttons.pack_end(close_button, False, False, 0)
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
-        box.pack_start(grid, True, True, 0)
+        box.pack_start(self.notebook, True, True, 0)
         box.pack_start(self.status, False, False, 0)
         box.pack_start(buttons, False, False, 0)
         self.add(box)
         self._update_service_button()
         if ai_token(self.data):
             self._load_models()
+
+    def _page(self, title: str, intro: str = "") -> Gtk.Grid:
+        """A new tab with a form grid; `intro` goes into its first row."""
+        grid = Gtk.Grid(column_spacing=12, row_spacing=10, border_width=14)
+        if intro:
+            note = Gtk.Label(label=intro, xalign=0, wrap=True, max_width_chars=60)
+            note.get_style_context().add_class("dim-label")
+            grid.attach(note, 0, 0, 2, 1)
+        self.notebook.append_page(grid, Gtk.Label(label=title))
+        return grid
 
     @staticmethod
     def _add_row(grid: Gtk.Grid, row: int, text: str, widget: Gtk.Widget) -> int:

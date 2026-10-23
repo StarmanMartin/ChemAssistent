@@ -69,7 +69,7 @@ from agent import (  # noqa: E402
 from jupyter import JupyterBridge, JupyterError  # noqa: E402
 from config import (  # noqa: E402
     AUTO_RUN_LABELS, AUTO_RUN_MODES, CONFIG_FILE, STATE_DIR, WINDOWS, WORKSPACE_DIR, Config,
-    ai_problem, load_config, read_raw_config,
+    ai_problem, jupyter_problem, load_config, read_raw_config,
 )
 
 
@@ -1419,7 +1419,8 @@ class AssistantWindow(Gtk.Window):
     def open_prompt(self) -> None:
         try:
             config = load_config()
-            self.hint.set_text(f"Enter starts the assistant · Esc closes · Model: {config.ai_model}")
+            self.hint.set_text(f"Enter starts the assistant · Esc closes · Model: {config.ai_model}"
+                               + (" · JupyterLab" if config.jupyter else ""))
             self.set_default_size(config.prompt_width, -1)
             self.entry.set_width_chars(max(30, config.prompt_width // 11))
         except ValueError:
@@ -1691,6 +1692,11 @@ class AssistantWindow(Gtk.Window):
             self.agent.restore(saved["messages"], [str(root) for root in saved.get("roots") or []])
             self.chat.replay(self.agent.messages[1:])
             self.saved_messages = len(self.agent.messages) - 1
+        # Set but unusable: say so, or the agent quietly works without it.
+        problem = jupyter_problem(read_raw_config())
+        if problem:
+            self.chat.add_note(f"JupyterLab is off for this conversation: {problem}", "dialog-warning-symbolic",
+                               "request-error")
         self._grow()
         if text is not None:
             self._send(text)

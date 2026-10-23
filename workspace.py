@@ -10,7 +10,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from config import FROZEN, WINDOWS, WORKSPACE_DIR
+from config import FROZEN, SKILLS_DIR, WINDOWS, WORKSPACE_DIR
 
 
 HERE = Path(__file__).resolve().parent
@@ -49,6 +49,10 @@ How you work with Chemotion:
 - Prefer small read-only steps to find ids and names before changing anything.
   Say clearly in `purpose` whether the code changes data. Never delete or
   overwrite data unless the user asked for exactly that.
+- `execute_python` runs in the app's own Python environment: only
+  chemotion_api, its dependencies and the standard library. Never install
+  packages there and never start other programs (pip, subprocess, os.system),
+  even if the user's auto-run settings would let it run.
 - Elements are loaded through collections, e.g.
   `instance.get_root_collection().get_collection('Name').get_samples()`;
   new elements must be `.save()`d.
@@ -62,18 +66,23 @@ def reference_ready() -> bool:
     return (WORKSPACE_DIR / REFERENCE).is_file()
 
 
-def skill_lines() -> str:
+def skill_lines(jupyter: bool = False) -> str:
     """chemotionapi's skills (skills/<name>/SKILL.md with name and description
-    in the front matter) as prompt lines; the agent reads them on demand."""
+    in the front matter) as prompt lines; the agent reads them on demand.
+    `jupyter`: also the app's own skills (SKILLS_DIR, by absolute path)."""
     lines = []
-    for skill in sorted((WORKSPACE_DIR / SOURCE_DIR / "skills").glob("*/SKILL.md")):
+    skills = sorted((WORKSPACE_DIR / SOURCE_DIR / "skills").glob("*/SKILL.md"))
+    if jupyter:
+        skills += sorted(SKILLS_DIR.glob("*/SKILL.md"))
+    for skill in skills:
         meta = {}
         text = skill.read_text(encoding="utf-8", errors="replace")
         if text.startswith("---"):
             for line in text.split("---", 2)[1].splitlines():
                 key, _, value = line.partition(":")
                 meta[key.strip()] = value.strip()
-        path = skill.relative_to(WORKSPACE_DIR).as_posix()
+        path = (skill.relative_to(WORKSPACE_DIR).as_posix() if skill.is_relative_to(WORKSPACE_DIR)
+                else str(skill.resolve()))
         lines.append(f"  - `{path}`: {meta.get('description') or meta.get('name') or skill.parent.name}\n")
     if not lines:
         return ""
@@ -109,17 +118,28 @@ JupyterLab (for analyses):
   `figure_<n>.png`, and a Chemotion snippet's `result` as
   `chemotion_result_<n>.json`. Only for `read_file` and `list_files`: the
   folder is {exchange} on this computer.
+- For calculations (3D structures, conformers, optimisations, frequencies,
+  free energies, redox potentials, pKa, spectra, NMR, ML potentials, crystals)
+  read the jupyter-calculations skill first: it lists what is possible with pip
+  packages, the tested recipes and their accuracy.
 - Writing to Chemotion stays a separate, visible `execute_python` step: say in
   its `purpose` which element gets what.
 """
 
 
+# Appended without JupyterLab.
+NO_JUPYTER_PROMPT = """
+There is no JupyterLab in this conversation. Analyses that need more than the
+standard library (RDKit, pandas, numpy, plots) cannot run here: say so, and
+that the user can set up JupyterLab in the settings (tab "JupyterLab") and
+start a new conversation. Do not work around it.
+"""
+
+
 def system_prompt(exchange: Path | None = None) -> str:
     """`exchange`: the conversation's exchange folder when JupyterLab is on."""
-    prompt = SYSTEM_PROMPT.format(skills=skill_lines())
-    if exchange is not None:
-        prompt += JUPYTER_PROMPT.format(exchange=exchange)
-    return prompt
+    prompt = SYSTEM_PROMPT.format(skills=skill_lines(jupyter=exchange is not None))
+    return prompt + (JUPYTER_PROMPT.format(exchange=exchange) if exchange is not None else NO_JUPYTER_PROMPT)
 
 
 # The programs of the Windows build (windows/chem-assistent.spec) that run

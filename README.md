@@ -85,6 +85,18 @@ pandas, plots, spectra. Its code appears on the same cards (marked
   into a research plan, so you confirm every change. Your Chemotion login never
   reaches the Jupyter server.
 
+For standard calculations the agent follows the skill
+`skills/jupyter-calculations` (read when JupyterLab is configured): 3D
+structures and conformers (RDKit, GFN2-xTB via tblite), optimisations,
+frequencies/IR and free energies (ASE), redox potentials, pKa/log K, UV-Vis,
+singlet–triplet gaps, NMR shifts and (hyper)polarizabilities (PySCF), ML
+potentials (MACE, ANI-2x), random crystals (PyXtal), structure enumeration
+(RDKit reaction SMARTS) and DOCX reports. It tells you the method and the
+accuracy found in testing, asks before installing packages in your Jupyter
+environment, and says so when something needs programs that are not pip
+packages (ORCA, CREST/CENSO: e.g. ISC/RISC rates, phosphorescence, NMR
+couplings, metal-complex structures from SMILES).
+
 A typical request: “Take the samples of collection X, compute molecular
 weight and logP with RDKit, plot them and attach the plot to a new research
 plan in X.” Locally the exchange folders are in

@@ -33,6 +33,8 @@ APP_FILES=(agent.py app.py app_control.py chemotion_runner.py config.py gen_api_
   jupyter.py
   settings.py workspace.py setup_workspace.sh uninstall.sh requirements.txt
   chem-assistent.svg chem-assistent-panel.svg)
+# Folders copied as a whole (the app's agent skills).
+APP_DIRS=(skills)
 # Files of older versions (the opencode era) that an update removes.
 OLD_FILES=(console_win.py mcp_server.py opencode_models.py workspace/opencode.json)
 
@@ -125,6 +127,11 @@ for file in "${OLD_FILES[@]}"; do
   rm -f "$APP_DIR/$file"
 done
 rm -rf "$APP_DIR/__pycache__"
+# Folders are replaced as a whole (files removed upstream disappear too).
+for dir in "${APP_DIRS[@]}"; do
+  rm -rf "${APP_DIR:?}/$dir"
+  cp -r "$SOURCE_DIR/$dir" "$APP_DIR/$dir"
+done
 
 # --system-site-packages makes the apt-installed PyGObject visible in the venv.
 # Recreate the venv when the system Python version changed.
