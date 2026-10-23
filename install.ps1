@@ -12,9 +12,12 @@
 # One file is enough, e.g. in PowerShell
 #   irm https://raw.githubusercontent.com/StarmanMartin/ChemAssistent/main/install.ps1 | iex
 # It downloads the build of the GitHub release "windows-<branch>" (made by
-# .github/workflows/windows.yml); CHEM_ASSISTENT_REPO and CHEM_ASSISTENT_REF
-# choose another repository or branch. -Package installs a zip built with
-# windows\build.py instead.
+# .github/workflows/windows.yml). The tag "windows-<branch>" holds a copy of
+# this file with $DefaultRef set to that branch, so
+#   irm https://raw.githubusercontent.com/StarmanMartin/ChemAssistent/windows-<branch>/install.ps1 | iex
+# installs the build of <branch>; the file on a branch itself always says
+# "main". CHEM_ASSISTENT_REPO and CHEM_ASSISTENT_REF choose another repository
+# or branch. -Package installs a zip built with windows\build.py instead.
 #
 # Keep this file ASCII-only: PowerShell 5.1 reads files without a BOM in the
 # ANSI code page. Never use "exit": under iex it would close the user's shell.
@@ -33,7 +36,10 @@ function Install-ChemAssistent([string]$Package, [bool]$NoAutostart) {
 
     $AppName = "chem-assistent"
     $Repo = if ($env:CHEM_ASSISTENT_REPO) { $env:CHEM_ASSISTENT_REPO } else { "https://github.com/StarmanMartin/ChemAssistent" }
-    $Ref = if ($env:CHEM_ASSISTENT_REF) { $env:CHEM_ASSISTENT_REF } else { "main" }
+    # The workflow replaces 'main' in its copy for the tag "windows-<branch>";
+    # keep this line exactly as it is.
+    $DefaultRef = 'main'
+    $Ref = if ($env:CHEM_ASSISTENT_REF) { $env:CHEM_ASSISTENT_REF } else { $DefaultRef }
     $Tag = "windows-" + ($Ref -replace "/", "-")
     $Asset = "ChemAssistent-windows-x64.zip"
     $AppDir = Join-Path $env:LOCALAPPDATA "Programs\$AppName"

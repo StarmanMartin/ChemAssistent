@@ -136,8 +136,18 @@ Options: `-NoAutostart` to not start the app at login, `-Package <zip>` to
 install a locally built zip instead of downloading one. With the one-liner:
 `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/StarmanMartin/ChemAssistent/main/install.ps1))) -NoAutostart`.
 From a checkout: `powershell -ExecutionPolicy Bypass -File install.ps1`.
-Another branch: set `$env:CHEM_ASSISTENT_REF = "<branch>"` first (the script
-then downloads the release `windows-<branch>`).
+Another branch, e.g. to test a colleague's work: take `install.ps1` from the
+tag `windows-<branch>` instead of `main` (slashes in the branch name become
+`-`), its copy there installs the build of that branch:
+
+```powershell
+irm https://raw.githubusercontent.com/StarmanMartin/ChemAssistent/windows-<branch>/install.ps1 | iex
+```
+
+The `install.ps1` of the branch itself (`…/ChemAssistent/<branch>/install.ps1`)
+installs `main` like every other copy; alternatively set
+`$env:CHEM_ASSISTENT_REF = "<branch>"` first (the script then downloads the
+release `windows-<branch>`).
 
 Re-run the installer to update the app and chemotionapi; the configuration
 and the conversation history are kept.
@@ -208,7 +218,9 @@ The GitHub workflow `.github/workflows/windows.yml` builds the zip on
 become `-`): on every push that changes the app, every Monday (to pick up
 chemotionapi changes) and on demand (Actions > Windows build > Run
 workflow). The release is replaced by each build; `install.ps1` always
-downloads the newest one.
+downloads the newest one. The tag `windows-<branch>` points to a commit on
+top of the built one that only sets `$DefaultRef` in `install.ps1` to the
+branch (for `main` it is the built commit itself).
 
 To build it yourself on Windows you need Python 3.14 (e.g. from
 [python.org](https://www.python.org/downloads/windows/)); it must be that
