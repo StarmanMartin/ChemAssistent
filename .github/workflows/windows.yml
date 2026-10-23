@@ -57,7 +57,35 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="windows-${GITHUB_REF_NAME//\//-}"
-          git tag -f "$tag"
+          # The tag points to a commit on top of the branch whose install.ps1
+          # installs this branch by default, so that
+          # raw.githubusercontent.com/<repo>/windows-<branch>/install.ps1 does.
+          # Built with plumbing in a separate index: the working tree (CRLF on
+          # Windows) stays out of it.
+          git show HEAD:install.ps1 > "$RUNNER_TEMP/install.ps1"
+          python - "$RUNNER_TEMP/install.ps1" "$GITHUB_REF_NAME" <<'EOF'
+          import sys
+          path, ref = sys.argv[1], sys.argv[2]
+          line = b"$DefaultRef = 'main'"
+          text = open(path, "rb").read()
+          if text.count(line) != 1:
+              sys.exit(f"install.ps1 must contain the line {line!r} exactly once")
+          quoted = ref.replace("'", "''").encode()
+          open(path, "wb").write(text.replace(line, b"$DefaultRef = '" + quoted + b"'"))
+          EOF
+          blob=$(git hash-object -w "$RUNNER_TEMP/install.ps1")
+          export GIT_INDEX_FILE="$RUNNER_TEMP/tag-index"
+          git read-tree HEAD
+          git update-index --cacheinfo "100644,$blob,install.ps1"
+          tree=$(git write-tree)
+          unset GIT_INDEX_FILE
+          commit=$(git rev-parse HEAD)
+          if [ "$tree" != "$(git rev-parse 'HEAD^{tree}')" ]; then
+            commit=$(git -c user.name="github-actions[bot]" \
+              -c user.email="41898283+github-actions[bot]@users.noreply.github.com" \
+              commit-tree "$tree" -p HEAD -m "install.ps1 for the branch $GITHUB_REF_NAME")
+          fi
+          git tag -f "$tag" "$commit"
           git push -f origin "refs/tags/$tag"
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" dist/ChemAssistent-windows-x64.zip --clobber
