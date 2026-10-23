@@ -16,8 +16,8 @@ import history  # noqa: E402
 import hotkey  # noqa: E402
 from agent import AgentError, list_models  # noqa: E402
 from config import (  # noqa: E402
-    AI_TOKEN_ENV, CONFIG_FILE, EXAMPLE, KI_TOOLBOX_URL, Config, ai_problem, ai_token, config_problem,
-    WINDOWS, read_raw_config, save_raw_config,
+    AI_TOKEN_ENV, AUTO_RUN_LABELS, AUTO_RUN_MODES, CONFIG_FILE, EXAMPLE, KI_TOOLBOX_URL, Config,
+    ai_problem, ai_token, config_problem, WINDOWS, read_raw_config, save_raw_config,
 )
 
 
@@ -138,6 +138,29 @@ class SettingsWindow(Gtk.Window):
             self.spins[key] = spin
             row = self._add_row(grid, row, label, spin)
 
+        heading = Gtk.Label(xalign=0)
+        heading.set_markup("<b>Running code</b>")
+        heading.set_margin_top(8)
+        grid.attach(heading, 0, row, 2, 1)
+        row += 1
+
+        self.auto_run = Gtk.ComboBoxText()
+        for mode in AUTO_RUN_MODES:
+            self.auto_run.append_text(AUTO_RUN_LABELS[mode])
+        current = str(self.data.get("auto_run") or "off")
+        self.auto_run.set_active(AUTO_RUN_MODES.index(current) if current in AUTO_RUN_MODES else 0)
+        row = self._add_row(grid, row, "Run the assistant's code", self.auto_run)
+        note = Gtk.Label(
+            label="Auto-run starts a snippet without your confirmation; you can still stop it while "
+                  "it runs. “Read-only code” still asks for anything that creates, changes or deletes "
+                  "data, or writes files. New conversations start with this mode; the menu in a "
+                  "conversation's header can change it while it is open.",
+            xalign=0, wrap=True, max_width_chars=60,
+        )
+        note.get_style_context().add_class("dim-label")
+        grid.attach(note, 1, row, 1, 1)
+        row += 1
+
         self.clear_history_button = Gtk.Button(label="Clear history")
         self.clear_history_button.set_tooltip_text(f"Delete the saved conversations in {history.HISTORY_DIR}")
         self.clear_history_button.connect("clicked", self._on_clear_history)
@@ -228,6 +251,8 @@ class SettingsWindow(Gtk.Window):
         }
         for key, spin in self.spins.items():
             values[key] = spin.get_value_as_int()
+        active = self.auto_run.get_active()
+        values["auto_run"] = AUTO_RUN_MODES[active] if active in range(len(AUTO_RUN_MODES)) else "off"
         return values
 
     # --- AI models ----------------------------------------------------------

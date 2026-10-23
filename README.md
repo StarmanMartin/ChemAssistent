@@ -12,7 +12,12 @@ OpenAI-compatible API, by default the
 
 **Nothing runs against Chemotion without your confirmation**: every piece of
 code the agent wants to run is shown to you first, you can edit it, and it runs
-only after you click **Run**.
+only after you click **Run**. If long tasks keep stopping at the Run button,
+turn on an auto-run mode (settings → *Running code*, or the menu in the
+conversation header): **Auto-run read-only code** starts snippets that only
+fetch data by themselves and still asks for anything that writes or deletes,
+**Auto-run everything** runs all code as it arrives. The card still shows what
+ran, and you can stop a run while it executes.
 
 [![Screencast: ChemAssistent lists the samples of a collection and adds a new one, each step after a click on Run](docs/assets/screencast.jpg)](docs/assets/screencast.mp4)
 
@@ -273,6 +278,10 @@ fill it in before distributing builds.
   local GLM), `alias.complex-gpt` or `alias.complex-claude`. The model must
   support tool calls.
 - `execution_timeout`: maximum run time of one confirmed snippet, in seconds.
+- `auto_run`: how the assistant's code runs: `off` (ask before every run),
+  `readonly` (read-only snippets run automatically, the rest still waits for
+  Run) or `always` (everything runs without confirmation). The menu in a
+  conversation's header overrides it while that conversation is open.
 - `prompt_width`: width of the prompt window.
 - `hotkey`: the global hotkey; pressed twice within 0.6 s it opens the
   prompt. GTK syntax (`<Control>space`, `<Super>c`, `<Control><Alt>k`), empty
