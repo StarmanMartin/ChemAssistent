@@ -16,6 +16,7 @@ and folders the user attached.
 from __future__ import annotations
 
 import ast
+import dataclasses
 import json
 import os
 import re
@@ -407,6 +408,8 @@ class Agent:
         ("done", None)         the answer to this message is complete
         ("error", message)
         ("stopped", None)      cancel() ended the turn
+    After an error, retry() repeats the request (set_model() may switch the
+    model first) without a new user message.
     `execute(purpose, code, cancelled)` asks the user and returns the text
     for the model; it must return when the `cancelled` event is set.
     """
@@ -426,12 +429,21 @@ class Agent:
         self.busy = False
         self._response = None
         self._call_counter = 0
+        self._drop_reasoning = False  # set_model(): strip reasoning_content before the next request
 
     def set_auto_run(self, mode: str) -> None:
         """Switch the auto-run mode mid-conversation (the header menu); the
         changed tool description goes out with the next request."""
         self.auto_run = mode if mode in AUTO_RUN_MODES else "off"
         self.tools = build_tools(self.auto_run)
+
+    def set_model(self, model: str) -> None:
+        """Switch the model mid-conversation (the header menu); the next
+        request uses it. Reasoning only goes back to the model that wrote it
+        (DeepSeek wants it), other backends may refuse the field. The worker
+        thread drops it (it may be sending the messages right now)."""
+        self.config = dataclasses.replace(self.config, ai_model=model)
+        self._drop_reasoning = True
 
     def restore(self, messages: list[dict], roots: list[str]) -> None:
         """Continue a saved conversation (history.py): its messages after the
@@ -466,6 +478,16 @@ class Agent:
         if lines:
             text += ATTACHMENT_NOTE + "\n".join(lines)
         self.messages.append({"role": "user", "content": text})
+        self._run()
+
+    def retry(self) -> None:
+        """Repeat the request after an error: the messages end with the user's
+        message or with tool results, which still wait for an answer."""
+        self.busy = True
+        self.cancelled.clear()
+        self._run()
+
+    def _run(self) -> None:
         try:
             for _ in range(MAX_ROUNDS):
                 message = self._complete()
@@ -511,6 +533,10 @@ class Agent:
 
     def _complete(self) -> dict:
         """One streamed chat completion; appends the assistant message to the history."""
+        if self._drop_reasoning:
+            self._drop_reasoning = False
+            for message in self.messages:
+                message.pop("reasoning_content", None)
         body = {
             "model": self.config.ai_model,
             "messages": self.messages,
