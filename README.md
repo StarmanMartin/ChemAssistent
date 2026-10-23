@@ -369,6 +369,31 @@ Changes apply to the next conversation; no restart needed.
 opens the prompt in the running instance (the **ChemAssistent** menu entry does
 this too).
 
+chemotion_api needs Python 3.13 or newer. If the system Python is older
+(Ubuntu 22.04 has 3.10), use a newer one (e.g. `python3.14` from the
+deadsnakes PPA) **without** `--system-site-packages` (Debian shares
+`/usr/lib/python3/dist-packages` between Python versions, and its `gi` only
+works with the system Python) and build PyGObject for it; on GLib older than
+2.80 (Ubuntu 22.04) that is PyGObject 3.50:
+
+```bash
+sudo apt install libgirepository1.0-dev libcairo2-dev python3.14-dev
+python3.14 -m venv .venv
+.venv/bin/pip install "PyGObject<3.51" pycairo -r requirements.txt
+```
+
+### On WSL (WSLg)
+
+The app runs from the source tree under WSLg as well, as a test setup: there
+is no top-bar icon (start it with `--show`; starting it again opens the
+prompt), no global hotkey (leave it empty) and no `systemctl --user` (the
+settings' Start/Stop button does not work). Install a cursor theme, e.g.
+`sudo apt install adwaita-icon-theme-full` on Ubuntu 22.04, or there is no
+mouse pointer. Under WSLg the app uses GTK's Wayland backend instead of
+XWayland (WSLg hides the pointer over every X11 window until `wsl --shutdown`
+once an X11 app hid it while typing), so the prompt is not centered and
+the window maximizes without the grow animation.
+
 ## Service
 
 ```bash
