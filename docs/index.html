@@ -102,6 +102,13 @@
   .flow .box.key p { color: var(--on-dark-soft); }
   .flow svg { width: 56px; height: 24px; flex: none; }
 
+  /* JupyterLab */
+  .flow.on-dark .box { background: var(--dark-2); border-color: #3a3d44; }
+  .flow.on-dark .box p { color: var(--on-dark-soft); }
+  .flow.on-dark .box.key { background: var(--blue-ink); border-color: var(--blue-ink); }
+  .flow.on-dark .box.key h3 { color: var(--on-dark); }
+  .flow.on-dark .box.key p { color: var(--on-dark); }
+  .row .col { flex: 1; }
   /* Safety */
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; }
   .grid2 > div { display: flex; gap: 28px; background: var(--dark-2); padding: 40px; border-radius: 16px; }
@@ -246,8 +253,28 @@
     </div>
   </section>
 
-  <!-- 8 How it works -->
-  <section class="slide light" aria-label="Slide 8: How it works" style="gap:64px">
+  <!-- 8 JupyterLab -->
+  <section class="slide dark" aria-label="Slide 8: Analyses in JupyterLab" style="gap:56px">
+    <div class="head">
+      <p class="eyebrow">Beyond the ELN</p>
+      <h2>Analyses and calculations in your JupyterLab</h2>
+    </div>
+    <div class="flow on-dark">
+      <div class="box"><h3>Fetch</h3><p>Chemotion code saves samples, spectra and files into the shared <code>exchange</code> folder</p></div>
+      <svg viewBox="0 0 56 24" aria-hidden="true"><path d="M2 12h44" stroke="#3db0ea" stroke-width="4"/><path d="M40 4l12 8-12 8" fill="none" stroke="#3db0ea" stroke-width="4" stroke-linejoin="round"/></svg>
+      <div class="box key"><h3>Analyse</h3><p>RDKit, pandas, plots and quantum chemistry run in a notebook of your JupyterLab</p></div>
+      <svg viewBox="0 0 56 24" aria-hidden="true"><path d="M2 12h44" stroke="#3db0ea" stroke-width="4"/><path d="M40 4l12 8-12 8" fill="none" stroke="#3db0ea" stroke-width="4" stroke-linejoin="round"/></svg>
+      <div class="box"><h3>Write back</h3><p>Plots and values go to the sample or research plan you name, in confirmed code</p></div>
+    </div>
+    <div class="row">
+      <div class="col"><h3 style="color:var(--blue)">Tested recipes</h3><p class="soft">Conformers, xTB and DFT, IR, redox potentials, pKa, UV-Vis, NMR, ML potentials: the agent states method and expected accuracy.</p></div>
+      <div class="col"><h3 style="color:var(--yellow)">Jobs for hours or days</h3><p class="soft">Long calculations run as background jobs. When one ends, the agent picks the conversation up again; a notification tells you if it is closed.</p></div>
+      <div class="col"><h3 style="color:var(--red)">Your notebook</h3><p class="soft">Every step becomes a cell in the conversation's notebook. Open it and continue by hand; your Chemotion login never reaches Jupyter.</p></div>
+    </div>
+  </section>
+
+  <!-- 9 How it works -->
+  <section class="slide light" aria-label="Slide 9: How it works" style="gap:64px">
     <div class="head">
       <p class="eyebrow">How it works</p>
       <h2>One request, five steps</h2>
@@ -266,8 +293,8 @@
     <p class="soft" style="font-size:32px;line-height:1.45;width:1500px">The agent is part of ChemAssistent and speaks the standard OpenAI-compatible API. It knows <b>chemotion_api, branch version-3</b> from a reference generated out of its documentation and from its skills, and reads the package source when it needs more detail.</p>
   </section>
 
-  <!-- 9 Safety -->
-  <section class="slide dark" aria-label="Slide 9: Safe by design">
+  <!-- 10 Safety -->
+  <section class="slide dark" aria-label="Slide 10: Safe by design">
     <div class="head">
       <p class="eyebrow">Safe by design</p>
       <h2>Powerful, but on a short leash</h2>
@@ -292,8 +319,8 @@
     </div>
   </section>
 
-  <!-- 10 Get started -->
-  <section class="slide light" aria-label="Slide 10: Get started" style="padding-bottom:160px">
+  <!-- 11 Get started -->
+  <section class="slide light" aria-label="Slide 11: Get started" style="padding-bottom:160px">
     <div class="head">
       <p class="eyebrow">Get started</p>
       <h2>Install once, ask from the top bar</h2>
@@ -310,7 +337,7 @@
 
 <nav class="controls" aria-label="Slide navigation">
   <button id="prev" aria-label="Previous slide">‹</button>
-  <span id="counter">1 / 10</span>
+  <span id="counter">1 / 11</span>
   <button id="next" aria-label="Next slide">›</button>
   <button id="full" aria-label="Full screen" title="Full screen (F)">⛶</button>
 </nav>
