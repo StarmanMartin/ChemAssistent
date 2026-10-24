@@ -524,7 +524,8 @@ class JupyterBridge:
         result = {}
         for path in sorted(self.local_dir.rglob("*")):
             relative = path.relative_to(self.local_dir)
-            if path.is_file() and not any(part.startswith(".") for part in relative.parts):
+            # No symlinks: only what really is in the folder goes to Jupyter.
+            if path.is_file() and not path.is_symlink() and not any(part.startswith(".") for part in relative.parts):
                 result[relative.as_posix()] = path
         return result
 
@@ -571,7 +572,10 @@ class JupyterBridge:
             if (model.get("size") or 0) > MAX_TRANSFER_BYTES:
                 notes.append(f"{relative} was not copied from JupyterLab: larger than {MAX_TRANSFER_BYTES >> 20} MB.")
                 continue
-            target = self.local_dir / relative
+            target = (self.local_dir / relative).resolve()
+            if not target.is_relative_to(self.local_dir.resolve()):
+                notes.append(f"{relative} was not copied from JupyterLab: its path leaves the exchange folder.")
+                continue
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(self.client.download(f"{self.folder}/{relative}"))
             manifest["local"][relative] = self._signature(target)
@@ -639,21 +643,33 @@ class JupyterBridge:
             self.client.start(kernel, f"{JOB_RUNNER}\n_ca_job({code!r}, {job_id!r}, {MAX_JOB_OUTPUT_CHARS})\n")
             return {"kernel": kernel, "notebook_url": self.job_url(job_id), "uploaded": uploaded, "notes": notes}
 
-    def job_status(self, job_id: str, kernel_id: str) -> dict:
-        """The job's state file ({"state": "running"|"done"|"failed", ...}).
-        A job whose kernel is gone before it finished is "lost"."""
-        status: dict = {"state": "running"}
+    def _job_state_file(self, job_id: str) -> dict:
         model = self.client.get(f"{self.folder}/{JOBS_FOLDER}/{job_id}.json", fmt="text")
         if model is not None:
             try:
-                status = json.loads(model.get("content") or "{}")
+                return json.loads(model.get("content") or "{}")
             except ValueError:
                 pass  # being written; next time
-        if status.get("state") == "running" and self.client.kernel_state(kernel_id) in (None, "dead"):
-            status = {**status, "state": "lost",
-                      "error": "The job's kernel is gone (JupyterLab restarted, the kernel was shut down or "
-                               "culled, or it ran out of memory)."}
-        return status
+        return {"state": "running"}
+
+    def job_status(self, job_id: str, kernel_id: str) -> dict:
+        """The job's state file ({"state": "running"|"done"|"failed", ...}).
+        A running job keeps its kernel busy until it wrote its outcome, so a
+        kernel that is gone or not busy (Jupyter restarts a kernel that died,
+        e.g. out of memory, under the same id) means the job is "lost"."""
+        status = self._job_state_file(job_id)
+        if status.get("state") != "running":
+            return status
+        kernel = self.client.kernel_state(kernel_id)
+        if kernel == "busy":
+            return status
+        status = self._job_state_file(job_id)  # it may have just ended
+        if status.get("state") != "running":
+            return status
+        gone = "is gone" if kernel in (None, "dead") else f"was restarted (now {kernel})"
+        return {**status, "state": "lost",
+                "error": f"The job's kernel {gone}: it ran out of memory or crashed, JupyterLab restarted, "
+                         "or the kernel was shut down or culled."}
 
     def job_log(self, job_id: str, chars: int = 2000) -> str:
         """The end of the job's printed output so far."""

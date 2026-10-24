@@ -92,3 +92,10 @@ def test_the_config_file_is_private(tmp_path):
     write_private_json(path, {"password": "secret"})
     assert (path.stat().st_mode & 0o777) == 0o600
     assert json.loads(path.read_text(encoding="utf-8"))["password"] == "secret"
+
+
+def test_config_is_hashable():
+    """jobs.Jobs caches its JupyterBridges by (conversation, Config)."""
+    config = app_config.Config(url="u", user="x", password="p", jupyter_url="http://j")
+    assert hash(config) == hash(app_config.Config(url="u", user="x", password="p", jupyter_url="http://j"))
+    assert {("conversation", config): 1}[("conversation", config)] == 1

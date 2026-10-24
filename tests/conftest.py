@@ -40,6 +40,10 @@ def pytest_configure(config) -> None:
         "markers",
         "chemotion: needs the local Chemotion test instance "
         "(auto-skipped when it is down; deselect with -m 'not chemotion')")
+    config.addinivalue_line(
+        "markers",
+        "jupyter: starts a throwaway Jupyter server (JUPYTER_TEST_BIN or jupyter on the PATH; "
+        "auto-skipped without it; deselect with -m 'not jupyter')")
 
 
 @pytest.fixture(scope="session")

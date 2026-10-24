@@ -28,6 +28,19 @@ What the Chemotion tests write goes into the collection
 deleted again afterwards (plain `DELETE /api/v1/samples/<id>`). They are the
 only tests that talk to a server; deselect them with `pytest -m "not chemotion"`.
 
+## Against a real Jupyter server
+
+`test_jupyter.py` starts its own throwaway Jupyter server (token `test`, a
+temporary root folder) from the `jupyter` program in `JUPYTER_TEST_BIN` or on
+the PATH; it needs `jupyter_server` and `ipykernel`. Without one these tests
+are skipped (marker `jupyter`; deselect with `-m "not jupyter"`). A separate
+venv is enough:
+
+```
+python3 -m venv /tmp/jlab && /tmp/jlab/bin/pip install jupyter_server ipykernel
+JUPYTER_TEST_BIN=/tmp/jlab/bin/jupyter .venv/bin/python -m pytest tests/
+```
+
 ## What tests what
 
 - `test_agent.py`: the agent loop against the scripted AI — streamed answers
@@ -46,6 +59,15 @@ only tests that talk to a server; deselect them with `pytest -m "not chemotion"`
 - `test_runner.py`: `to_jsonable()`/`describe_object()`, login and connection
   errors, tracebacks that start in the snippet, and one run as a subprocess
   (stdin/stdout JSON), as `app.py` starts it.
+- `test_jupyter.py`: `JupyterBridge.run()` (cell recorded, exchange synced
+  both ways, variables persist) and background jobs through the real watcher:
+  value, output and files in the report; a traceback that starts in the job's
+  code; a killed kernel (Jupyter restarts it idle) and a shut-down kernel end
+  the job; cancel is finished by the watcher, also after a restart of the app;
+  a cancel that comes too late reports the real outcome; a restarted app picks
+  up running jobs; another server in the settings is a problem, not an end.
+  Without a server: sync never writes outside the exchange folder and never
+  uploads symlinks.
 - `test_config.py`, `test_history.py`, `test_jobs.py`: settings validation
   (private file mode, env overrides, legacy model ids), the conversation files
   (0600, prune, exchange folders go with them) and the job registry

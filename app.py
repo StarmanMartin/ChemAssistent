@@ -75,7 +75,7 @@ import workspace  # noqa: E402
 from agent import (  # noqa: E402
     ATTACHMENT_NOTE, STOPPED_NOTE, Agent, AgentError, list_models, looks_read_only, tool_summary,
 )
-from jobs import FINISHED, REPORT_HEADER, USER_TEXT, Jobs, duration  # noqa: E402
+from jobs import ACTIVE, FINISHED, REPORT_HEADER, USER_TEXT, Jobs, duration  # noqa: E402
 from jupyter import JupyterBridge, JupyterError  # noqa: E402
 from config import (  # noqa: E402
     AUTO_RUN_LABELS, AUTO_RUN_MODES, CONFIG_FILE, STATE_DIR, WINDOWS, WORKSPACE_DIR, Config,
@@ -1514,7 +1514,7 @@ class AssistantWindow(Gtk.Window):
             line.pack_start(title, True, True, 0)
             if any(job.get("wake", True) for job in self.app.jobs.undelivered(entry.id)):
                 line.pack_start(label("job finished", "request-target", wrap=False), False, False, 0)
-            elif any(job["state"] == "running" for job in self.app.jobs.list(entry.id)):
+            elif any(job["state"] in ACTIVE for job in self.app.jobs.list(entry.id)):
                 line.pack_start(label("job running", "dim", wrap=False), False, False, 0)
             line.pack_start(label(history.age(entry.updated), "dim", wrap=False), False, False, 0)
             line.pack_start(icon_button("user-trash-symbolic", "Delete from the history",
@@ -1695,7 +1695,7 @@ class AssistantWindow(Gtk.Window):
             return
         jobs = self.app.jobs.list(self.conversation_id)
         self.jobs_button.set_visible(bool(jobs))
-        running = sum(job["state"] == "running" for job in jobs)
+        running = sum(job["state"] in ACTIVE for job in jobs)
         self.jobs_label.set_text(f"{running} running" if running else f"{len(jobs)} job{'s' * (len(jobs) != 1)}")
         menu = Gtk.Menu()
         for job in reversed(jobs):
@@ -2234,7 +2234,7 @@ class ChemAssistentApp:
                 item.connect("activate", lambda _item, conversation=job["conversation"]:
                              self.open_conversation(conversation))
                 items.append(item)
-        running = sum(job["state"] == "running" for job in jobs)
+        running = sum(job["state"] in ACTIVE for job in jobs)
         if running:
             item = Gtk.MenuItem(label=f"{running} background job{'s' * (running != 1)} running")
             item.set_sensitive(False)

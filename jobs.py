@@ -6,7 +6,9 @@ JOBS_FILE. The watcher thread polls the state file of every running job
 every POLL_S seconds (also after a restart of the app: everything is in
 files, the job itself runs on the Jupyter server). When a job ends it shuts
 its kernel down, copies new files into the conversation's exchange folder
-and stores a report for the agent. The app delivers the report into its
+and stores a report for the agent. The watcher is the only one that ends a
+job: cancel() just marks it "cancelling" (the watcher then shuts the kernel
+down, also after a restart), so a job ends exactly once. The app delivers the report into its
 conversation as a new turn (when the conversation is open and idle, or as
 soon as it is continued from the history) and notifies the user otherwise.
 """
@@ -32,6 +34,8 @@ KEEP_S = 30 * 86400
 # Printed output of a running job that jupyter_jobs shows the agent.
 PROGRESS_CHARS = 1500
 FINISHED = ("done", "failed", "lost", "cancelled")
+# Jobs the watcher still looks after.
+ACTIVE = ("running", "cancelling")
 # The user message that carries job reports to the agent; ChatPanel.replay()
 # shows it as notes. A message the user typed meanwhile follows USER_TEXT.
 REPORT_HEADER = "[Background job report]\n"
@@ -95,7 +99,8 @@ class Jobs:
         self.on_change = on_change
         self.lock = threading.Lock()
         self.wakeup = threading.Event()
-        self.bridges: dict[tuple, JupyterBridge] = {}
+        self.bridges: dict[tuple, JupyterBridge] = {}  # Config is a frozen dataclass: hashable
+        self.watching = False
         try:
             data = json.loads(JOBS_FILE.read_text(encoding="utf-8"))
             self.jobs: list[dict] = [job for job in data if isinstance(job, dict) and job.get("id")]
@@ -117,10 +122,13 @@ class Jobs:
             self.jobs.append(job)
             self._save()
 
-    def update(self, job_id: str, only_running: bool = False, **changes) -> bool:
+    def update(self, job_id: str, only_running: bool = False, only_state: str | None = None, **changes) -> bool:
+        """Change a job; with `only_state` (`only_running`: "running") only
+        while it is in that state. False if nothing changed."""
+        expected = "running" if only_running else only_state
         with self.lock:
             for job in self.jobs:
-                if job["id"] == job_id and not (only_running and job["state"] != "running"):
+                if job["id"] == job_id and (expected is None or job["state"] == expected):
                     job.update(changes)
                     self._save()
                     return True
@@ -169,31 +177,15 @@ class Jobs:
         self.on_change()
         return {**job, "uploaded": started["uploaded"], "notes": started["notes"]}
 
-    def cancel(self, job_id: str) -> None:
-        """Shut the job's kernel down (in a thread); its report goes to the
-        agent with the next message, without starting a turn by itself."""
-        def work() -> None:
-            job = next((job for job in self.list() if job["id"] == job_id), None)
-            if job is None or job["state"] != "running":
-                return
-            finished = time.time()
-            if not self.update(job_id, only_running=True, state="cancelled", finished=finished, wake=False):
-                return
-            job.update(state="cancelled", finished=finished)
-            finish: dict = {}
-            try:
-                bridge = self._bridge(job, load_config())
-                bridge.cancel_job(job_id)
-                finish = bridge.finish_job(job_id)
-            except (JupyterError, ValueError, TimeoutError) as exc:
-                finish = {"notes": [f"Shutting the job down: {exc}"]}
-            except Exception as exc:
-                LOG.exception("Cancelling job %s failed", job_id)
-                finish = {"notes": [f"Shutting the job down: {type(exc).__name__}: {exc}"]}
-            self.update(job_id, report=report(job, {}, finish))
-            self.on_change()
-
-        threading.Thread(target=work, daemon=True).start()
+    def cancel(self, job_id: str) -> bool:
+        """Ask a running job to stop. The watcher shuts its kernel down and
+        reports it (or its real outcome, if it ended meanwhile); the report
+        goes to the agent with the next message, without starting a turn."""
+        if not self.update(job_id, only_running=True, state="cancelling", wake=False):
+            return False
+        self.on_change()
+        self.wake()
+        return True
 
     def info(self, conversation: str) -> str:
         """The jupyter_jobs tool: this conversation's jobs, with the latest
@@ -224,7 +216,9 @@ class Jobs:
 
     # --- the watcher ------------------------------------------------------------------
     def start(self) -> None:
-        threading.Thread(target=self._watch, daemon=True).start()
+        if not self.watching:  # one watcher: it alone ends jobs
+            self.watching = True
+            threading.Thread(target=self._watch, daemon=True).start()
 
     def wake(self) -> None:
         self.wakeup.set()
@@ -240,35 +234,44 @@ class Jobs:
             self.wakeup.clear()
 
     def _check(self) -> bool:
-        """One round over the running jobs; True if something changed."""
-        running = [job for job in self.list() if job["state"] == "running"]
-        if not running:
+        """One round over the active jobs; True if something changed."""
+        active = [job for job in self.list() if job["state"] in ACTIVE]
+        if not active:
             return False
         changed = False
         try:
             config = load_config()
         except ValueError as exc:
-            for job in running:
+            for job in active:
                 changed |= job.get("problem") != str(exc) and self.update(job["id"], problem=str(exc))
             return changed
-        for job in running:
+        for job in active:
             problem = ""
             try:
                 bridge = self._bridge(job, config)
                 status = bridge.job_status(job["id"], job["kernel"])
                 if status.get("state") in ("done", "failed", "lost"):
+                    state = status["state"]  # also when a cancel came too late
+                elif job["state"] == "cancelling":
+                    bridge.cancel_job(job["id"])
+                    state, status = "cancelled", {}
+                else:
+                    state = ""
+                if state:
                     try:
                         finish = bridge.finish_job(job["id"])
                     except TimeoutError:
                         continue  # a run holds the exchange folder; next round
-                    job.update(state=status["state"], finished=time.time())
-                    if self.update(job["id"], only_running=True, state=job["state"], finished=job["finished"],
+                    listed = job["state"]
+                    job.update(state=state, finished=time.time())
+                    # Only from the state seen above: a cancel meanwhile is handled next round.
+                    if self.update(job["id"], only_state=listed, state=state, finished=job["finished"],
                                    report=report(job, status, finish), problem=""):
-                        LOG.info("Background job %s: %s", job["id"], job["state"])
+                        LOG.info("Background job %s: %s", job["id"], state)
                         changed = True
                     continue
             except JupyterError as exc:
                 problem = str(exc)
             if job.get("problem") != problem:
-                changed |= self.update(job["id"], only_running=True, problem=problem)
+                changed |= self.update(job["id"], only_state=job["state"], problem=problem)
         return changed
