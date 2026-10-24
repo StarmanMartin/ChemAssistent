@@ -408,6 +408,14 @@ Changes apply to the next conversation; no restart needed.
 opens the prompt in the running instance (the **ChemAssistent** menu entry does
 this too).
 
+Tests (pytest; the AI is simulated, the Chemotion tests need the local test
+instance and are skipped without it; details in `tests/README.md`):
+
+```bash
+.venv/bin/pip install pytest
+.venv/bin/python -m pytest tests/
+```
+
 ## Service
 
 ```bash
