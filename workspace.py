@@ -118,6 +118,12 @@ JupyterLab (for analyses):
   `figure_<n>.png`, and a Chemotion snippet's `result` as
   `chemotion_result_<n>.json`. Only for `read_file` and `list_files`: the
   folder is {exchange} on this computer.
+- `execute_jupyter` must finish within the user's time limit (a few minutes).
+  Longer calculations go to `start_jupyter_job`: a background job in its own
+  kernel that may run for hours or days. Its code must be self-contained
+  (imports, input from `exchange`, results saved into `exchange`). After
+  starting it, end your answer; a message with the job's outcome arrives when
+  it ends, and you continue from there. Several jobs may run at once.
 - For calculations (3D structures, conformers, optimisations, frequencies,
   free energies, redox potentials, pKa, spectra, NMR, ML potentials, crystals)
   read the jupyter-calculations skill first: it lists what is possible with pip

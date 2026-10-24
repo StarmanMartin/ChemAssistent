@@ -3,7 +3,7 @@
 Needs the helpers from `setup.md` and, for geometries, `optimise`/`xtb` (GFN2
 geometries are good enough for single points). Times are for small molecules
 (≤ 12 heavy atoms, def2-SVP); they grow steeply with size (rule 3 in SKILL.md).
-Long runs: use the background-job pattern.
+Long runs: start them with `start_jupyter_job` ("Long jobs" in `setup.md`).
 
 ```python
 from pyscf import gto, dft, scf, tddft
@@ -122,8 +122,8 @@ sigma = isotropic_shieldings(molecule_)
 
 Static α and β (coupled-perturbed KS); frequency-dependent α only. Atomic units
 (β: 1 au = 8.639e-33 esu). p-nitroaniline: ~90 s for α and β, ~8 min with the
-dynamic α: over the default run time, so start it as a background job
-(`setup.md`).
+dynamic α: over the default run time, so start it with `start_jupyter_job`
+("Long jobs" in `setup.md`).
 
 ```python
 from pyscf.prop import polarizability

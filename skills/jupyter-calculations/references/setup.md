@@ -88,31 +88,17 @@ def internal(values, atoms):
 
 ## Long jobs (longer than one snippet may run)
 
-Start the work in a thread of the kernel; the snippet returns at once and the
-kernel keeps computing. Poll in later snippets. Store results in the `job`
-dict and in `exchange` files (prints from the thread would land in whatever
-cell runs next).
+Start them with `start_jupyter_job`, not `execute_jupyter`. The job runs in a
+new kernel of its own, may take hours or days, and you get a message with its
+outcome when it ends:
 
-```python
-import threading, time, json
-
-job = {"state": "running", "progress": 0, "result": None, "error": None}
-
-def _work():
-    try:
-        for i in range(8):                 # the long calculation, step by step
-            time.sleep(1)
-            job["progress"] = i + 1
-        job["result"] = 42
-        (exchange / "job_result.json").write_text(json.dumps(job["result"]))
-        job["state"] = "done"
-    except Exception as exc:
-        job["state"], job["error"] = "failed", repr(exc)
-
-threading.Thread(target=_work, daemon=True).start()
-job["state"]
-```
-
-Poll with a snippet that only shows `job` (answer the user meanwhile; do not
-loop waiting in one snippet). Files the thread writes come back with the next
-`execute_jupyter` run.
+- The code must be self-contained: its imports, the definitions of the helpers
+  from this file it uses (copy them into the job code), its input read from
+  `exchange` (save structures as XYZ/JSON there first, e.g. with
+  `execute_jupyter`) and every result saved into `exchange` with a clear name.
+- Print progress: the printed output is the job's log; `jupyter_jobs` shows
+  its latest lines while the job runs, the report the end of it.
+- The report also has the value of the last expression and the new files.
+  Figures the job shows are saved as `<job id>_figure_<n>.png`; better save
+  them yourself with a clear name.
+- After starting it, end your answer and say what runs; do not poll.

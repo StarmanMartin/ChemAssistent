@@ -18,8 +18,9 @@ and do not invent other APIs.
    `%pip install ...` line from `references/setup.md` is needed and run it only
    after they agree (it changes their Jupyter environment).
 2. **Stay within the run time.** One snippet may run at most the user's
-   *execution_timeout* (default 300 s). Anything longer: use the background-job
-   pattern in `references/setup.md` and poll it in later snippets.
+   *execution_timeout* (default 300 s). Anything longer: start it as a
+   background job with `start_jupyter_job` (self-contained code; see "Long
+   jobs" in `references/setup.md`) and continue when its report arrives.
 3. **Size limits.** xTB: up to ~200 atoms. DFT (PySCF, def2-SVP): up to ~20
    heavy atoms per single point within minutes; TDDFT/NMR/polarizabilities on
    the small end of that. Say so before starting something bigger.

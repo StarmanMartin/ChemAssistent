@@ -85,6 +85,31 @@ pandas, plots, spectra. Its code appears on the same cards (marked
   into a research plan, so you confirm every change. Your Chemotion login never
   reaches the Jupyter server.
 
+### Long calculations: background jobs
+
+A Jupyter snippet must finish within `execution_timeout` (default 300 s). For
+anything longer the agent uses `start_jupyter_job`: after you confirm it (card
+marked *JupyterLab job*), the code runs in a kernel of its own, for hours or
+days, and the agent finishes its answer. The app keeps watching the job (every
+30 s, also after a restart; the job runs on the Jupyter server, so your
+computer may be off meanwhile). When the job ends, its kernel is shut down, new
+files are copied into the exchange folder and the agent continues the
+conversation with the job's outcome, printed output and files:
+
+- with the conversation open, by itself;
+- otherwise a notification (Linux) and an entry in the top-bar menu
+  (*Job done: … – continue…*) open the conversation, and it continues there;
+  the prompt's recent list marks such conversations with *job finished*.
+
+The clock button in the conversation header lists its jobs (state, run time),
+opens a job's notebook (`jobs/<job id>.ipynb` in the conversation folder; next
+to it `<job id>.log` with the printed output and `<job id>.json` with the
+state) and cancels a running job. Ask the agent how a job is doing to see its
+latest output. A job does not see the variables of the conversation's kernel:
+it reads its input from the exchange folder. A JupyterHub that culls idle
+servers, a server restart or running out of memory ends a job early; the agent
+is told so.
+
 For standard calculations the agent follows the skill
 `skills/jupyter-calculations` (read when JupyterLab is configured): 3D
 structures and conformers (RDKit, GFN2-xTB via tblite), optimisations,
@@ -106,15 +131,16 @@ a conversation ends (you may still use them in JupyterLab).
 
 ## Safety
 
-- The agent has exactly four tools (five with JupyterLab): `execute_python`, which waits for your
+- The agent has exactly four tools (seven with JupyterLab): `execute_python`, which waits for your
   confirmation in the result panel and is its only way to reach Chemotion,
   and `read_file`, `grep` and `list_files`, which only read the API reference
   and the chemotionapi checkout in its workspace plus the files and folders
   you attached. It cannot run shell
   commands, edit files or fetch web pages. With JupyterLab configured,
-  `execute_jupyter` runs code there under the same confirmation rules, except
-  that *Auto-run read-only code* never applies to it (only *Auto-run
-  everything* runs it without asking).
+  `execute_jupyter` and `start_jupyter_job` run code there under the same
+  confirmation rules, except that *Auto-run read-only code* never applies to
+  them (only *Auto-run everything* runs them without asking);
+  `jupyter_jobs` only reads the state of the conversation's jobs.
 - Confirmed code runs in its own process with an already logged-in
   `instance`; your password is never shown to the AI model. It is stopped
   after `execution_timeout` seconds and can be cancelled while it runs.

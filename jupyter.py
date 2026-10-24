@@ -14,6 +14,13 @@ and downloads what is new in Jupyter afterwards. Results go back to
 Chemotion through the agent's execute_python, which reads the local copy;
 Chemotion credentials never reach the Jupyter server.
 
+Background jobs (start_jupyter_job, jobs.py) run in a kernel of their own,
+started for the notebook jobs/<job id>.ipynb in that folder: JOB_RUNNER
+runs the code inside the kernel and writes the job's state to
+jobs/<job id>.json and its printed output to jobs/<job id>.log, so nobody
+has to listen to the kernel while it works (hours or days); jobs.py polls
+the state file.
+
 Only the standard Jupyter Server REST API (contents, sessions, kernels) and
 the kernel websocket (messaging protocol 5) are used, so JupyterLab,
 Notebook 7 and JupyterHub user servers (/user/<name>/) all work.
@@ -36,6 +43,10 @@ from config import Config, write_private_json
 
 
 NOTEBOOK = "analysis.ipynb"
+# Background jobs: notebook, state and log of each job; not synced.
+JOBS_FOLDER = "jobs"
+# How much of a job's printed output its state file and job_log() keep.
+MAX_JOB_OUTPUT_CHARS = 20000
 SYNC_FILE = ".sync.json"  # in the local exchange folder: what was transferred
 MAX_TRANSFER_BYTES = 50 * 1024 * 1024
 REQUEST_TIMEOUT_S = 60
@@ -64,6 +75,71 @@ INTRO_CELLS = [
     {"cell_type": "code", "execution_count": None, "metadata": {}, "outputs": [], "source":
         "from pathlib import Path\n\nexchange = Path.cwd()  # files shared with ChemAssistent"},
 ]
+
+
+# Runs a background job inside its kernel (cwd = <conversation folder>/jobs):
+# `exchange` is the conversation folder, prints go to <job id>.log, figures
+# into `exchange` as <job id>_figure_<n>.png, the outcome into <job id>.json
+# (state running → done/failed; written atomically).
+JOB_RUNNER = """\
+def _ca_job(code, job_id, max_output):
+    import base64, contextlib, json, os, pathlib, sys, time, traceback
+    from IPython import get_ipython
+    from IPython.utils.capture import capture_output
+
+    def formatted(exc):
+        # From the job's own code on: IPython's frames above it say nothing.
+        if isinstance(exc, SyntaxError):
+            return "".join(traceback.format_exception_only(type(exc), exc))
+        tb = exc.__traceback__
+        while tb is not None and "ipykernel_" not in tb.tb_frame.f_code.co_filename \\
+                and not tb.tb_frame.f_code.co_filename.startswith("<"):
+            tb = tb.tb_next
+        return "".join(traceback.format_exception(type(exc), exc, tb or exc.__traceback__))
+
+    folder = pathlib.Path.cwd()
+    exchange = folder.parent
+    status = {"state": "running", "started": time.time()}
+
+    def save(**changes):
+        status.update(changes, updated=time.time())
+        temporary = folder / f"{job_id}.json.tmp"
+        temporary.write_text(json.dumps(status, default=str), encoding="utf-8")
+        os.replace(temporary, folder / f"{job_id}.json")
+
+    save()
+    shell = get_ipython()
+    shell.user_ns["exchange"] = exchange
+    error, result, figures = "", None, []
+    with open(folder / f"{job_id}.log", "w", buffering=1, encoding="utf-8") as log:
+        with contextlib.redirect_stdout(log), contextlib.redirect_stderr(log), \\
+                capture_output(stdout=False, stderr=False, display=True) as captured:
+            # capture_output() captures the last expression too; the shell's
+            # own displayhook puts it into outcome.result.
+            sys.displayhook = shell.displayhook
+            try:
+                outcome = shell.run_cell(code, store_history=False)
+                failure = outcome.error_before_exec or outcome.error_in_exec
+                if failure is not None:
+                    error = formatted(failure)
+                elif outcome.result is not None:
+                    result = repr(outcome.result)[:max_output]
+            except BaseException as exc:
+                error = formatted(exc)
+        for output in captured.outputs:
+            png = output.data.get("image/png")
+            if png is None:
+                continue
+            name = f"{job_id}_figure_{len(figures) + 1}.png"
+            try:
+                (exchange / name).write_bytes(png if isinstance(png, bytes) else base64.b64decode(png))
+                figures.append(name)
+            except (OSError, ValueError) as exc:
+                print(f"Could not save a figure: {exc}", file=log)
+    text = (folder / f"{job_id}.log").read_text(encoding="utf-8", errors="replace")
+    save(state="failed" if error else "done", finished=time.time(), error=error[-max_output:], result=result,
+         figures=figures, output=text[-max_output:], output_chars=len(text))
+"""
 
 
 class JupyterError(Exception):
@@ -235,11 +311,21 @@ class JupyterClient:
         except JupyterError:
             pass
 
-    def execute(self, kernel_id: str, code: str, timeout: float, cancelled: threading.Event | None = None,
-                silent: bool = False, user_expressions: dict | None = None) -> dict:
-        """Run `code` in the kernel and collect what it outputs.
-        Returns {ok, stdout, result, images, error, outputs, execution_count,
-        user_expressions}; `outputs` are nbformat outputs for the notebook."""
+    def kernel_state(self, kernel_id: str) -> str | None:
+        """The kernel's execution_state (idle, busy, ...), None if it is gone."""
+        model = self.request("GET", f"api/kernels/{kernel_id}", ok404=True)
+        return str(model.get("execution_state") or "unknown") if model is not None else None
+
+    def close_session(self, path: str) -> None:
+        """Shut down the session (and kernel) of the notebook at `path`, if any."""
+        for model in self.request("GET", "api/sessions") or []:
+            if str(model.get("path") or "").strip("/") == path.strip("/"):
+                self.request("DELETE", f"api/sessions/{model['id']}", ok404=True)
+
+    def _channels(self, kernel_id: str, code: str, silent: bool = False,
+                  user_expressions: dict | None = None):
+        """A websocket to the kernel with an execute_request for `code` sent;
+        returns (websocket, msg_id)."""
         import websocket  # websocket-client; only needed here
 
         self.login()
@@ -267,6 +353,54 @@ class JupyterClient:
             )
         except Exception as exc:
             raise JupyterError(f"Cannot connect to the kernel at {self.base}: {exc}") from None
+        try:
+            ws.send(json.dumps(message))
+        except Exception as exc:
+            ws.close()
+            raise JupyterError(f"Cannot send code to the kernel at {self.base}: {exc}") from None
+        return ws, msg_id
+
+    def start(self, kernel_id: str, code: str) -> None:
+        """Send `code` to the kernel and return once it started running; the
+        kernel keeps going after the websocket closes (background jobs)."""
+        import websocket
+
+        ws, msg_id = self._channels(kernel_id, code)
+        deadline = time.monotonic() + REQUEST_TIMEOUT_S
+        try:
+            ws.settimeout(0.5)
+            while time.monotonic() < deadline:
+                try:
+                    reply = json.loads(ws.recv())
+                except websocket.WebSocketTimeoutException:
+                    continue
+                except (TypeError, ValueError):
+                    continue
+                if (reply.get("parent_header") or {}).get("msg_id") != msg_id:
+                    continue
+                kind = (reply.get("header") or {}).get("msg_type") or reply.get("msg_type")
+                content = reply.get("content") or {}
+                if kind == "status" and content.get("execution_state") == "busy":
+                    return
+                if kind == "execute_reply" or kind == "error":
+                    return  # already over: the state file says how it went
+            raise JupyterError("The job's kernel did not start running the code.")
+        except (OSError, websocket.WebSocketException) as exc:
+            raise JupyterError(f"The connection to the kernel broke: {exc}") from None
+        finally:
+            try:
+                ws.close()
+            except Exception:
+                pass
+
+    def execute(self, kernel_id: str, code: str, timeout: float, cancelled: threading.Event | None = None,
+                silent: bool = False, user_expressions: dict | None = None) -> dict:
+        """Run `code` in the kernel and collect what it outputs.
+        Returns {ok, stdout, result, images, error, outputs, execution_count,
+        user_expressions}; `outputs` are nbformat outputs for the notebook."""
+        import websocket  # websocket-client; only needed here
+
+        ws, msg_id = self._channels(kernel_id, code, silent, user_expressions)
         outcome = {"ok": True, "stdout": "", "result": None, "images": [], "error": "", "outputs": [],
                    "execution_count": None, "user_expressions": {}}
         streams: list[str] = []
@@ -274,7 +408,6 @@ class JupyterClient:
         interrupted = ""
         idle = replied = False
         try:
-            ws.send(json.dumps(message))
             ws.settimeout(0.5)
             while not (idle and replied):
                 if not interrupted and (time.monotonic() > deadline or (cancelled and cancelled.is_set())):
@@ -345,6 +478,17 @@ class JupyterClient:
         return outcome
 
 
+# One lock per exchange folder: the window's bridge and the job watcher's
+# (jobs.py) must not sync the same folder at the same time.
+_LOCKS: dict[Path, threading.Lock] = {}
+_LOCKS_GUARD = threading.Lock()
+
+
+def folder_lock(local_dir: Path) -> threading.Lock:
+    with _LOCKS_GUARD:
+        return _LOCKS.setdefault(local_dir.resolve(), threading.Lock())
+
+
 class JupyterBridge:
     """One conversation's notebook, kernel and exchange folder."""
 
@@ -354,7 +498,7 @@ class JupyterBridge:
         self.folder = f"{config.jupyter_folder}/{conversation_id}"
         self.notebook = f"{self.folder}/{NOTEBOOK}"
         self.local_dir = local_dir
-        self.lock = threading.Lock()  # one run at a time
+        self.lock = folder_lock(local_dir)  # one run or sync at a time
         self.ran_before = False  # the notebook has cells of earlier runs (also before a resume)
 
     @property
@@ -420,7 +564,8 @@ class JupyterBridge:
         manifest = self._manifest()
         downloaded = []
         for relative, model in self.client.files(self.folder).items():
-            if relative == NOTEBOOK or manifest["remote"].get(relative) == model.get("last_modified"):
+            if (relative == NOTEBOOK or relative.startswith(f"{JOBS_FOLDER}/")
+                    or manifest["remote"].get(relative) == model.get("last_modified")):
                 continue
             manifest["remote"][relative] = model.get("last_modified")
             if (model.get("size") or 0) > MAX_TRANSFER_BYTES:
@@ -459,6 +604,77 @@ class JupyterBridge:
                              "language_info": {"name": "python"}},
                 "nbformat": 4, "nbformat_minor": 5,
             })
+
+    def job_notebook(self, job_id: str) -> str:
+        return f"{self.folder}/{JOBS_FOLDER}/{job_id}.ipynb"
+
+    def job_url(self, job_id: str) -> str:
+        return f"{self.client.base}/lab/tree/{_quote_path(self.job_notebook(job_id))}"
+
+    def start_job(self, job_id: str, code: str, purpose: str) -> dict:
+        """Sync up and start `code` in a new kernel of its own (the notebook
+        jobs/<job_id>.ipynb shows the code); returns at once with
+        {kernel, notebook_url, uploaded, notes}."""
+        with self.lock:
+            self.local_dir.mkdir(parents=True, exist_ok=True)
+            notes: list[str] = []
+            self._ensure_notebook()
+            uploaded = self.sync_up(notes)
+            self.client.ensure_dir(f"{self.folder}/{JOBS_FOLDER}")
+            notebook = self.job_notebook(job_id)
+            self.client.write_notebook(notebook, {
+                "cells": [
+                    {"cell_type": "markdown", "metadata": {}, "source":
+                        f"# Background job {job_id}\n\n{purpose}\n\nChemAssistent runs the code below in this "
+                        f"notebook's kernel. Its state is in `{job_id}.json`, its printed output in "
+                        f"`{job_id}.log` (both in this folder); files go to the conversation folder "
+                        "(`exchange`)."},
+                    {"cell_type": "code", "execution_count": None, "metadata": {}, "outputs": [], "source": code},
+                ],
+                "metadata": {"kernelspec": {"name": KERNEL_NAME, "display_name": "Python 3", "language": "python"},
+                             "language_info": {"name": "python"}},
+                "nbformat": 4, "nbformat_minor": 5,
+            })
+            kernel = self.client.session(notebook)
+            self.client.start(kernel, f"{JOB_RUNNER}\n_ca_job({code!r}, {job_id!r}, {MAX_JOB_OUTPUT_CHARS})\n")
+            return {"kernel": kernel, "notebook_url": self.job_url(job_id), "uploaded": uploaded, "notes": notes}
+
+    def job_status(self, job_id: str, kernel_id: str) -> dict:
+        """The job's state file ({"state": "running"|"done"|"failed", ...}).
+        A job whose kernel is gone before it finished is "lost"."""
+        status: dict = {"state": "running"}
+        model = self.client.get(f"{self.folder}/{JOBS_FOLDER}/{job_id}.json", fmt="text")
+        if model is not None:
+            try:
+                status = json.loads(model.get("content") or "{}")
+            except ValueError:
+                pass  # being written; next time
+        if status.get("state") == "running" and self.client.kernel_state(kernel_id) in (None, "dead"):
+            status = {**status, "state": "lost",
+                      "error": "The job's kernel is gone (JupyterLab restarted, the kernel was shut down or "
+                               "culled, or it ran out of memory)."}
+        return status
+
+    def job_log(self, job_id: str, chars: int = 2000) -> str:
+        """The end of the job's printed output so far."""
+        model = self.client.get(f"{self.folder}/{JOBS_FOLDER}/{job_id}.log", fmt="text")
+        return str((model or {}).get("content") or "")[-chars:]
+
+    def finish_job(self, job_id: str) -> dict:
+        """Shut the job's kernel down and copy new files back:
+        {downloaded, notes}. Raises TimeoutError while a run holds the folder."""
+        self.client.close_session(self.job_notebook(job_id))
+        if not self.lock.acquire(timeout=5):
+            raise TimeoutError("the exchange folder is busy")
+        try:
+            notes: list[str] = []
+            downloaded = self.sync_down(notes) if self.local_dir.is_dir() else []
+            return {"downloaded": downloaded, "notes": notes}
+        finally:
+            self.lock.release()
+
+    def cancel_job(self, job_id: str) -> None:
+        self.client.close_session(self.job_notebook(job_id))
 
     def run(self, code: str, purpose: str, timeout: float, cancelled: threading.Event | None = None) -> dict:
         """Sync up, run in the notebook's kernel, record the cell, sync down.
