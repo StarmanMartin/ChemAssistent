@@ -30,7 +30,7 @@ DESKTOP_FILES=("${APP_NAME}.desktop" "${APP_NAME}-settings.desktop")
 ICON_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps"
 
 APP_FILES=(agent.py app.py app_control.py chemotion_runner.py config.py gen_api_reference.py history.py hotkey.py ipc.py
-  jobs.py jupyter.py
+  jobs.py jupyter.py lessons.py
   settings.py workspace.py setup_workspace.sh uninstall.sh requirements.txt
   chem-assistent.svg chem-assistent-panel.svg)
 # Folders copied as a whole (the app's agent skills).

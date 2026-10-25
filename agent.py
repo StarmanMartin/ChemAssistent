@@ -31,6 +31,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import lessons
 from config import AUTO_RUN_MODES, SKILLS_DIR, WORKSPACE_DIR, Config
 
 
@@ -181,13 +182,50 @@ JUPYTER_JOBS_TOOL = {
 }
 
 
+# How the app's answer to an execute_* call starts its verdict (app.py
+# RequestCard._answer_text); the agent reminds itself of save_lesson after a
+# failure that a later run in the same turn fixed.
+RAN_TEXT = "The code ran successfully."
+FAILED_TEXT = "The code failed:"
+LESSON_REMINDER = ("An earlier snippet in this turn failed and this one worked. If the failure came from a "
+                   "non-obvious behaviour of chemotion_api, a package, JupyterLab or this app (not a typo "
+                   "or a wrong guess), record what works with save_lesson.")
+
+SAVE_LESSON_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "save_lesson",
+        "description": (
+            "Record a lesson for all later conversations (they get it in their instructions): after a "
+            "snippet failed because of a non-obvious behaviour of chemotion_api, a package, JupyterLab or "
+            "this app, and you found what works. Not for your own typos. Only how the tools behave, never "
+            "data from Chemotion or about the user. The same key replaces a lesson; `remove` deletes one. "
+            "The user sees every lesson and can edit them."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "key": {"type": "string",
+                        "description": "Short slug naming the lesson, e.g. sample-save-needs-collection."},
+                "topic": {"type": "string", "enum": list(lessons.TOPICS)},
+                "text": {"type": "string",
+                         "description": f"What fails, why, and the working call (at most "
+                                        f"{lessons.MAX_LESSON_CHARS} characters, Markdown)."},
+                "remove": {"type": "boolean", "description": "Delete the lesson `key` instead (it was wrong)."},
+            },
+            "required": ["key"],
+        },
+    },
+}
+
+
 def build_tools(mode: str, jupyter: bool = False) -> list[dict]:
     """The tools with the execute_* descriptions for `mode`; the JupyterLab
     tools only with JupyterLab configured."""
     if not jupyter:
-        return [execute_python_tool(mode)] + READ_ONLY_TOOLS
+        return [execute_python_tool(mode)] + READ_ONLY_TOOLS + [SAVE_LESSON_TOOL]
     return ([execute_python_tool(mode), execute_jupyter_tool(mode), start_jupyter_job_tool(mode), JUPYTER_JOBS_TOOL]
-            + READ_ONLY_TOOLS)
+            + READ_ONLY_TOOLS + [SAVE_LESSON_TOOL])
 
 # The read-only tools; build_tools() prepends execute_python with the
 # description for the current auto-run mode.
@@ -391,6 +429,8 @@ def tool_summary(name: str, arguments: dict) -> str:
         return f"Searched “{arguments.get('pattern')}”{where}"
     if name == "jupyter_jobs":
         return "Checked the background jobs"
+    if name == "save_lesson":
+        return f"{'Removed' if arguments.get('remove') else 'Saved'} a lesson: {arguments.get('key')}"
     return f"Listed {arguments.get('path') or 'the workspace'}"
 
 
@@ -533,6 +573,7 @@ class Agent:
                 self.roots.append(SKILLS_DIR.resolve())
         self.cancelled = threading.Event()
         self.busy = False
+        self.failed_run = False  # an execute_* run failed since the user's last message
         self._response = None
         self._call_counter = 0
         self._drop_reasoning = False  # set_model(): strip reasoning_content before the next request
@@ -574,6 +615,7 @@ class Agent:
         """`attachments`: files and folders the user attached to this message."""
         self.busy = True
         self.cancelled.clear()
+        self.failed_run = False
         lines = []
         for item in attachments:
             path = Path(item).resolve()
@@ -761,10 +803,26 @@ class Agent:
                 code = str(arguments.get("code") or "")
                 if not code.strip():
                     return "No code given."
-                return self.execute(str(arguments.get("purpose") or ""), code, self.cancelled, targets[name])
+                answer = self.execute(str(arguments.get("purpose") or ""), code, self.cancelled, targets[name])
+                if FAILED_TEXT in answer:
+                    self.failed_run = True
+                elif RAN_TEXT in answer and self.failed_run:
+                    self.failed_run = False  # one reminder per fixed failure
+                    answer += "\n\n" + LESSON_REMINDER
+                return answer
             if name == "jupyter_jobs" and self.jupyter and self.jobs is not None:
                 text = self.jobs()
                 self.on_event("tool", tool_summary(name, arguments))
+                return text
+            if name == "save_lesson":
+                key = str(arguments.get("key") or "")
+                if arguments.get("remove"):
+                    text = lessons.remove_lesson(key)
+                else:
+                    text = lessons.save_lesson(key, str(arguments.get("topic") or ""),
+                                               str(arguments.get("text") or ""))
+                if text.startswith("Lesson "):  # saved or removed; refusals stay out of the chat
+                    self.on_event("tool", tool_summary(name, arguments))
                 return text
             if name == "read_file":
                 text = read_file(str(arguments.get("path") or ""), self.roots, arguments.get("offset") or 1,
