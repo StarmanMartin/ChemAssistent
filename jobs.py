@@ -33,6 +33,9 @@ POLL_S = 30
 KEEP_S = 30 * 86400
 # Printed output of a running job that jupyter_jobs shows the agent.
 PROGRESS_CHARS = 1500
+# Printed output in a report: its end, so the report fits into one answer
+# (app.MAX_ANSWER_CHARS) without losing its last lines.
+REPORT_OUTPUT_CHARS = 8000
 FINISHED = ("done", "failed", "lost", "cancelled")
 # Jobs the watcher still looks after.
 ACTIVE = ("running", "cancelling")
@@ -76,6 +79,7 @@ def report(job: dict, status: dict, finish: dict) -> str:
     output = str(status.get("output") or "")
     if output.strip():
         total = int(status.get("output_chars") or len(output))
+        output = output[-REPORT_OUTPUT_CHARS:]
         shown = f" (the last {len(output)} of {total} characters)" if total > len(output) else ""
         output = output.rstrip()
         parts.append(f"Printed output{shown}:\n{output}")
@@ -203,7 +207,7 @@ class Jobs:
             line = f"- {job['id']} ({job.get('purpose') or 'no purpose'}): {job['state']} ({since})"
             if job.get("problem"):
                 line += f"; cannot check it: {job['problem']}"
-            if job["state"] == "running" and config is not None:
+            if job["state"] in ACTIVE and config is not None:
                 try:
                     tail = self._bridge(job, config).job_log(job["id"], PROGRESS_CHARS)
                     line += f"\n  Latest printed output:\n{tail}" if tail.strip() else "\n  Nothing printed yet."
@@ -250,11 +254,17 @@ class Jobs:
             try:
                 bridge = self._bridge(job, config)
                 status = bridge.job_status(job["id"], job["kernel"])
-                if status.get("state") in ("done", "failed", "lost"):
-                    state = status["state"]  # also when a cancel came too late
-                elif job["state"] == "cancelling":
+                seen = status.get("state")
+                # A cancel that came too late reports the real outcome; but once
+                # a round stopped the job (and then had to wait for the exchange
+                # folder), its "failed" or "lost" is the cancel's doing.
+                if job["state"] == "cancelling" and (job.get("stopped") or seen not in ("done", "failed")):
                     bridge.cancel_job(job["id"])
+                    if not job.get("stopped"):
+                        self.update(job["id"], only_state="cancelling", stopped=True)
                     state, status = "cancelled", {}
+                elif seen in ("done", "failed", "lost"):
+                    state = seen
                 else:
                     state = ""
                 if state:

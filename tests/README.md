@@ -62,12 +62,15 @@ JUPYTER_TEST_BIN=/tmp/jlab/bin/jupyter .venv/bin/python -m pytest tests/
 - `test_jupyter.py`: `JupyterBridge.run()` (cell recorded, exchange synced
   both ways, variables persist) and background jobs through the real watcher:
   value, output and files in the report; a traceback that starts in the job's
-  code; a killed kernel (Jupyter restarts it idle) and a shut-down kernel end
-  the job; cancel is finished by the watcher, also after a restart of the app;
-  a cancel that comes too late reports the real outcome; a restarted app picks
-  up running jobs; another server in the settings is a problem, not an end.
-  Without a server: sync never writes outside the exchange folder and never
-  uploads symlinks.
+  code; a killed kernel (Jupyter restarts it, sometimes still calling it
+  busy: the kernel_info probe) and a shut-down kernel end the job; a busy job
+  kernel does not answer the probe; cancel is finished by the watcher, also
+  after a restart of the app and while a run holds the exchange folder (still
+  "cancelled", not "failed" or "lost"); a cancel that comes too late reports
+  the real outcome; a job that did not start leaves no kernel; a restarted app
+  picks up running jobs; another server in the settings is a problem, not an
+  end. Without a server: sync never writes outside the exchange folder, never
+  uploads symlinks, and notes a file too large on every sync.
 - `test_config.py`, `test_history.py`, `test_jobs.py`: settings validation
   (private file mode, env overrides, legacy model ids), the conversation files
   (0600, prune, exchange folders go with them) and the job registry

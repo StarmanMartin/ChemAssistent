@@ -21,6 +21,7 @@ import pytest
 
 import config as app_config
 import jobs as jobs_module
+import jupyter as jupyter_module
 from jobs import Jobs
 from jupyter import JOBS_FOLDER, NOTEBOOK, JupyterBridge
 
@@ -145,11 +146,13 @@ def test_failed_job_traceback_starts_in_its_code(bridge, state_dir):
 
 
 @needs_server
-def test_a_killed_kernel_makes_the_job_lost(bridge, state_dir):
+def test_a_killed_kernel_makes_the_job_lost(bridge, state_dir, monkeypatch):
     """Out of memory: the kernel process dies, Jupyter restarts it under the
-    same id (idle, not busy), and the state file still says running."""
+    same id, and the state file still says running. Jupyter may go on calling
+    the new kernel "busy"; job_status() then asks the kernel itself."""
     import signal
 
+    monkeypatch.setattr(jupyter_module, "JOB_PROBE_S", 0)
     jobs = Jobs(lambda: None)
     job = jobs.start_job(bridge, bridge.local_dir.name,
                          "import os, time\nprint(os.getpid(), flush=True)\ntime.sleep(120)", "sleep")
@@ -162,6 +165,17 @@ def test_a_killed_kernel_makes_the_job_lost(bridge, state_dir):
     ended = wait_for(jobs, job["id"])
     assert ended["state"] == "lost" and "kernel" in ended["report"]
     assert "ran out of memory" in ended["report"]
+
+
+@needs_server
+def test_a_busy_job_kernel_does_not_answer_the_probe(bridge, state_dir):
+    jobs = Jobs(lambda: None)
+    job = jobs.start_job(bridge, bridge.local_dir.name, "import time\ntime.sleep(120)", "sleep")
+    wait_status(bridge, job, "running")
+    assert not bridge.client.answers(job["kernel"], timeout=3)
+    assert bridge.client.answers(bridge.client.session(bridge.notebook), timeout=30)  # an idle kernel does
+    jobs.cancel(job["id"])
+    assert wait_for(jobs, job["id"])["state"] == "cancelled"
 
 
 @needs_server
@@ -204,6 +218,39 @@ def test_a_cancel_after_the_job_ended_reports_its_outcome(bridge, state_dir):
     ended = wait_for(jobs, job["id"])
     assert ended["state"] == "done" and "Value of the last expression: 42" in ended["report"]
     assert ended["wake"] is False  # the user asked to stop it: no turn by itself
+
+
+@needs_server
+def test_a_cancel_while_the_exchange_folder_is_busy_stays_cancelled(bridge, state_dir):
+    """A long execute_jupyter run holds the folder: the kernel is shut down,
+    but the sync waits; next round the kernel is gone, which is not "lost"."""
+    jobs = Jobs(lambda: None)
+    job = jobs.start_job(bridge, bridge.local_dir.name, "import time\ntime.sleep(120)", "sleep")
+    wait_status(bridge, job, "running")
+    assert jobs.cancel(job["id"])
+    with bridge.lock:  # the watcher's bridge shares it (folder_lock)
+        assert not jobs._check()  # kernel shut down, the sync must wait
+        deadline = time.monotonic() + 15
+        while bridge.client.kernel_state(job["kernel"]) is not None:
+            assert time.monotonic() < deadline, "the kernel still runs"
+            time.sleep(0.3)
+        assert not jobs._check()  # still waiting; the job is not lost
+        assert jobs.list()[0]["state"] == "cancelling"
+    ended = wait_for(jobs, job["id"])
+    assert ended["state"] == "cancelled" and "Continue with the task" not in ended["report"]
+
+
+@needs_server
+def test_a_job_that_did_not_start_leaves_no_kernel(bridge, state_dir, monkeypatch):
+    def broken(kernel, code):
+        raise jupyter_module.JupyterError("the websocket broke")
+
+    monkeypatch.setattr(bridge.client, "start", broken)
+    with pytest.raises(jupyter_module.JupyterError):
+        Jobs(lambda: None).start_job(bridge, bridge.local_dir.name, "1", "one")
+    sessions = bridge.client.request("GET", "api/sessions") or []
+    assert not [s for s in sessions if f"/{JOBS_FOLDER}/" in str(s.get("path"))]
+    assert jobs_module.Jobs(lambda: None).list() == []
 
 
 @needs_server
@@ -279,3 +326,13 @@ def test_sync_up_skips_symlinks(tmp_path):
     (bridge.local_dir / "link.txt").symlink_to(secret)
     assert bridge.sync_up([]) == ["data.csv"]
     assert bridge.client.uploaded == ["ChemAssistent/conv/data.csv"]
+
+
+def test_a_file_too_large_is_noted_on_every_sync(tmp_path, monkeypatch):
+    monkeypatch.setattr(jupyter_module, "MAX_TRANSFER_BYTES", 3)
+    bridge = offline_bridge(tmp_path, {"big.bin": b"0123456789", "ok.txt": b"ok"})
+    for _ in range(2):
+        notes: list[str] = []
+        bridge.sync_down(notes)
+        assert any("big.bin" in note and "larger than" in note for note in notes)
+    assert not (bridge.local_dir / "big.bin").exists()

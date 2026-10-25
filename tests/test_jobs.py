@@ -128,6 +128,15 @@ def test_report_clipped_output_and_exchanged_files():
     assert "Two figures were not shown." in text
 
 
+def test_report_keeps_the_end_of_long_output():
+    output = "early\n" + "x" * (jobs_module.REPORT_OUTPUT_CHARS + 100) + "\nthe last line"
+    text = report(a_job(state="done", started=1000.0, finished=1000.0 + 5),
+                  status(output=output, output_chars=50000), finish())
+    assert "the last line" in text and "early" not in text
+    assert f"(the last {jobs_module.REPORT_OUTPUT_CHARS} of 50000 characters)" in text
+    assert text.endswith("tell the user what came out.") and len(text) < 20000  # app.MAX_ANSWER_CHARS
+
+
 # --- the jupyter_jobs tool --------------------------------------------------------
 def test_info_without_jobs(state_dir):
     assert make_jobs(state_dir).info("conv-1") == "This conversation has no background jobs."

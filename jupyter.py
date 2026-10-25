@@ -47,6 +47,8 @@ NOTEBOOK = "analysis.ipynb"
 JOBS_FOLDER = "jobs"
 # How much of a job's printed output its state file and job_log() keep.
 MAX_JOB_OUTPUT_CHARS = 20000
+# How often job_status() asks a "busy" job kernel itself whether it still runs.
+JOB_PROBE_S = 300
 SYNC_FILE = ".sync.json"  # in the local exchange folder: what was transferred
 MAX_TRANSFER_BYTES = 50 * 1024 * 1024
 REQUEST_TIMEOUT_S = 60
@@ -326,6 +328,13 @@ class JupyterClient:
                   user_expressions: dict | None = None):
         """A websocket to the kernel with an execute_request for `code` sent;
         returns (websocket, msg_id)."""
+        return self._request_kernel(kernel_id, "execute_request", {
+            "code": code, "silent": silent, "store_history": not silent,
+            "user_expressions": user_expressions or {}, "allow_stdin": False, "stop_on_error": True})
+
+    def _request_kernel(self, kernel_id: str, msg_type: str, content: dict):
+        """A websocket to the kernel with a shell request sent; returns
+        (websocket, msg_id)."""
         import websocket  # websocket-client; only needed here
 
         self.login()
@@ -339,12 +348,9 @@ class JupyterClient:
         msg_id = uuid.uuid4().hex
         message = {
             "header": {"msg_id": msg_id, "username": "chemassistent", "session": session_id,
-                       "msg_type": "execute_request", "version": "5.3",
+                       "msg_type": msg_type, "version": "5.3",
                        "date": datetime.now(timezone.utc).isoformat()},
-            "parent_header": {}, "metadata": {}, "channel": "shell", "buffers": [],
-            "content": {"code": code, "silent": silent, "store_history": not silent,
-                        "user_expressions": user_expressions or {}, "allow_stdin": False,
-                        "stop_on_error": True},
+            "parent_header": {}, "metadata": {}, "channel": "shell", "buffers": [], "content": content,
         }
         try:
             ws = websocket.create_connection(
@@ -359,6 +365,36 @@ class JupyterClient:
             ws.close()
             raise JupyterError(f"Cannot send code to the kernel at {self.base}: {exc}") from None
         return ws, msg_id
+
+    def answers(self, kernel_id: str, timeout: float = 5) -> bool:
+        """True if the kernel answers a kernel_info_request within `timeout`:
+        it is not busy running code (a kernel handles shell requests one at
+        a time). Jupyter Server may report a kernel it restarted after a
+        crash as "busy" for minutes; this asks the kernel itself."""
+        import websocket
+
+        ws, msg_id = self._request_kernel(kernel_id, "kernel_info_request", {})
+        deadline = time.monotonic() + timeout
+        try:
+            ws.settimeout(0.5)
+            while time.monotonic() < deadline:
+                try:
+                    reply = json.loads(ws.recv())
+                except websocket.WebSocketTimeoutException:
+                    continue
+                except (TypeError, ValueError):
+                    continue
+                if (reply.get("parent_header") or {}).get("msg_id") == msg_id and \
+                        (reply.get("header") or {}).get("msg_type") == "kernel_info_reply":
+                    return True
+            return False
+        except (OSError, websocket.WebSocketException) as exc:
+            raise JupyterError(f"The connection to the kernel broke: {exc}") from None
+        finally:
+            try:
+                ws.close()
+            except Exception:
+                pass
 
     def start(self, kernel_id: str, code: str) -> None:
         """Send `code` to the kernel and return once it started running; the
@@ -500,6 +536,7 @@ class JupyterBridge:
         self.local_dir = local_dir
         self.lock = folder_lock(local_dir)  # one run or sync at a time
         self.ran_before = False  # the notebook has cells of earlier runs (also before a resume)
+        self.probed: dict[str, float] = {}  # job id -> when job_status() last asked its kernel
 
     @property
     def notebook_url(self) -> str:
@@ -568,7 +605,7 @@ class JupyterBridge:
             if (relative == NOTEBOOK or relative.startswith(f"{JOBS_FOLDER}/")
                     or manifest["remote"].get(relative) == model.get("last_modified")):
                 continue
-            manifest["remote"][relative] = model.get("last_modified")
+            # Skipped files are not recorded: their note comes again with every sync.
             if (model.get("size") or 0) > MAX_TRANSFER_BYTES:
                 notes.append(f"{relative} was not copied from JupyterLab: larger than {MAX_TRANSFER_BYTES >> 20} MB.")
                 continue
@@ -576,6 +613,7 @@ class JupyterBridge:
             if not target.is_relative_to(self.local_dir.resolve()):
                 notes.append(f"{relative} was not copied from JupyterLab: its path leaves the exchange folder.")
                 continue
+            manifest["remote"][relative] = model.get("last_modified")
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(self.client.download(f"{self.folder}/{relative}"))
             manifest["local"][relative] = self._signature(target)
@@ -640,7 +678,15 @@ class JupyterBridge:
                 "nbformat": 4, "nbformat_minor": 5,
             })
             kernel = self.client.session(notebook)
-            self.client.start(kernel, f"{JOB_RUNNER}\n_ca_job({code!r}, {job_id!r}, {MAX_JOB_OUTPUT_CHARS})\n")
+            try:
+                self.client.start(kernel, f"{JOB_RUNNER}\n_ca_job({code!r}, {job_id!r}, {MAX_JOB_OUTPUT_CHARS})\n")
+            except Exception:
+                # The job is never recorded, so nobody else would shut its kernel down.
+                try:
+                    self.client.close_session(notebook)
+                except JupyterError:
+                    pass  # the error that counts is start()'s
+                raise
             return {"kernel": kernel, "notebook_url": self.job_url(job_id), "uploaded": uploaded, "notes": notes}
 
     def _job_state_file(self, job_id: str) -> dict:
@@ -662,7 +708,14 @@ class JupyterBridge:
             return status
         kernel = self.client.kernel_state(kernel_id)
         if kernel == "busy":
-            return status
+            # Jupyter may still say "busy" for a kernel it restarted after a
+            # crash; now and then ask the kernel itself.
+            if time.monotonic() - self.probed.get(job_id, -JOB_PROBE_S) < JOB_PROBE_S:
+                return status
+            self.probed[job_id] = time.monotonic()
+            if not self.client.answers(kernel_id):
+                return status
+            kernel = "idle"
         status = self._job_state_file(job_id)  # it may have just ended
         if status.get("state") != "running":
             return status
