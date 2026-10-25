@@ -71,6 +71,11 @@ JUPYTER_TEST_BIN=/tmp/jlab/bin/jupyter .venv/bin/python -m pytest tests/
   picks up running jobs; another server in the settings is a problem, not an
   end. Without a server: sync never writes outside the exchange folder, never
   uploads symlinks, and notes a file too large on every sync.
+- `test_lessons.py`: the lessons file (save, replace by key, remove, refused
+  input, the oldest go when it is full, hand edits survive, 0600), lessons in
+  the system prompt (braces are safe), the agent's `save_lesson` tool and the
+  reminder after a fixed failure. Every test gets its own lessons file
+  (autouse fixture `lessons_file` in `conftest.py`), never the user's.
 - `test_config.py`, `test_history.py`, `test_jobs.py`: settings validation
   (private file mode, env overrides, legacy model ids), the conversation files
   (0600, prune, exchange folders go with them) and the job registry

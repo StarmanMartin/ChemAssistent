@@ -14,6 +14,7 @@ from gi.repository import GLib, Gtk  # type: ignore  # noqa: E402
 import app_control  # noqa: E402
 import history  # noqa: E402
 import hotkey  # noqa: E402
+import lessons  # noqa: E402
 from agent import AgentError, list_models  # noqa: E402
 from config import (  # noqa: E402
     AI_TOKEN_ENV, AUTO_RUN_LABELS, AUTO_RUN_MODES, CONFIG_FILE, DEFAULT_JUPYTER_FOLDER, EXAMPLE, KI_TOOLBOX_URL,
@@ -215,6 +216,22 @@ class SettingsWindow(Gtk.Window):
         history_row.pack_start(self.history_note, False, False, 0)
         row = self._add_row(grid, row, "Conversation history", history_row)
         self._update_history_note()
+
+        grid = self._page("Lessons", "What the assistant learned about its tools (chemotion_api, packages, "
+                                     "JupyterLab): every conversation gets these notes. The assistant adds "
+                                     "them after it fixed a failing snippet; edit or delete what is wrong.")
+        self.lessons_text = lessons.read_text()
+        self.lessons_view = Gtk.TextView(monospace=True, wrap_mode=Gtk.WrapMode.WORD_CHAR,
+                                         left_margin=6, right_margin=6, top_margin=6, bottom_margin=6)
+        self.lessons_view.get_buffer().set_text(self.lessons_text)
+        scroller = Gtk.ScrolledWindow(hexpand=True, vexpand=True, min_content_height=260)
+        scroller.set_shadow_type(Gtk.ShadowType.IN)
+        scroller.add(self.lessons_view)
+        grid.attach(scroller, 0, 1, 2, 1)
+        self.clear_lessons_button = Gtk.Button(label="Clear lessons", halign=Gtk.Align.START)
+        self.clear_lessons_button.set_tooltip_text(f"Delete all lessons in {lessons.LESSONS_FILE}")
+        self.clear_lessons_button.connect("clicked", self._on_clear_lessons)
+        grid.attach(self.clear_lessons_button, 0, 2, 1, 1)
 
         # max_width_chars keeps a long message from widening the window.
         self.status = Gtk.Label(xalign=0, wrap=True, selectable=True, max_width_chars=60)
@@ -444,7 +461,8 @@ class SettingsWindow(Gtk.Window):
         except OSError as exc:
             self._set_status(f"Could not save: {exc}")
             return
-        problem = config_problem(values) or ai_problem(values) or jupyter_problem(values)
+        problem = (self._save_lessons() or config_problem(values) or ai_problem(values)
+                   or jupyter_problem(values))
         if not WINDOWS:
             # The GNOME shortcut is the hotkey; the app needs no restart.
             try:
@@ -480,6 +498,44 @@ class SettingsWindow(Gtk.Window):
         else:
             self._set_status(f"Deleted {deleted} conversation{'' if deleted == 1 else 's'}.")
         self._update_history_note()
+
+    def _save_lessons(self) -> str | None:
+        """Write the edited lessons; a problem, or None."""
+        buffer = self.lessons_view.get_buffer()
+        text = buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), False)
+        if text == self.lessons_text:
+            return None
+        if lessons.read_text() != self.lessons_text:
+            return ("The lessons were not saved: the assistant changed them meanwhile. "
+                    "Close and open the settings again to edit them.")
+        try:
+            lessons.write_text(text)
+        except OSError as exc:
+            return f"Could not save the lessons: {exc}"
+        self.lessons_text = lessons.read_text()
+        buffer.set_text(self.lessons_text)
+        return None
+
+    def _on_clear_lessons(self, _button: Gtk.Button) -> None:
+        dialog = Gtk.MessageDialog(
+            transient_for=self, modal=True, message_type=Gtk.MessageType.QUESTION,
+            buttons=Gtk.ButtonsType.NONE, text="Delete all lessons?",
+        )
+        dialog.format_secondary_text("New conversations start without them.")
+        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Delete", Gtk.ResponseType.ACCEPT).get_style_context().add_class("destructive-action")
+        answer = dialog.run()
+        dialog.destroy()
+        if answer != Gtk.ResponseType.ACCEPT:
+            return
+        try:
+            lessons.write_text("")
+        except OSError as exc:
+            self._set_status(f"Could not clear the lessons: {exc}")
+            return
+        self.lessons_text = ""
+        self.lessons_view.get_buffer().set_text("")
+        self._set_status("Deleted the lessons.")
 
     # --- Service ------------------------------------------------------------
     def _update_service_button(self) -> None:

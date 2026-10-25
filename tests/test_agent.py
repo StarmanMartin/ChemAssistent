@@ -64,7 +64,7 @@ def test_streamed_answer(fake_ai, ai_config, workspace, recorder):
     assert request["messages"][0] == {"role": "system", "content": "You are ChemAssistent."}
     assert request["messages"][1] == {"role": "user", "content": "Hi"}
     assert [tool["function"]["name"] for tool in request["tools"]] == [
-        "execute_python", "read_file", "grep", "list_files"]
+        "execute_python", "read_file", "grep", "list_files", "save_lesson"]
     assert fake_ai.headers_seen[0]["Authorization"] == "Bearer test-token"
 
 
@@ -236,7 +236,7 @@ def test_tool_description_follows_the_auto_run_mode(fake_ai, ai_config, workspac
 # --- JupyterLab tools ---------------------------------------------------------
 def test_jupyter_tools_only_with_an_exchange_folder(fake_ai, ai_config, workspace, skills_dir, recorder, tmp_path):
     assert [tool["function"]["name"] for tool in build_tools("off")] == [
-        "execute_python", "read_file", "grep", "list_files"]
+        "execute_python", "read_file", "grep", "list_files", "save_lesson"]
 
     exchange = tmp_path / "exchange" / "conversation"
     jobs_text = "- job-abc (A long run): running (5 min)"
