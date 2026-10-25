@@ -50,7 +50,10 @@ play it. It is recorded from the real app by `docs/screencast.py`.*
    open the element in the browser. “Copy JSON” copies the result.
 
 The header buttons start a new conversation, open the settings, minimize the
-window (the top-bar icon brings it back) or end the conversation.
+window (the top-bar icon brings it back) or end the conversation. The model
+name next to the title is a menu: switch the model for this conversation,
+e.g. when the configured one fails; an error in the chat offers **Retry**
+(the same request again, possibly with the new model) and **Change model…**.
 
 Conversations are saved after every answer in
 `~/.local/state/chem-assistent/history/` (the newest 200). The prompt lists
@@ -58,19 +61,92 @@ the latest ones: click one to continue it (the chat comes back, the result
 tabs of earlier runs do not), the bin icon deletes it. **Clear history** in
 the settings deletes them all.
 
+## Analyses in JupyterLab
+
+With a JupyterLab configured (settings → *JupyterLab*), the agent gets a
+second code tool, `execute_jupyter`, for what Chemotion cannot do: RDKit,
+pandas, plots, spectra. Its code appears on the same cards (marked
+*JupyterLab*) and runs in your JupyterLab after you click **Run**.
+
+- Every conversation has its own folder there,
+  `ChemAssistent/<conversation>/`, with the notebook `analysis.ipynb`. The
+  agent's code runs in that notebook's kernel (variables persist between
+  steps) and each snippet is appended as a cell with its outputs: open the
+  notebook from the result tab (**Open the notebook in JupyterLab**) to look
+  at it or continue by hand.
+- Data moves through an **exchange folder**: `exchange` in the code of both
+  tools. Chemotion code saves samples, measurements or attachments there; the
+  app copies new files to JupyterLab before a Jupyter snippet runs and copies
+  new files back afterwards. Figures a snippet shows appear in the result tab
+  and are saved as `figure_<n>.png`; a Chemotion snippet's `result` is saved
+  as `chemotion_result_<n>.json`.
+- **Back to Chemotion**: results (figures, tables, values) go back through a
+  normal Chemotion card, e.g. attaching the plot to a sample or writing values
+  into a research plan, so you confirm every change. Your Chemotion login never
+  reaches the Jupyter server.
+
+### Long calculations: background jobs
+
+A Jupyter snippet must finish within `execution_timeout` (default 300 s). For
+anything longer the agent uses `start_jupyter_job`: after you confirm it (card
+marked *JupyterLab job*), the code runs in a kernel of its own, for hours or
+days, and the agent finishes its answer. The app keeps watching the job (every
+30 s, also after a restart; the job runs on the Jupyter server, so your
+computer may be off meanwhile). When the job ends, its kernel is shut down, new
+files are copied into the exchange folder and the agent continues the
+conversation with the job's outcome, printed output and files:
+
+- with the conversation open, by itself;
+- otherwise a notification (Linux) and an entry in the top-bar menu
+  (*Job done: … – continue…*) open the conversation, and it continues there;
+  the prompt's recent list marks such conversations with *job finished*.
+
+The clock button in the conversation header lists its jobs (state, run time),
+opens a job's notebook (`jobs/<job id>.ipynb` in the conversation folder; next
+to it `<job id>.log` with the printed output and `<job id>.json` with the
+state) and cancels a running job. Ask the agent how a job is doing to see its
+latest output. A job does not see the variables of the conversation's kernel:
+it reads its input from the exchange folder. A JupyterHub that culls idle
+servers, a server restart or running out of memory ends a job early; the agent
+is told so.
+
+For standard calculations the agent follows the skill
+`skills/jupyter-calculations` (read when JupyterLab is configured): 3D
+structures and conformers (RDKit, GFN2-xTB via tblite), optimisations,
+frequencies/IR and free energies (ASE), redox potentials, pKa/log K, UV-Vis,
+singlet–triplet gaps, NMR shifts and (hyper)polarizabilities (PySCF), ML
+potentials (MACE, ANI-2x), random crystals (PyXtal), structure enumeration
+(RDKit reaction SMARTS) and DOCX reports. It tells you the method and the
+accuracy found in testing, asks before installing packages in your Jupyter
+environment, and says so when something needs programs that are not pip
+packages (ORCA, CREST/CENSO: e.g. ISC/RISC rates, phosphorescence, NMR
+couplings, metal-complex structures from SMILES).
+
+A typical request: “Take the samples of collection X, compute molecular
+weight and logP with RDKit, plot them and attach the plot to a new research
+plan in X.” Locally the exchange folders are in
+`~/.local/state/chem-assistent/exchange/` and are deleted with their
+conversation; the folders in JupyterLab stay. Kernels are not shut down when
+a conversation ends (you may still use them in JupyterLab).
+
 ## Safety
 
-- The agent has exactly four tools: `execute_python`, which waits for your
+- The agent has exactly four tools (seven with JupyterLab): `execute_python`, which waits for your
   confirmation in the result panel and is its only way to reach Chemotion,
   and `read_file`, `grep` and `list_files`, which only read the API reference
   and the chemotionapi checkout in its workspace plus the files and folders
   you attached. It cannot run shell
-  commands, edit files or fetch web pages.
+  commands, edit files or fetch web pages. With JupyterLab configured,
+  `execute_jupyter` and `start_jupyter_job` run code there under the same
+  confirmation rules, except that *Auto-run read-only code* never applies to
+  them (only *Auto-run everything* runs them without asking);
+  `jupyter_jobs` only reads the state of the conversation's jobs.
 - Confirmed code runs in its own process with an already logged-in
   `instance`; your password is never shown to the AI model. It is stopped
   after `execution_timeout` seconds and can be cancelled while it runs.
 - Your prompts, the code and its results are sent to the AI model's
-  provider. Choose a local model for sensitive data.
+  provider. Choose a local model for sensitive data. With JupyterLab, the
+  files in a conversation's exchange folder are copied to that server.
 
 ## Install
 
@@ -271,7 +347,13 @@ fill it in before distributing builds.
   "ai_model": "alias.complex-local",
   "execution_timeout": 300,
   "prompt_width": 640,
-  "hotkey": "<Control>space"
+  "hotkey": "<Control>space",
+  "auto_run": "off",
+  "jupyter_url": "",
+  "jupyter_token": "",
+  "jupyter_password": "",
+  "jupyter_folder": "ChemAssistent",
+  "jupyter_verify_tls": true
 }
 ```
 
@@ -302,6 +384,15 @@ fill it in before distributing builds.
   other programs, e.g. completion in editors; pick another key if you need
   Ctrl+Space there. On Windows a change applies after restarting the app.
 
+- `jupyter_url`: your JupyterLab (Jupyter Server, also a JupyterHub user
+  server like `https://hub.example.com/user/<name>`); empty turns the Jupyter
+  tool off. A URL as Jupyter prints it (`http://localhost:8888/lab?token=…`)
+  works: the settings split off the token.
+- `jupyter_token` or `jupyter_password`: how to log in to it (one of them).
+- `jupyter_folder`: the folder below the Jupyter root for the conversations'
+  folders.
+- `jupyter_verify_tls`: like `verify_tls`, for the Jupyter server.
+
 Changes apply to the next conversation; no restart needed.
 
 ## Run from the source tree
@@ -316,6 +407,14 @@ Changes apply to the next conversation; no restart needed.
 `--show` opens the prompt right away. Starting the app while it already runs
 opens the prompt in the running instance (the **ChemAssistent** menu entry does
 this too).
+
+Tests (pytest; the AI is simulated, the Chemotion tests need the local test
+instance and are skipped without it; details in `tests/README.md`):
+
+```bash
+.venv/bin/pip install pytest
+.venv/bin/python -m pytest tests/
+```
 
 ## Service
 

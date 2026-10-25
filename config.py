@@ -28,6 +28,9 @@ ENDPOINT_FILE = STATE_DIR / "endpoint.json"
 # What the agent may read: CHEMOTION_API.md and the chemotionapi checkout.
 # install.sh fills it; from the source tree setup_workspace.sh does.
 WORKSPACE_DIR = Path(__file__).resolve().with_name("workspace")
+# The app's own agent skills (skills/<name>/SKILL.md); with JupyterLab on,
+# the agent may read them (jupyter-calculations).
+SKILLS_DIR = Path(__file__).resolve().with_name("skills")
 
 # The KIT KI-Toolbox (Open WebUI, OpenAI-compatible) is the default AI endpoint;
 # any other OpenAI-compatible URL works too.
@@ -45,6 +48,12 @@ AUTO_RUN_LABELS = {
     "readonly": "Auto-run read-only code",
     "always": "Auto-run everything",
 }
+# JupyterLab (optional; empty jupyter_url = off): every conversation gets the
+# folder <jupyter_folder>/<conversation id> there with its notebook.
+DEFAULT_JUPYTER_FOLDER = "ChemAssistent"
+# Files the two sides of a conversation exchange (jupyter.py syncs them);
+# one subfolder per conversation.
+EXCHANGE_DIR = STATE_DIR / "exchange"
 # Used when ai_token is empty (older installs put the key there).
 AI_TOKEN_ENV = "KI_TOOLBOX_API_KEY"
 # ai_model ids of the opencode era ("<provider>/<model>") -> KI-Toolbox ids.
@@ -74,6 +83,15 @@ class Config:
     prompt_width: int = 640
     hotkey: str = DEFAULT_HOTKEY
     auto_run: str = "off"
+    jupyter_url: str = ""
+    jupyter_token: str = ""
+    jupyter_password: str = ""
+    jupyter_folder: str = DEFAULT_JUPYTER_FOLDER
+    jupyter_verify_tls: bool = True
+
+    @property
+    def jupyter(self) -> bool:
+        return bool(self.jupyter_url)
 
 
 EXAMPLE = {
@@ -88,6 +106,11 @@ EXAMPLE = {
     "prompt_width": 640,
     "hotkey": DEFAULT_HOTKEY,
     "auto_run": "off",
+    "jupyter_url": "",
+    "jupyter_token": "",
+    "jupyter_password": "",
+    "jupyter_folder": DEFAULT_JUPYTER_FOLDER,
+    "jupyter_verify_tls": True,
 }
 
 
@@ -127,6 +150,20 @@ def ai_problem(data: dict) -> str | None:
     if not ai_token(data) and str(data.get("ai_url", "")).strip().rstrip("/") == KI_TOOLBOX_URL:
         return f"Set the KI-Toolbox token in the settings (or {AI_TOKEN_ENV})."
     return None
+
+
+def jupyter_problem(data: dict) -> str | None:
+    """Why the JupyterLab settings cannot be used, or None (also when it is off)."""
+    if not str(data.get("jupyter_url", "")).strip():
+        return None
+    if not (str(data.get("jupyter_token", "")).strip() or str(data.get("jupyter_password", ""))):
+        return "Set the JupyterLab token or password in the settings."
+    return None
+
+
+def jupyter_folder(data: dict) -> str:
+    """The folder below the Jupyter root, without leading/trailing slashes."""
+    return str(data.get("jupyter_folder") or "").strip().strip("/\\") or DEFAULT_JUPYTER_FOLDER
 
 
 def write_private_json(path: Path, data: object) -> None:
@@ -183,4 +220,10 @@ def load_config() -> Config:
         prompt_width=max(360, width),
         hotkey=str(data.get("hotkey") or "").strip(),
         auto_run=auto_run,
+        # Incomplete JupyterLab settings switch it off (jupyter_problem() says why).
+        jupyter_url="" if jupyter_problem(data) else str(data.get("jupyter_url") or "").strip().rstrip("/"),
+        jupyter_token=str(data.get("jupyter_token") or "").strip(),
+        jupyter_password=str(data.get("jupyter_password") or ""),
+        jupyter_folder=jupyter_folder(data),
+        jupyter_verify_tls=bool(data.get("jupyter_verify_tls", True)),
     )

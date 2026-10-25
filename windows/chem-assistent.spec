@@ -35,6 +35,8 @@ datas += [
     (str(ROOT / "chem-assistent-panel.svg"), "."),
     # CHEMOTION_API.md and the chemotionapi checkout (config.WORKSPACE_DIR).
     (str(BUILD / "workspace"), "workspace"),
+    # The app's own agent skills (config.SKILLS_DIR).
+    (str(ROOT / "skills"), "skills"),
 ]
 hiddenimports += stdlib + [
     # entry.py imports them inside functions.

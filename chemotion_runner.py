@@ -3,7 +3,9 @@
 app.py starts this file with the venv's Python for every snippet the user
 confirmed, so a hanging or crashing snippet can be killed without taking
 the app down. Input on stdin, one JSON object:
-    {"url", "user", "password", "verify_tls", "code"}
+    {"url", "user", "password", "verify_tls", "code", "exchange"}
+`exchange` (optional, with JupyterLab on): the conversation's exchange
+folder, predefined in the snippet as a pathlib.Path (jupyter.py).
 Output on stdout, one JSON object:
     {"ok", "stdout", "result", "error"}
 `result` is the snippet's `result` variable made JSON-safe (see to_jsonable).
@@ -17,6 +19,7 @@ import sys
 import traceback
 from collections.abc import Mapping
 from enum import Enum
+from pathlib import Path
 
 
 MAX_ITEMS = 500
@@ -85,6 +88,9 @@ def run(request: dict) -> dict:
         return {"ok": False, "stdout": "", "result": None,
                 "error": f"Cannot connect to Chemotion at {request.get('url')}: {exc}"}
     namespace["instance"] = instance
+    if request.get("exchange"):
+        namespace["exchange"] = Path(request["exchange"])
+        namespace["exchange"].mkdir(parents=True, exist_ok=True)
     try:
         compiled = compile(request["code"], "<chemotion>", "exec")
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stdout):

@@ -11,7 +11,12 @@ callback; whether the user must confirm first depends on the auto-run mode:
 `looks_read_only()` decides — and "always" runs everything)
 and read-only `read_file`, `grep` and `list_files`, which cannot leave the
 workspace (the API reference and the chemotionapi checkout) and the files
-and folders the user attached.
+and folders the user attached. With JupyterLab configured there are also
+`execute_jupyter` (jupyter.py; same callback with target "jupyter"),
+`start_jupyter_job` (a background job in a kernel of its own, jobs.py; same
+callback with target "job", it returns at once and the report arrives later
+as a new message) and `jupyter_jobs` (their state), and the conversation's
+exchange folder is readable too.
 """
 from __future__ import annotations
 
@@ -26,7 +31,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from config import AUTO_RUN_MODES, WORKSPACE_DIR, Config
+from config import AUTO_RUN_MODES, SKILLS_DIR, WORKSPACE_DIR, Config
 
 
 REQUEST_TIMEOUT_S = 300
@@ -72,6 +77,8 @@ def execute_python_tool(mode: str) -> dict:
             "description": (
                 "Run Python code against the user's Chemotion ELN with the chemotion_api package. "
                 "A logged-in `instance` (chemotion_api.Instance) is predefined; never log in. "
+                "Only chemotion_api and the standard library are available: never install packages "
+                "or start other programs (pip, subprocess) here. "
                 + confirm +
                 " Assign what the user should see to `result`. The answer contains the printed "
                 "output, `result` as JSON, the error traceback, or the user's reason for rejecting "
@@ -93,9 +100,94 @@ def execute_python_tool(mode: str) -> dict:
     }
 
 
-def build_tools(mode: str) -> list[dict]:
-    """The four tools with the execute_python description for `mode`."""
-    return [execute_python_tool(mode)] + READ_ONLY_TOOLS
+def execute_jupyter_tool(mode: str) -> dict:
+    """The execute_jupyter tool for one auto-run mode: only "always" runs it
+    without confirmation (looks_read_only() knows only Chemotion code)."""
+    if mode == "always":
+        confirm = "The code runs automatically; the user still sees it in the result panel."
+    else:
+        confirm = ("The user sees the code in the result panel and must confirm it before it runs; "
+                   "they may edit it first or reject it with a reason.")
+    return {
+        "type": "function",
+        "function": {
+            "name": "execute_jupyter",
+            "description": (
+                "Run Python code in the user's JupyterLab, in the kernel of this conversation's "
+                "notebook (variables persist between calls), for analyses Chemotion cannot do: "
+                "RDKit, pandas, numpy, plots, spectra. `exchange` (pathlib.Path) is predefined: the "
+                "folder shared with execute_python; read input from it, save files (figures, CSV, "
+                "JSON) there to hand them back. Never redefine `exchange` or use paths of the "
+                "user's computer: JupyterLab may run elsewhere. No access to Chemotion from here. "
+                + confirm +
+                " The answer contains printed output, the value of the last expression, the error "
+                "traceback, which figures the user saw, and which files were exchanged."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "purpose": {"type": "string", "description": "One short sentence for the user: what the code does."},
+                    "code": {"type": "string", "description": "Python source (IPython: %pip and display() work)."},
+                },
+                "required": ["purpose", "code"],
+            },
+        },
+    }
+
+
+def start_jupyter_job_tool(mode: str) -> dict:
+    """The start_jupyter_job tool; confirmation as for execute_jupyter."""
+    if mode == "always":
+        confirm = "It starts automatically; the user still sees the code in the result panel."
+    else:
+        confirm = ("The user sees the code in the result panel and must confirm it before it starts; "
+                   "they may edit it first or reject it with a reason.")
+    return {
+        "type": "function",
+        "function": {
+            "name": "start_jupyter_job",
+            "description": (
+                "Start a long calculation in JupyterLab as a background job: for anything that may take "
+                "longer than a few minutes (hours or days are fine). It runs in a NEW kernel of its own, "
+                "so variables of execute_jupyter runs do not exist there: the code must import "
+                "everything and read its input from files in `exchange` (predefined pathlib.Path, as in "
+                "execute_jupyter) and save every result there (JSON/CSV, figures as PNG). Printed output "
+                "is kept as the job's log, so print progress. " + confirm +
+                " The answer only says that the job started. Do not wait for it or poll it: finish your "
+                "answer to the user (say what runs and that you continue when it is done). When the job "
+                "ends you get a message with its outcome, printed output and new files, and continue then."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "purpose": {"type": "string", "description": "One short sentence for the user: what the job computes."},
+                    "code": {"type": "string", "description": "Self-contained Python source (IPython)."},
+                },
+                "required": ["purpose", "code"],
+            },
+        },
+    }
+
+
+JUPYTER_JOBS_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "jupyter_jobs",
+        "description": "The background jobs of this conversation: state, run time and, for running jobs, "
+                       "their latest printed output. Only when the user asks how a job is doing; you are "
+                       "told anyway when a job ends.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+}
+
+
+def build_tools(mode: str, jupyter: bool = False) -> list[dict]:
+    """The tools with the execute_* descriptions for `mode`; the JupyterLab
+    tools only with JupyterLab configured."""
+    if not jupyter:
+        return [execute_python_tool(mode)] + READ_ONLY_TOOLS
+    return ([execute_python_tool(mode), execute_jupyter_tool(mode), start_jupyter_job_tool(mode), JUPYTER_JOBS_TOOL]
+            + READ_ONLY_TOOLS)
 
 # The read-only tools; build_tools() prepends execute_python with the
 # description for the current auto-run mode.
@@ -297,6 +389,8 @@ def tool_summary(name: str, arguments: dict) -> str:
     if name == "grep":
         where = f" in {arguments['path']}" if arguments.get("path") else ""
         return f"Searched “{arguments.get('pattern')}”{where}"
+    if name == "jupyter_jobs":
+        return "Checked the background jobs"
     return f"Listed {arguments.get('path') or 'the workspace'}"
 
 
@@ -410,21 +504,33 @@ class Agent:
         ("stopped", None)      cancel() ended the turn
     After an error, retry() repeats the request (set_model() may switch the
     model first) without a new user message.
-    `execute(purpose, code, cancelled)` asks the user and returns the text
-    for the model; it must return when the `cancelled` event is set.
+    `execute(purpose, code, cancelled, target)` asks the user and returns the
+    text for the model; it must return when the `cancelled` event is set.
+    `target` is "chemotion" (execute_python), "jupyter" (execute_jupyter) or
+    "job" (start_jupyter_job).
+    `exchange`: the conversation's exchange folder when JupyterLab is on;
+    `jobs()` returns the text of the jupyter_jobs tool.
     """
 
     def __init__(self, config: Config, system_prompt: str, execute, on_event,
-                 auto_run: str = "off") -> None:
+                 auto_run: str = "off", exchange: Path | None = None, jobs=None) -> None:
         self.config = config
+        self.jupyter = exchange is not None
         self.execute = execute
+        self.jobs = jobs
         self.on_event = on_event
         self.auto_run = auto_run if auto_run in AUTO_RUN_MODES else "off"
         # The tool descriptions depend on the auto-run mode (execute_python).
-        self.tools = build_tools(self.auto_run)
+        self.tools = build_tools(self.auto_run, self.jupyter)
         self.messages: list[dict] = [{"role": "system", "content": system_prompt}]
         # What the read-only tools may read: the workspace and every attachment.
         self.roots: list[Path] = [WORKSPACE_DIR.resolve()]
+        if exchange is not None:
+            exchange.mkdir(parents=True, exist_ok=True)
+            self.roots.append(exchange.resolve())
+            # The calculation skills are about execute_jupyter code.
+            if SKILLS_DIR.is_dir():
+                self.roots.append(SKILLS_DIR.resolve())
         self.cancelled = threading.Event()
         self.busy = False
         self._response = None
@@ -435,7 +541,7 @@ class Agent:
         """Switch the auto-run mode mid-conversation (the header menu); the
         changed tool description goes out with the next request."""
         self.auto_run = mode if mode in AUTO_RUN_MODES else "off"
-        self.tools = build_tools(self.auto_run)
+        self.tools = build_tools(self.auto_run, self.jupyter)
 
     def set_model(self, model: str) -> None:
         """Switch the model mid-conversation (the header menu); the next
@@ -648,11 +754,18 @@ class Agent:
 
     def _dispatch(self, name: str, arguments: dict) -> str:
         try:
-            if name == "execute_python":
+            targets = {"execute_python": "chemotion"}
+            if self.jupyter:
+                targets.update(execute_jupyter="jupyter", start_jupyter_job="job")
+            if name in targets:
                 code = str(arguments.get("code") or "")
                 if not code.strip():
                     return "No code given."
-                return self.execute(str(arguments.get("purpose") or ""), code, self.cancelled)
+                return self.execute(str(arguments.get("purpose") or ""), code, self.cancelled, targets[name])
+            if name == "jupyter_jobs" and self.jupyter and self.jobs is not None:
+                text = self.jobs()
+                self.on_event("tool", tool_summary(name, arguments))
+                return text
             if name == "read_file":
                 text = read_file(str(arguments.get("path") or ""), self.roots, arguments.get("offset") or 1,
                                  arguments.get("limit") or MAX_READ_LINES)
@@ -671,4 +784,5 @@ class Agent:
             return f"Error: {exc}"
         except (OSError, TypeError, ValueError) as exc:
             return f"Error: {exc}"
-        return f"There is no tool {name}. Use execute_python, read_file, grep or list_files."
+        names = ", ".join(tool["function"]["name"] for tool in self.tools)
+        return f"There is no tool {name}. Use one of: {names}."

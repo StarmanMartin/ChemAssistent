@@ -5,9 +5,15 @@ confirmed it — unless an auto-run mode is on (config key `auto_run`, and the
 menu in the conversation header): then read-only or all code starts by
 itself, and the card shows what ran. The header also switches the model of
 the conversation, e.g. when the configured one fails; an error note offers
-Retry, which repeats the request without a new message."""
+Retry, which repeats the request without a new message. With JupyterLab
+configured, the agent's execute_jupyter code runs there on the same cards
+(jupyter.py), and both sides share the conversation's exchange folder.
+Long calculations run there as background jobs (jobs.py): their reports
+come back into the conversation as a new turn, a notification and a menu
+entry tell the user about it when the conversation is not open."""
 from __future__ import annotations
 
+import base64
 import importlib
 import json
 import logging
@@ -55,6 +61,12 @@ try:
 except (ValueError, ImportError):
     GtkSource = None
 
+try:  # desktop notifications (finished background jobs); not on Windows
+    gi.require_version("Notify", "0.7")
+    from gi.repository import Notify  # type: ignore  # noqa: E402
+except (ValueError, ImportError):
+    Notify = None
+
 import app_control  # noqa: E402
 import history  # noqa: E402
 import hotkey  # noqa: E402
@@ -63,9 +75,11 @@ import workspace  # noqa: E402
 from agent import (  # noqa: E402
     ATTACHMENT_NOTE, STOPPED_NOTE, Agent, AgentError, list_models, looks_read_only, tool_summary,
 )
+from jobs import ACTIVE, FINISHED, REPORT_HEADER, USER_TEXT, Jobs, duration  # noqa: E402
+from jupyter import JupyterBridge, JupyterError  # noqa: E402
 from config import (  # noqa: E402
     AUTO_RUN_LABELS, AUTO_RUN_MODES, CONFIG_FILE, STATE_DIR, WINDOWS, WORKSPACE_DIR, Config,
-    ai_problem, load_config, read_raw_config,
+    ai_problem, jupyter_problem, load_config, read_raw_config,
 )
 
 
@@ -95,12 +109,18 @@ HOTKEY_DOUBLE_S = 0.6
 # What the agent gets back from one snippet; the panel shows everything.
 MAX_ANSWER_CHARS = 20000
 MAX_TABLE_COLUMNS = 12
+# Figures from JupyterLab are scaled down to this width in the result tab.
+MAX_IMAGE_WIDTH = 720
 MAX_CELL_CHARS = 120
 # Result tabs kept in the panel; older ones are dropped.
 MAX_RESULT_TABS = 10
 MAX_REQUEST_BYTES = 65536
 # Old conversations the prompt offers to continue.
 RECENT_CONVERSATIONS = 6
+# Between job reports in one message (jobs.REPORT_HEADER).
+REPORT_SEPARATOR = "\n\n---\n\n"
+# How often the header's job menu updates the run times.
+JOB_MENU_REFRESH_S = 60
 
 
 CSS = b"""
@@ -157,6 +177,11 @@ CSS = b"""
 }
 .request-card.done {
     border-color: #2a9fd8;
+}
+.request-target {
+    color: #f0b35a;
+    font-size: 11px;
+    font-weight: bold;
 }
 .request-purpose {
     color: #ffffff;
@@ -262,11 +287,14 @@ def open_settings() -> None:
 
 # --- requests from the agent -------------------------------------------------
 class PendingRequest:
-    """One execute_python call, waiting in the agent's thread for the user."""
+    """One execute_python/execute_jupyter call, waiting in the agent's thread for the user."""
 
-    def __init__(self, purpose: str, code: str) -> None:
+    def __init__(self, purpose: str, code: str, target: str = "chemotion") -> None:
         self.purpose = purpose
         self.code = code
+        self.target = target  # "chemotion", "jupyter" or "job" (start_jupyter_job)
+        # Set by AssistantWindow._show_request(): code -> Execution/JupyterExecution/JobExecution.
+        self.new_execution = Execution
         self.reply: dict | None = None
         self.done = threading.Event()
         # Set by the card; called on the main loop when the agent stopped waiting.
@@ -348,10 +376,13 @@ class RequestServer:
 
 # --- running confirmed code ---------------------------------------------------
 class Execution:
-    """Runs one snippet in chemotion_runner.py; cancel() kills it."""
+    """Runs one snippet in chemotion_runner.py; cancel() kills it.
+    `exchange`: the conversation's exchange folder (JupyterLab on), predefined
+    in the snippet; a `result` is saved there too."""
 
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, exchange: Path | None = None) -> None:
         self.code = code
+        self.exchange = exchange
         self.process: subprocess.Popen | None = None
         self.cancelled = False
 
@@ -367,6 +398,7 @@ class Execution:
             "password": config.password,
             "verify_tls": config.verify_tls,
             "code": self.code,
+            "exchange": str(self.exchange) if self.exchange else None,
         }
         try:
             self.process = subprocess.Popen(
@@ -391,16 +423,103 @@ class Execution:
         if self.cancelled:
             return {"ok": False, "stdout": "", "result": None, "error": "Cancelled by the user."}
         try:
-            return json.loads(stdout)
+            outcome = json.loads(stdout)
         except ValueError:
             detail = (stderr or stdout or "").strip()[-3000:]
             return {"ok": False, "stdout": "", "result": None,
                     "error": f"The runner ended unexpectedly (exit code {self.process.returncode}).\n{detail}"}
+        if self.exchange is not None and outcome.get("ok") and outcome.get("result") is not None:
+            path = free_name(self.exchange, "chemotion_result_{}.json")
+            try:
+                path.write_text(json.dumps(outcome["result"], ensure_ascii=False, indent=1), encoding="utf-8")
+                outcome["saved"] = [path.name]
+                outcome["exchange"] = str(self.exchange)
+            except OSError as exc:
+                LOG.warning("Could not save the result in %s: %s", self.exchange, exc)
+        return outcome
 
     def cancel(self) -> None:
         self.cancelled = True
         if self.process is not None and self.process.poll() is None:
             self.process.kill()
+
+
+def free_name(folder: Path, pattern: str) -> Path:
+    """The first folder/pattern.format(n), n = 1, 2, ..., that does not exist."""
+    folder.mkdir(parents=True, exist_ok=True)
+    number = 1
+    while (folder / pattern.format(number)).exists():
+        number += 1
+    return folder / pattern.format(number)
+
+
+class JupyterExecution:
+    """Runs one snippet in the conversation's JupyterLab kernel (jupyter.py);
+    the same interface as Execution. Figures are saved in the exchange folder."""
+
+    def __init__(self, code: str, purpose: str, bridge: JupyterBridge) -> None:
+        self.code = code
+        self.purpose = purpose
+        self.bridge = bridge
+        self.cancel_event = threading.Event()
+
+    def run(self) -> dict:
+        # Runs in a thread: no GTK calls here.
+        try:
+            timeout = load_config().execution_timeout
+        except ValueError:
+            timeout = 300
+        try:
+            outcome = self.bridge.run(self.code, self.purpose, timeout, self.cancel_event)
+        except JupyterError as exc:
+            return {"ok": False, "stdout": "", "result": None, "error": str(exc)}
+        except Exception as exc:  # a bug must not leave the card running forever
+            LOG.exception("JupyterLab run failed")
+            return {"ok": False, "stdout": "", "result": None, "error": f"{type(exc).__name__}: {exc}"}
+        figures = []
+        for image in outcome.get("images") or []:
+            path = free_name(self.bridge.local_dir, "figure_{}.png")
+            try:
+                path.write_bytes(base64.b64decode(image))
+                figures.append(path)
+            except (OSError, ValueError) as exc:
+                LOG.warning("Could not save a figure: %s", exc)
+        if figures:
+            self.bridge.mark_local(figures)
+        outcome["figures"] = [path.name for path in figures]
+        outcome["exchange"] = str(self.bridge.local_dir)
+        return outcome
+
+    def cancel(self) -> None:
+        self.cancel_event.set()
+
+
+class JobExecution:
+    """Starts a background job in JupyterLab (jobs.py); the same interface as
+    Execution. Only the start runs here; the report arrives later."""
+
+    def __init__(self, code: str, purpose: str, bridge: JupyterBridge, jobs: Jobs, conversation: str) -> None:
+        self.code = code
+        self.purpose = purpose
+        self.bridge = bridge
+        self.jobs = jobs
+        self.conversation = conversation
+
+    def run(self) -> dict:
+        # Runs in a thread: no GTK calls here.
+        try:
+            job = self.jobs.start_job(self.bridge, self.conversation, self.code, self.purpose)
+        except JupyterError as exc:
+            return {"ok": False, "stdout": "", "result": None, "error": str(exc)}
+        except Exception as exc:
+            LOG.exception("Starting a JupyterLab job failed")
+            return {"ok": False, "stdout": "", "result": None, "error": f"{type(exc).__name__}: {exc}"}
+        return {"ok": True, "stdout": "", "result": None, "error": "", "job": job["id"],
+                "notebook_url": job["notebook_url"], "uploaded": job["uploaded"], "notes": job["notes"],
+                "exchange": str(self.bridge.local_dir)}
+
+    def cancel(self) -> None:
+        pass  # starting takes seconds; the job menu cancels the job itself
 
 
 # --- result widgets ----------------------------------------------------------
@@ -475,9 +594,67 @@ def result_widget(value) -> Gtk.Widget:
     return text_block(text)
 
 
-def result_page(stdout: str, error: str, result) -> Gtk.Widget:
-    """The content of one result tab: printed output, error and `result`."""
+def image_widget(data: str) -> Gtk.Widget | None:
+    """A base64 PNG (a JupyterLab figure), at most MAX_IMAGE_WIDTH wide."""
+    from gi.repository import GdkPixbuf  # type: ignore
+
+    try:
+        loader = GdkPixbuf.PixbufLoader.new_with_type("png")
+        loader.write(base64.b64decode(data))
+        loader.close()
+        pixbuf = loader.get_pixbuf()
+    except (GLib.Error, ValueError):
+        return None
+    if pixbuf is None:
+        return None
+    if pixbuf.get_width() > MAX_IMAGE_WIDTH:
+        height = round(pixbuf.get_height() * MAX_IMAGE_WIDTH / pixbuf.get_width())
+        pixbuf = pixbuf.scale_simple(MAX_IMAGE_WIDTH, height, GdkPixbuf.InterpType.BILINEAR)
+    image = Gtk.Image.new_from_pixbuf(pixbuf)
+    image.set_halign(Gtk.Align.START)
+    return image
+
+
+def link_row(text: str, tooltip: str, target: str) -> Gtk.Widget:
+    """A flat button that opens `target` (a URL or file URI) on click."""
+    button = Gtk.Button(label=text)
+    button.set_relief(Gtk.ReliefStyle.NONE)
+    button.set_halign(Gtk.Align.START)
+    button.set_tooltip_text(tooltip)
+    button.connect("clicked", lambda *_: open_url(target))
+    return button
+
+
+def exchange_section(box: Gtk.Box, outcome: dict) -> None:
+    """Figures, exchanged files and the notebook link of one run (JupyterLab on)."""
+    for data in outcome.get("images") or []:
+        image = image_widget(data)
+        if image is not None:
+            box.pack_start(image, False, False, 0)
+    folder = outcome.get("exchange")
+    names = []
+    for key in ("figures", "saved", "uploaded", "downloaded"):
+        names += [name for name in outcome.get(key) or [] if name not in names]
+    if names and folder:
+        box.pack_start(label("Files in the exchange folder", "dim"), False, False, 0)
+        for name in names:
+            path = Path(folder) / name
+            box.pack_start(link_row(name, str(path), path.as_uri()), False, False, 0)
+    for note in outcome.get("notes") or []:
+        box.pack_start(label(note, "dim", selectable=True), False, False, 0)
+    if outcome.get("notebook_url"):
+        box.pack_start(link_row("Open the notebook in JupyterLab", outcome["notebook_url"],
+                                outcome["notebook_url"]), False, False, 0)
+
+
+def result_page(stdout: str, error: str, result, outcome: dict | None = None) -> Gtk.Widget:
+    """The content of one result tab: printed output, error, `result`, and
+    with JupyterLab figures and exchanged files (`outcome`)."""
     box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, border_width=10)
+    if (outcome or {}).get("job"):
+        box.pack_start(label(f"Background job {outcome['job']} started. It runs on in JupyterLab (the job "
+                             "menu in the header shows it); the assistant continues when it ends.", "dim"),
+                       False, False, 0)
     if stdout.strip():
         box.pack_start(label("Output", "dim"), False, False, 0)
         box.pack_start(text_block(stdout.rstrip()), False, False, 0)
@@ -495,6 +672,7 @@ def result_page(stdout: str, error: str, result) -> Gtk.Widget:
         row.pack_end(copy, False, False, 0)
         box.pack_start(row, False, False, 0)
         box.pack_start(result_widget(result), False, False, 0)
+    exchange_section(box, outcome or {})
     if not box.get_children():
         box.pack_start(label("Nothing was printed and `result` was not set.", "dim"), False, False, 0)
     scroller = Gtk.ScrolledWindow()
@@ -552,7 +730,7 @@ class RequestCard(Gtk.Box):
         self.pending = pending
         self.on_state_change = on_state_change
         self.on_result = on_result
-        self.execution: Execution | None = None
+        self.execution: Execution | JupyterExecution | None = None
         self.state = "waiting"
         pending.on_abandoned = self._on_abandoned
         self.get_style_context().add_class("request-card")
@@ -560,8 +738,15 @@ class RequestCard(Gtk.Box):
 
         head = Gtk.Box(spacing=8)
         head.pack_start(label(f"#{number}", "dim", wrap=False), False, False, 0)
-        purpose = label(pending.purpose or "Run code against Chemotion", "request-purpose")
+        jupyter = pending.target in ("jupyter", "job")
+        job = pending.target == "job"
+        purpose = label(pending.purpose or ("Start a background job in JupyterLab" if job else
+                                            "Run code in JupyterLab" if jupyter else "Run code against Chemotion"),
+                        "request-purpose")
         head.pack_start(purpose, True, True, 0)
+        if jupyter:
+            head.pack_end(label("JupyterLab job" if job else "JupyterLab", "request-target", wrap=False),
+                          False, False, 0)
         if pending.auto:
             # pack_end: goes left of the time below.
             head.pack_end(label("auto · read-only" if pending.auto == "readonly" else "auto-run",
@@ -586,7 +771,9 @@ class RequestCard(Gtk.Box):
         self.actions.pack_start(reject, False, False, 0)
         self.run_button = Gtk.Button(label="Run")
         self.run_button.get_style_context().add_class("suggested-action")
-        self.run_button.set_tooltip_text("Run this code against Chemotion (Ctrl+Enter in the code)")
+        self.run_button.set_tooltip_text(("Start this code as a background job in JupyterLab" if job else
+                                          "Run this code in JupyterLab" if jupyter else
+                                          "Run this code against Chemotion") + " (Ctrl+Enter in the code)")
         self.run_button.connect("clicked", lambda *_: self.run())
         self.actions.pack_start(self.run_button, False, False, 0)
         self.pack_start(self.actions, False, False, 0)
@@ -659,7 +846,7 @@ class RequestCard(Gtk.Box):
         self.spinner.show()
         self.spinner.start()
         self.cancel_button.show()
-        self.execution = Execution(code)
+        self.execution = self.pending.new_execution(code)
         started = time.monotonic()
 
         def worker() -> None:
@@ -677,29 +864,49 @@ class RequestCard(Gtk.Box):
         error = str(outcome.get("error") or "")
         result = outcome.get("result")
 
-        self.on_result(self, result_page(stdout, error, result if ok else None))
+        self.on_result(self, result_page(stdout, error, result if ok else None, outcome))
 
         abandoned = self.pending.done.is_set() and self.pending.reply is None
         note = " The assistant had stopped waiting, so it did not get this output." if abandoned else ""
-        if ok:
+        if ok and outcome.get("job"):
+            self._set_state("done", f"Started background job {outcome['job']}; it runs in JupyterLab.{note}")
+        elif ok:
             self._set_state("done", f"Ran in {elapsed:.1f} s.{note}")
         else:
             self._set_state("failed", f"Failed after {elapsed:.1f} s.{note}")
-        self.pending.answer(ok, self._answer_text(code, ok, stdout, error, result))
+        self.pending.answer(ok, self._answer_text(code, ok, stdout, error, result, outcome))
         return False
 
-    def _answer_text(self, code: str, ok: bool, stdout: str, error: str, result) -> str:
+    def _answer_text(self, code: str, ok: bool, stdout: str, error: str, result, outcome: dict) -> str:
         parts = []
+        jupyter = self.pending.target in ("jupyter", "job")
         if code != self.pending.code:
             parts.append(f"The user edited the code before running it. This code ran:\n```python\n{code}\n```")
-        parts.append("The code ran successfully." if ok else f"The code failed:\n{error}")
+        if outcome.get("new_kernel"):
+            parts.append("The JupyterLab kernel is new (restarted): variables of earlier runs are gone.")
+        if ok and outcome.get("job"):
+            parts.append(f"Background job {outcome['job']} started in a kernel of its own and runs on. "
+                         "Do not wait or poll: end your answer now (tell the user what runs). When it ends, "
+                         "a message with its outcome, printed output and new files arrives.")
+        else:
+            parts.append("The code ran successfully." if ok else f"The code failed:\n{error}")
         if stdout.strip():
             parts.append(f"Printed output:\n{stdout}")
-        if ok:
-            if result is None:
+        if ok and not outcome.get("job"):
+            if jupyter:
+                parts.append("Value of the last expression: " + (str(result) if result is not None else "none"))
+            elif result is None:
                 parts.append("`result` was not set.")
             else:
                 parts.append("result = " + json.dumps(result, ensure_ascii=False, indent=1, default=str))
+        exchanged = [
+            ("Figures the user saw, saved in `exchange`", outcome.get("figures")),
+            ("Saved in `exchange`", outcome.get("saved")),
+            ("Sent from `exchange` to JupyterLab", outcome.get("uploaded")),
+            ("New or changed in `exchange` from JupyterLab", outcome.get("downloaded")),
+        ]
+        parts.extend(f"{title}: {', '.join(names)}" for title, names in exchanged if names)
+        parts.extend(outcome.get("notes") or [])
         parts.append("The user sees this output in the result panel.")
         return clip("\n\n".join(parts))
 
@@ -1107,6 +1314,12 @@ class ChatPanel(Gtk.Box):
                 if content == STOPPED_NOTE:
                     self.add_note("Stopped after many tool calls.", "dialog-error-symbolic", "request-error")
                     continue
+                if content.startswith(REPORT_HEADER):
+                    reports, _, content = content[len(REPORT_HEADER):].partition(USER_TEXT)
+                    for item in reports.split(REPORT_SEPARATOR):
+                        self.add_note(item.split("\n", 1)[0], "preferences-system-time-symbolic")
+                    if not content:
+                        continue
                 text, _, listed = content.partition(ATTACHMENT_NOTE)
                 # "- /path (text file, 1.2 kB)" lines; the paths contain no " (".
                 paths = [line[2:].split(" (", 1)[0].rstrip("/\\") for line in listed.splitlines()
@@ -1124,7 +1337,7 @@ class ChatPanel(Gtk.Box):
                         arguments = {}
                     if not isinstance(arguments, dict):
                         arguments = {}
-                    if function.get("name") == "execute_python":
+                    if function.get("name") in ("execute_python", "execute_jupyter", "start_jupyter_job"):
                         self.add_note(arguments.get("purpose") or "Code", "system-run-symbolic")
                     else:
                         self.add_note(tool_summary(str(function.get("name")), arguments))
@@ -1193,6 +1406,11 @@ class AssistantWindow(Gtk.Window):
         self.run_mode_button: Gtk.MenuButton | None = None
         self.model_button: Gtk.MenuButton | None = None
         self.model_label: Gtk.Label | None = None
+        # JupyterLab (config.jupyter_url): the conversation's notebook/kernel and exchange folder.
+        self.jupyter: JupyterBridge | None = None
+        self.exchange: Path | None = None
+        self.jobs_button: Gtk.MenuButton | None = None
+        self.jobs_label: Gtk.Label | None = None
 
         self.set_decorated(False)
         self.set_resizable(False)
@@ -1255,7 +1473,7 @@ class AssistantWindow(Gtk.Window):
         self.recent_list = Gtk.ListBox()
         self.recent_list.get_style_context().add_class("recent-list")
         self.recent_list.set_selection_mode(Gtk.SelectionMode.NONE)
-        self.recent_list.connect("row-activated", lambda _list, row: self._resume(row.conversation_id))
+        self.recent_list.connect("row-activated", lambda _list, row: self.resume(row.conversation_id))
         self.recent.pack_start(self.recent_list, False, False, 0)
         box.pack_start(self.recent, False, False, 0)
 
@@ -1266,7 +1484,8 @@ class AssistantWindow(Gtk.Window):
     def open_prompt(self) -> None:
         try:
             config = load_config()
-            self.hint.set_text(f"Enter starts the assistant · Esc closes · Model: {config.ai_model}")
+            self.hint.set_text(f"Enter starts the assistant · Esc closes · Model: {config.ai_model}"
+                               + (" · JupyterLab" if config.jupyter else ""))
             self.set_default_size(config.prompt_width, -1)
             self.entry.set_width_chars(max(30, config.prompt_width // 11))
         except ValueError:
@@ -1293,6 +1512,10 @@ class AssistantWindow(Gtk.Window):
             title = label(entry.title, "recent-title", wrap=False)
             title.set_ellipsize(Pango.EllipsizeMode.END)
             line.pack_start(title, True, True, 0)
+            if any(job.get("wake", True) for job in self.app.jobs.undelivered(entry.id)):
+                line.pack_start(label("job finished", "request-target", wrap=False), False, False, 0)
+            elif any(job["state"] in ACTIVE for job in self.app.jobs.list(entry.id)):
+                line.pack_start(label("job running", "dim", wrap=False), False, False, 0)
             line.pack_start(label(history.age(entry.updated), "dim", wrap=False), False, False, 0)
             line.pack_start(icon_button("user-trash-symbolic", "Delete from the history",
                                         lambda entry_id=entry.id: self._forget(entry_id)), False, False, 0)
@@ -1345,7 +1568,7 @@ class AssistantWindow(Gtk.Window):
         if config is not None:
             self._start_conversation(config, text)
 
-    def _resume(self, conversation_id: str) -> None:
+    def resume(self, conversation_id: str) -> None:
         data = history.load(conversation_id)
         if data is None:
             self.show_error("This conversation cannot be read any more.")
@@ -1384,6 +1607,7 @@ class AssistantWindow(Gtk.Window):
         header.pack_end(icon_button("document-new-symbolic", "New conversation", self.app.new_conversation),
                         False, False, 0)
         header.pack_end(self._build_run_mode_button(), False, False, 0)
+        header.pack_end(self._build_jobs_button(), False, False, 0)
         main.pack_start(handle, False, False, 0)
 
         self.chat = ChatPanel(self._send, self._stop)
@@ -1438,6 +1662,102 @@ class AssistantWindow(Gtk.Window):
             RUN_MODE_ICONS[mode], Gtk.IconSize.BUTTON))
         self.run_mode_button.set_tooltip_text(f"Code execution: {AUTO_RUN_LABELS[mode]}")
         self.run_mode_button.show_all()
+
+    # --- background jobs ---------------------------------------------------------------
+    def _build_jobs_button(self) -> Gtk.MenuButton:
+        """The header menu with this conversation's background jobs (hidden without any)."""
+        button = Gtk.MenuButton()
+        button.set_relief(Gtk.ReliefStyle.NONE)
+        button.set_tooltip_text("Background jobs in JupyterLab")
+        box = Gtk.Box(spacing=4)
+        box.pack_start(Gtk.Image.new_from_icon_name("preferences-system-time-symbolic", Gtk.IconSize.BUTTON),
+                       False, False, 0)
+        self.jobs_label = label("", "dim", wrap=False)
+        box.pack_start(self.jobs_label, False, False, 0)
+        button.add(box)
+        box.show_all()
+        button.set_no_show_all(True)  # shown with the first job
+        self.jobs_button = button
+        self._fill_jobs_menu()
+        GLib.timeout_add_seconds(JOB_MENU_REFRESH_S, self._refresh_jobs_menu)
+        return button
+
+    def _refresh_jobs_menu(self) -> bool:
+        """Keeps the run times current; not while the menu is open."""
+        if self.closed:
+            return False
+        if self.jobs_button is not None and not self.jobs_button.get_active():
+            self._fill_jobs_menu()
+        return True
+
+    def _fill_jobs_menu(self) -> None:
+        if self.jobs_button is None or self.conversation_id is None:
+            return
+        jobs = self.app.jobs.list(self.conversation_id)
+        self.jobs_button.set_visible(bool(jobs))
+        running = sum(job["state"] in ACTIVE for job in jobs)
+        self.jobs_label.set_text(f"{running} running" if running else f"{len(jobs)} job{'s' * (len(jobs) != 1)}")
+        menu = Gtk.Menu()
+        for job in reversed(jobs):
+            purpose = job.get("purpose") or job["id"]
+            if len(purpose) > 60:
+                purpose = purpose[:59] + "…"
+            since = duration((job.get("finished") or time.time()) - job["started"])
+            item = Gtk.MenuItem(label=f"{purpose} · {job['state']} · {since}")
+            submenu = Gtk.Menu()
+            if job.get("problem"):
+                problem = Gtk.MenuItem(label=f"Cannot check it: {job['problem'][:MAX_MODEL_ERROR_CHARS]}")
+                problem.set_sensitive(False)
+                submenu.append(problem)
+            notebook = Gtk.MenuItem(label="Open its notebook in JupyterLab")
+            notebook.connect("activate", lambda _item, url=job["notebook_url"]: open_url(url))
+            submenu.append(notebook)
+            if job["state"] == "running":
+                cancel = Gtk.MenuItem(label="Cancel the job")
+                cancel.connect("activate", lambda _item, job=job: self._cancel_job(job))
+                submenu.append(cancel)
+            item.set_submenu(submenu)
+            menu.append(item)
+        menu.show_all()
+        self.jobs_button.set_popup(menu)
+
+    def _cancel_job(self, job: dict) -> None:
+        self.app.jobs.cancel(job["id"])
+        if self.chat is not None:
+            self.chat.add_note(f"Cancelling background job {job['id']} ({job.get('purpose') or 'no purpose'}); "
+                               "the assistant learns about it with your next message.",
+                               "media-playback-stop-symbolic")
+
+    def jobs_changed(self) -> None:
+        self._fill_jobs_menu()
+        self._deliver_jobs()
+
+    def _reports(self) -> list[dict]:
+        """Jobs of this conversation whose report the agent has not had yet."""
+        if self.conversation_id is None:
+            return []
+        return [job for job in self.app.jobs.undelivered(self.conversation_id) if job.get("report")]
+
+    def _take_reports(self, reports: list[dict]) -> str:
+        """Show the reports as notes, mark them delivered; the message text."""
+        for job in reports:
+            self.chat.add_note(job["report"].split("\n", 1)[0], "preferences-system-time-symbolic")
+        self.app.jobs.mark_delivered(reports)
+        return REPORT_HEADER + REPORT_SEPARATOR.join(clip(job["report"]) for job in reports)
+
+    def _deliver_jobs(self) -> bool:
+        """Jobs ended: their reports go to the agent as a new turn, once it is idle."""
+        if self.closed or self.agent is None or self.agent.busy or self.chat is None:
+            return False
+        reports = self._reports()
+        if not any(job.get("wake", True) for job in reports):
+            return False  # only cancelled jobs: they go with the next message
+        self.chat.clear_actions()
+        text = self._take_reports(reports)
+        self.chat.set_busy(True, "Working…")
+        self.agent.busy = True
+        threading.Thread(target=self.agent.send, args=(text,), daemon=True).start()
+        return False
 
     # --- model ---------------------------------------------------------------------
     def _build_model_button(self, model: str) -> Gtk.MenuButton:
@@ -1511,14 +1831,19 @@ class AssistantWindow(Gtk.Window):
     def _start_conversation(self, config: Config, text: str | None, conversation_id: str | None = None,
                             saved: dict | None = None) -> None:
         """A new conversation starting with `text`, or a `saved` one from the history."""
+        self.conversation_id = conversation_id = conversation_id or history.new_id()
+        if config.jupyter:
+            self.exchange = history.exchange_dir(self.conversation_id)
+            self.jupyter = JupyterBridge(config, self.conversation_id, self.exchange)
         self.agent = Agent(
             config,
-            workspace.system_prompt(),
+            workspace.system_prompt(self.exchange),
             self._execute,
             lambda kind, data: GLib.idle_add(self._on_agent_event, kind, data),
             auto_run=config.auto_run,
+            exchange=self.exchange,
+            jobs=lambda: self.app.jobs.info(conversation_id),
         )
-        self.conversation_id = conversation_id or history.new_id()
         self.conversation_title = str(saved.get("title") or "") if saved else text
         self.auto_run = config.auto_run  # the header menu can change it for this conversation
         self.stack.add_named(self._build_conversation(config.ai_model), "conversation")
@@ -1534,9 +1859,16 @@ class AssistantWindow(Gtk.Window):
             self.agent.restore(saved["messages"], [str(root) for root in saved.get("roots") or []])
             self.chat.replay(self.agent.messages[1:])
             self.saved_messages = len(self.agent.messages) - 1
+        # Set but unusable: say so, or the agent quietly works without it.
+        problem = jupyter_problem(read_raw_config())
+        if problem:
+            self.chat.add_note(f"JupyterLab is off for this conversation: {problem}", "dialog-warning-symbolic",
+                               "request-error")
         self._grow()
         if text is not None:
             self._send(text)
+        else:
+            GLib.idle_add(self._deliver_jobs)  # jobs that ended while it was closed
 
     def _save_history(self) -> None:
         """Store the conversation (after every answer and on close)."""
@@ -1545,8 +1877,8 @@ class AssistantWindow(Gtk.Window):
         messages = list(self.agent.messages[1:])  # without the system prompt
         if len(messages) == self.saved_messages or not any(message.get("role") == "user" for message in messages):
             return
-        workspace_root = WORKSPACE_DIR.resolve()
-        roots = [str(root) for root in self.agent.roots if root != workspace_root]
+        own = {WORKSPACE_DIR.resolve(), self.exchange.resolve() if self.exchange else None}
+        roots = [str(root) for root in self.agent.roots if root not in own]
         try:
             history.save(self.conversation_id, self.conversation_title, self.agent.config.ai_model, messages, roots)
         except OSError as exc:
@@ -1557,10 +1889,13 @@ class AssistantWindow(Gtk.Window):
     def _send(self, text: str, attachments: list[str] | tuple[str, ...] = ()) -> None:
         if self.agent is None or self.agent.busy:
             return
+        # Reports the agent has not had yet (e.g. cancelled jobs) go first.
+        reports = self._reports()
+        message = self._take_reports(reports) + USER_TEXT + text if reports else text
         self.chat.add_user(text, attachments)
         self.chat.set_busy(True, "Working…")
         self.agent.busy = True  # before the thread starts: no second send meanwhile
-        threading.Thread(target=self.agent.send, args=(text, attachments), daemon=True).start()
+        threading.Thread(target=self.agent.send, args=(message, attachments), daemon=True).start()
 
     def _retry(self) -> None:
         """Repeat the failed request (maybe with another model)."""
@@ -1598,15 +1933,17 @@ class AssistantWindow(Gtk.Window):
             self.chat.set_busy(False)
         if kind in ("done", "error", "stopped"):
             self._save_history()
+        if kind == "done":
+            GLib.idle_add(self._deliver_jobs)  # a job may have ended during the turn
         if not self.chat.busy:
             self.chat.focus_input()
         return False
 
-    def _execute(self, purpose: str, code: str, cancelled: threading.Event) -> str:
-        """The agent's execute_python: a card in the result panel; returns the
-        text for the model once the user ran or rejected it."""
+    def _execute(self, purpose: str, code: str, cancelled: threading.Event, target: str = "chemotion") -> str:
+        """The agent's execute_python/execute_jupyter: a card in the result
+        panel; returns the text for the model once the user ran or rejected it."""
         # Runs in the agent's thread: GTK only through GLib.idle_add.
-        pending = PendingRequest(purpose, code)
+        pending = PendingRequest(purpose, code, target)
         GLib.idle_add(self._show_request, pending)
         while not pending.done.wait(0.2):
             if cancelled.is_set():
@@ -1621,9 +1958,24 @@ class AssistantWindow(Gtk.Window):
         if self.closed or self.results is None:
             pending.answer(False, "ChemAssistent has no open conversation; the code did not run.")
             return False
+        if pending.target in ("jupyter", "job"):
+            if self.jupyter is None:
+                pending.answer(False, "JupyterLab is not configured; the code did not run.")
+                return False
+            bridge = self.jupyter
+            if pending.target == "job":
+                jobs, conversation = self.app.jobs, self.conversation_id
+                pending.new_execution = lambda code: JobExecution(code, pending.purpose, bridge, jobs, conversation)
+            else:
+                pending.new_execution = lambda code: JupyterExecution(code, pending.purpose, bridge)
+        else:
+            exchange = self.exchange
+            pending.new_execution = lambda code: Execution(code, exchange)
         # Decide about auto-run here on the main loop, with the current mode.
         if self.auto_run == "always":
             pending.auto = "always"
+        elif self.auto_run == "readonly" and pending.target != "chemotion":
+            pending.auto_reason = "JupyterLab code is never checked for read-only"
         elif self.auto_run == "readonly":
             ok, reason = looks_read_only(pending.code)
             if ok:
@@ -1632,6 +1984,7 @@ class AssistantWindow(Gtk.Window):
                 pending.auto_reason = reason
         card = self.results.add_request(pending)
         self.chat.add_note(f"#{card.number} {pending.purpose or 'Code'}"
+                           + {"jupyter": " · JupyterLab", "job": " · JupyterLab job"}.get(pending.target, "")
                            + (" · auto-run" if pending.auto else ""), "system-run-symbolic")
         self.chat.set_busy(True, "Running code automatically…" if pending.auto else
                            "Waiting for you to Run or Reject the code on the right…")
@@ -1716,6 +2069,11 @@ class ChemAssistentApp:
         self.models: list[str] | None = None
         self.models_error = ""
         self.models_key: tuple[str, str] | None = None
+        # Background jobs (jobs.py); the watcher reports through jobs_changed().
+        self.jobs = Jobs(lambda: GLib.idle_add(self.jobs_changed))
+        self.menu: Gtk.Menu | None = None
+        self.job_items: list[Gtk.MenuItem] = []  # the menu's entries for jobs
+        self.notifications: list = []  # shown notifications (their actions need them alive)
 
         provider = Gtk.CssProvider()
         provider.load_from_data(CSS)
@@ -1742,6 +2100,8 @@ class ChemAssistentApp:
         quit_item.connect("activate", lambda *_: self.quit())
         menu.append(quit_item)
         menu.show_all()
+        self.menu = menu
+        self._update_job_items()
         return menu, ask
 
     def _build_indicator(self) -> None:
@@ -1821,6 +2181,93 @@ class ChemAssistentApp:
                 self.window.models_changed()
         return False
 
+    # --- background jobs -------------------------------------------------------------
+    def jobs_changed(self) -> bool:
+        """A job started, ended or cannot be checked (jobs.Jobs.on_change)."""
+        window = self.window if self.window is not None and not self.window.closed else None
+        open_id = window.conversation_id if window is not None else None
+        for job in self.jobs.undelivered():
+            if job["conversation"] != open_id and history.load(job["conversation"]) is None:
+                self.jobs.mark_delivered([job])  # its conversation was deleted
+        notify = [job for job in self.jobs.undelivered()
+                  if job.get("report") and job.get("wake", True) and not job.get("notified")]
+        for job in notify:
+            self.jobs.update(job["id"], notified=True)
+        if window is not None:
+            window.jobs_changed()  # delivers this conversation's reports
+        for job in notify:
+            if job["conversation"] != open_id or not window.is_active():
+                self._notify_job(job)
+        self._update_job_items()
+        return False
+
+    def _notify_job(self, job: dict) -> None:
+        if Notify is None:
+            return  # the menu entry is there anyway
+        verb = {"done": "finished", "failed": "failed", "lost": "stopped"}.get(job["state"], job["state"])
+        conversation = job["conversation"]
+        try:
+            if not Notify.is_initted():
+                Notify.init(APP_ID)
+            note = Notify.Notification.new(f"Background job {verb}", job.get("purpose") or job["id"], str(ICON_FILE))
+            note.add_action("default", "Continue", lambda *_: self.open_conversation(conversation))
+            note.add_action("continue", "Continue the conversation", lambda *_: self.open_conversation(conversation))
+            note.connect("closed", lambda closed: closed in self.notifications and self.notifications.remove(closed))
+            self.notifications.append(note)
+            note.show()
+        except GLib.Error as exc:
+            LOG.warning("Could not show a notification: %s", exc)
+
+    def _update_job_items(self) -> None:
+        """Menu entries: finished jobs to continue, and how many still run."""
+        if self.menu is None:
+            return
+        for item in self.job_items:
+            self.menu.remove(item)
+        items: list[Gtk.MenuItem] = []
+        jobs = self.jobs.list()
+        for job in jobs:
+            if job["state"] in FINISHED and not job.get("delivered") and job.get("wake", True) and job.get("report"):
+                purpose = job.get("purpose") or job["id"]
+                purpose = purpose if len(purpose) <= 50 else purpose[:49] + "…"
+                item = Gtk.MenuItem(label=f"Job {job['state']}: {purpose} – continue…")
+                item.connect("activate", lambda _item, conversation=job["conversation"]:
+                             self.open_conversation(conversation))
+                items.append(item)
+        running = sum(job["state"] in ACTIVE for job in jobs)
+        if running:
+            item = Gtk.MenuItem(label=f"{running} background job{'s' * (running != 1)} running")
+            item.set_sensitive(False)
+            items.append(item)
+        if items:
+            items.insert(0, Gtk.SeparatorMenuItem())
+        for index, item in enumerate(items):
+            self.menu.insert(item, 2 + index)  # after "New conversation"
+            item.show()
+        self.job_items = items
+
+    def open_conversation(self, conversation_id: str) -> bool:
+        """Continue a conversation from the history (a job of it ended)."""
+        window = self.window if self.window is not None and not self.window.closed else None
+        if window is not None and window.conversation_id == conversation_id:
+            window.present_now()
+            return False
+        if window is not None and window.agent is not None and (window.agent.busy or window.results.waiting()):
+            # Do not end a conversation that is working or waiting for the user.
+            window.present_now()
+            window.chat.add_note("A background job of another conversation ended.", "preferences-system-time-symbolic",
+                                 actions=(("Switch to it", lambda: self._switch_to(conversation_id)),))
+            return False
+        self._switch_to(conversation_id)
+        return False
+
+    def _switch_to(self, conversation_id: str) -> None:
+        if self.window is not None:
+            self.window.close_conversation()
+        self.window = AssistantWindow(self)
+        self.window.open_prompt()
+        self.window.resume(conversation_id)
+
     def new_conversation(self) -> None:
         if self.window is not None:
             self.window.close_conversation()
@@ -1876,6 +2323,7 @@ class ChemAssistentApp:
 
     def run(self) -> None:
         self.server.start()
+        self.jobs.start()
         self._build_indicator()
         self._register_hotkey()
         if signal_add is not None:

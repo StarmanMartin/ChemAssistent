@@ -1,16 +1,18 @@
 """Old conversations: one JSON file per conversation in HISTORY_DIR (no GTK,
 standard library only). The app saves a conversation after every answer and
 when it closes; the prompt offers the newest ones to continue, the settings
-can delete them all."""
+can delete them all. A conversation's exchange folder (files shared with
+JupyterLab, config.EXCHANGE_DIR) goes with it; the copy in Jupyter stays."""
 from __future__ import annotations
 
 import json
 import secrets
+import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from config import STATE_DIR, write_private_json
+from config import EXCHANGE_DIR, STATE_DIR, write_private_json
 
 
 HISTORY_DIR = STATE_DIR / "history"
@@ -84,23 +86,34 @@ def count() -> int:
     return sum(1 for _ in HISTORY_DIR.glob("*.json"))
 
 
+def exchange_dir(conversation_id: str) -> Path:
+    return EXCHANGE_DIR / Path(conversation_id).name
+
+
+def _remove(path: Path) -> None:
+    path.unlink(missing_ok=True)
+    shutil.rmtree(exchange_dir(path.stem), ignore_errors=True)
+
+
 def delete(conversation_id: str) -> None:
-    _path(conversation_id).unlink(missing_ok=True)
+    _remove(_path(conversation_id))
 
 
 def clear() -> int:
     """Delete every saved conversation; returns how many there were."""
     deleted = 0
     for path in HISTORY_DIR.glob("*.json"):
-        path.unlink(missing_ok=True)
+        _remove(path)
         deleted += 1
+    # Also the folders of conversations that were never saved.
+    shutil.rmtree(EXCHANGE_DIR, ignore_errors=True)
     return deleted
 
 
 def _prune() -> None:
     paths = sorted(HISTORY_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
     for path in paths[MAX_CONVERSATIONS:]:
-        path.unlink(missing_ok=True)
+        _remove(path)
 
 
 def age(timestamp: float) -> str:
