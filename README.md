@@ -133,9 +133,26 @@ plan in X.” Locally the exchange folders are in
 conversation; the folders in JupyterLab stay. Kernels are not shut down when
 a conversation ends (you may still use them in JupyterLab).
 
+## Lessons the assistant learns
+
+The assistant keeps notes about its tools that every conversation gets: when
+a snippet failed because chemotion_api, a package, JupyterLab or the app
+behaves in a non-obvious way, and it then found what works, it records that
+with its tool `save_lesson` (“Saved a lesson: …” in the chat). Not for its
+own typos, and never data from Chemotion or about you: only how the tools
+behave. After a failed snippet that a later one in the same turn fixed, the
+app reminds it to do so. A lesson with the same name replaces the old one, so
+the assistant can correct or remove lessons that turned out to be wrong.
+
+The notes are one Markdown file, `~/.local/state/chem-assistent/lessons.md`
+(at most 6000 characters, the oldest lessons go first); each lesson has its
+date and the chemotionapi commit it was written against. New conversations
+get it in their instructions, marked as hints to verify. Settings → *Lessons*
+shows it for editing and has *Clear lessons*.
+
 ## Safety
 
-- The agent has exactly four tools (seven with JupyterLab): `execute_python`, which waits for your
+- The agent has exactly five tools (eight with JupyterLab): `execute_python`, which waits for your
   confirmation in the result panel and is its only way to reach Chemotion,
   and `read_file`, `grep` and `list_files`, which only read the API reference
   and the chemotionapi checkout in its workspace plus the files and folders
@@ -145,6 +162,7 @@ a conversation ends (you may still use them in JupyterLab).
   confirmation rules, except that *Auto-run read-only code* never applies to
   them (only *Auto-run everything* runs them without asking);
   `jupyter_jobs` only reads the state of the conversation's jobs.
+  `save_lesson` writes only the lessons file (see above).
 - Confirmed code runs in its own process with an already logged-in
   `instance`; your password is never shown to the AI model. It is stopped
   after `execution_timeout` seconds and can be cancelled while it runs.

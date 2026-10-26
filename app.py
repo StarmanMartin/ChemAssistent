@@ -82,7 +82,8 @@ import hotkey  # noqa: E402
 import ipc  # noqa: E402
 import workspace  # noqa: E402
 from agent import (  # noqa: E402
-    ATTACHMENT_NOTE, STOPPED_NOTE, Agent, AgentError, list_models, looks_read_only, tool_summary,
+    ATTACHMENT_NOTE, FAILED_TEXT, RAN_TEXT, STOPPED_NOTE, Agent, AgentError, list_models, looks_read_only,
+    tool_summary,
 )
 from cli_agent import CliAgent, cli_models, command_problem  # noqa: E402
 from jobs import ACTIVE, FINISHED, REPORT_HEADER, USER_TEXT, Jobs, duration  # noqa: E402
@@ -942,7 +943,7 @@ class RequestCard(Gtk.Box):
                          "Do not wait or poll: end your answer now (tell the user what runs). When it ends, "
                          "a message with its outcome, printed output and new files arrives.")
         else:
-            parts.append("The code ran successfully." if ok else f"The code failed:\n{error}")
+            parts.append(RAN_TEXT if ok else f"{FAILED_TEXT}\n{error}")
         if stdout.strip():
             parts.append(f"Printed output:\n{stdout}")
         if ok and not outcome.get("job"):

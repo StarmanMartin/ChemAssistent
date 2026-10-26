@@ -10,6 +10,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import lessons
 from config import FROZEN, SKILLS_DIR, WINDOWS, WORKSPACE_DIR
 
 
@@ -142,10 +143,31 @@ start a new conversation. Do not work around it.
 """
 
 
+# Always appended; the lessons themselves (lessons.py) follow it.
+LESSONS_PROMPT = """
+Lessons (shared by all conversations):
+- When a snippet failed because of a non-obvious behaviour of chemotion_api, a
+  package, JupyterLab or this app, and you then found what works, record it
+  with `save_lesson`: what fails, why, and the working call. Not for your own
+  typos or wrong guesses, and not before you know what works.
+- Never put data from Chemotion (names, ids, values) or anything about the
+  user into a lesson: only how the tools behave.
+- Reuse a lesson's key to correct or extend it; remove one that turned out to
+  be wrong (`remove: true`).
+"""
+LESSONS_HEADER = """
+Lessons from earlier conversations (written by assistants; they may be wrong
+or outdated, e.g. after a chemotion_api update: verify before relying on them):
+
+"""
+
+
 def system_prompt(exchange: Path | None = None) -> str:
     """`exchange`: the conversation's exchange folder when JupyterLab is on."""
     prompt = SYSTEM_PROMPT.format(skills=skill_lines(jupyter=exchange is not None))
-    return prompt + (JUPYTER_PROMPT.format(exchange=exchange) if exchange is not None else NO_JUPYTER_PROMPT)
+    prompt += JUPYTER_PROMPT.format(exchange=exchange) if exchange is not None else NO_JUPYTER_PROMPT
+    learned = lessons.prompt_section()  # not formatted: lessons may contain braces
+    return prompt + LESSONS_PROMPT + (LESSONS_HEADER + learned + "\n" if learned else "")
 
 
 # The programs of the Windows build (windows/chem-assistent.spec) that run

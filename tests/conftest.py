@@ -112,6 +112,16 @@ def cleanup_samples(chemotion):
             pass
 
 
+@pytest.fixture(autouse=True)
+def lessons_file(tmp_path, monkeypatch) -> Path:
+    """Every test gets its own (empty) lessons file, never the user's."""
+    import lessons
+
+    path = tmp_path / "lessons" / "lessons.md"
+    monkeypatch.setattr(lessons, "LESSONS_FILE", path)
+    return path
+
+
 @pytest.fixture
 def fake_ai():
     """A scripted AI endpoint; add turns with `script_next()`."""
