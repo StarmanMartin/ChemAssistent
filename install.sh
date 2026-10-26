@@ -153,7 +153,7 @@ if ! "$venv_python" -c 'import gi; gi.require_version("Gtk", "3.0"); from gi.rep
   exit 1
 fi
 
-# chemotionapi (branch version-3) with its skills, and the API reference for the agent.
+# chemotionapi (tag v312.0.1) with its skills, and the API reference for the agent.
 "$APP_DIR/setup_workspace.sh" "$APP_DIR" "$venv_python"
 
 # --- Configuration ----------------------------------------------------------

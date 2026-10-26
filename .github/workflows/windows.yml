@@ -17,7 +17,7 @@ on:
       - ".github/workflows/windows.yml"
   workflow_dispatch:
   schedule:
-    # Weekly, so the bundle picks up changes of chemotionapi (version-3).
+    # Weekly, so the bundle picks up changes of the dependencies.
     - cron: "17 3 * * 1"
 
 permissions:
