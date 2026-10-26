@@ -1161,6 +1161,95 @@ def markdown_markup(text: str) -> str:
     return "\n".join(out).strip()
 
 
+class Attachments(Gtk.FlowBox):
+    """Files and folders attached to the next message, shown as removable
+    chips; filled by the paperclip button (`button()`) or drag and drop
+    (`accept_drops()`)."""
+
+    def __init__(self, on_change=None) -> None:
+        super().__init__()
+        self.paths: list[str] = []
+        self.on_change = on_change  # called after the chips changed (e.g. to refocus)
+        self.set_selection_mode(Gtk.SelectionMode.NONE)
+        self.set_max_children_per_line(20)
+        self.set_no_show_all(True)
+
+    def button(self) -> Gtk.MenuButton:
+        attach = Gtk.MenuButton()
+        attach.set_image(Gtk.Image.new_from_icon_name("mail-attachment-symbolic", Gtk.IconSize.BUTTON))
+        attach.set_tooltip_text("Attach a file or a folder (or drop it here)")
+        attach.set_valign(Gtk.Align.END)
+        menu_popover(attach, [(text, lambda folder=folder: self._choose(folder), None)
+                              for text, folder in (("File…", False), ("Folder…", True))])
+        return attach
+
+    def accept_drops(self, widget: Gtk.Widget) -> None:
+        """Attach what is dropped onto `widget`."""
+        widget.drag_dest_set(Gtk.DestDefaults.ALL, [], Gdk.DragAction.COPY)
+        widget.drag_dest_add_uri_targets()
+        widget.connect("drag-data-received", self._on_drop)
+
+    def take(self) -> list[str]:
+        """The attached paths; the chips are emptied."""
+        paths, self.paths = self.paths, []
+        self._update()
+        return paths
+
+    def _choose(self, folder: bool) -> None:
+        dialog = Gtk.FileChooserNative.new(
+            "Attach a folder" if folder else "Attach files",
+            self.get_toplevel(),
+            Gtk.FileChooserAction.SELECT_FOLDER if folder else Gtk.FileChooserAction.OPEN,
+            "Attach",
+            "Cancel",
+        )
+        dialog.set_select_multiple(not folder)
+        if dialog.run() == Gtk.ResponseType.ACCEPT:
+            self.attach([path for path in (file.get_path() for file in dialog.get_files()) if path])
+        dialog.destroy()
+        if self.on_change:
+            self.on_change()
+
+    def _on_drop(self, _widget, context, _x, _y, data, _info, time_) -> None:
+        paths = [Gio.File.new_for_uri(uri).get_path() for uri in data.get_uris() or []]
+        self.attach([path for path in paths if path])
+        Gtk.drag_finish(context, True, False, time_)
+        if self.on_change:
+            self.on_change()
+
+    def attach(self, paths: list[str]) -> None:
+        for path in paths:
+            if path not in self.paths and os.path.exists(path):
+                self.paths.append(path)
+        self._update()
+
+    def _update(self) -> None:
+        for child in self.get_children():
+            self.remove(child)
+        for path in self.paths:
+            chip = Gtk.Box(spacing=4)
+            chip.get_style_context().add_class("attachment-chip")
+            folder = os.path.isdir(path)
+            chip.pack_start(Gtk.Image.new_from_icon_name(
+                "folder-symbolic" if folder else "text-x-generic-symbolic", Gtk.IconSize.MENU), False, False, 0)
+            name = label(os.path.basename(path.rstrip("/\\")) + ("/" if folder else ""), wrap=False)
+            name.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
+            name.set_max_width_chars(30)
+            chip.pack_start(name, False, False, 0)
+            chip.pack_start(icon_button("window-close-symbolic", "Remove",
+                                        lambda path=path: self._detach(path)), False, False, 0)
+            chip.set_tooltip_text(path)
+            chip.show_all()
+            self.add(chip)
+        self.set_visible(bool(self.paths))
+
+    def _detach(self, path: str) -> None:
+        self.paths.remove(path)
+        self._update()
+        if self.on_change:
+            self.on_change()
+
+
 class ChatPanel(Gtk.Box):
     """The conversation with the agent: messages, a status line, the input
     with attached files and folders (button or drag and drop)."""
@@ -1168,7 +1257,6 @@ class ChatPanel(Gtk.Box):
     def __init__(self, on_send, on_stop) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.on_send = on_send  # on_send(text, attachments)
-        self.attachments: list[str] = []
         self.answer: Gtk.Label | None = None  # the assistant message being streamed
         self.answer_text = ""
         self.render_pending = False
@@ -1190,22 +1278,14 @@ class ChatPanel(Gtk.Box):
         status_row.pack_start(self.status, True, True, 0)
         self.pack_start(status_row, False, False, 0)
 
-        self.chips = Gtk.FlowBox()
-        self.chips.set_selection_mode(Gtk.SelectionMode.NONE)
-        self.chips.set_max_children_per_line(20)
+        self.chips = Attachments(self.focus_input)
         self.chips.set_margin_start(10)
         self.chips.set_margin_end(10)
         self.pack_start(self.chips, False, False, 0)
 
         input_row = Gtk.Box(spacing=8, border_width=10)
         input_row.set_margin_top(0)
-        attach = Gtk.MenuButton()
-        attach.set_image(Gtk.Image.new_from_icon_name("mail-attachment-symbolic", Gtk.IconSize.BUTTON))
-        attach.set_tooltip_text("Attach a file or a folder (or drop it here)")
-        attach.set_valign(Gtk.Align.END)
-        menu_popover(attach, [(text, lambda folder=folder: self._choose(folder), None)
-                              for text, folder in (("File…", False), ("Folder…", True))])
-        input_row.pack_start(attach, False, False, 0)
+        input_row.pack_start(self.chips.button(), False, False, 0)
         self.input = Gtk.TextView()
         self.input.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
         self.input.set_left_margin(8)
@@ -1238,9 +1318,7 @@ class ChatPanel(Gtk.Box):
         self.pack_start(input_row, False, False, 0)
         self.busy = False
 
-        self.drag_dest_set(Gtk.DestDefaults.ALL, [], Gdk.DragAction.COPY)
-        self.drag_dest_add_uri_targets()
-        self.connect("drag-data-received", self._on_drop)
+        self.chips.accept_drops(self)
         # The text view has its own drop handling (it inserts the URIs as text).
         self.input.drag_dest_unset()
 
@@ -1256,61 +1334,11 @@ class ChatPanel(Gtk.Box):
     def _send(self) -> None:
         buffer = self.input.get_buffer()
         text = buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), False).strip()
-        if not (text or self.attachments) or self.busy:
+        if not (text or self.chips.paths) or self.busy:
             return
         buffer.set_text("")
-        attachments, self.attachments = self.attachments, []
-        self._update_chips()
+        attachments = self.chips.take()
         self.on_send(text or "Have a look at the attachments.", attachments)
-
-    # --- attachments ----------------------------------------------------------
-    def _choose(self, folder: bool) -> None:
-        dialog = Gtk.FileChooserNative.new(
-            "Attach a folder" if folder else "Attach files",
-            self.get_toplevel(),
-            Gtk.FileChooserAction.SELECT_FOLDER if folder else Gtk.FileChooserAction.OPEN,
-            "Attach",
-            "Cancel",
-        )
-        dialog.set_select_multiple(not folder)
-        if dialog.run() == Gtk.ResponseType.ACCEPT:
-            self.attach([path for path in (file.get_path() for file in dialog.get_files()) if path])
-        dialog.destroy()
-        self.focus_input()
-
-    def _on_drop(self, _widget, context, _x, _y, data, _info, time_) -> None:
-        paths = [Gio.File.new_for_uri(uri).get_path() for uri in data.get_uris() or []]
-        self.attach([path for path in paths if path])
-        Gtk.drag_finish(context, True, False, time_)
-
-    def attach(self, paths: list[str]) -> None:
-        for path in paths:
-            if path not in self.attachments and os.path.exists(path):
-                self.attachments.append(path)
-        self._update_chips()
-
-    def _update_chips(self) -> None:
-        for child in self.chips.get_children():
-            self.chips.remove(child)
-        for path in self.attachments:
-            chip = Gtk.Box(spacing=4)
-            chip.get_style_context().add_class("attachment-chip")
-            folder = os.path.isdir(path)
-            chip.pack_start(Gtk.Image.new_from_icon_name(
-                "folder-symbolic" if folder else "text-x-generic-symbolic", Gtk.IconSize.MENU), False, False, 0)
-            name = label(os.path.basename(path.rstrip("/\\")) + ("/" if folder else ""), wrap=False)
-            name.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
-            name.set_max_width_chars(30)
-            chip.pack_start(name, False, False, 0)
-            chip.pack_start(icon_button("window-close-symbolic", "Remove",
-                                        lambda path=path: self._detach(path)), False, False, 0)
-            chip.set_tooltip_text(path)
-            self.chips.add(chip)
-        self.chips.show_all()
-
-    def _detach(self, path: str) -> None:
-        self.attachments.remove(path)
-        self._update_chips()
 
     def _add(self, widget: Gtk.Widget) -> None:
         self.list.pack_start(widget, False, False, 0)
@@ -1509,7 +1537,17 @@ class AssistantWindow(Gtk.Window):
         self.entry.set_width_chars(56)
         self.entry.set_placeholder_text("e.g. “Which samples are in my collection Main Test?”")
         self.entry.connect("activate", lambda *_: self._submit())
-        box.pack_start(self.entry, False, False, 0)
+        # The entry has its own drop handling (it inserts the URIs as text).
+        self.entry.drag_dest_unset()
+        self.prompt_attachments = Attachments(lambda: self.entry.grab_focus())
+        entry_row = Gtk.Box(spacing=6)
+        attach = self.prompt_attachments.button()
+        attach.set_valign(Gtk.Align.CENTER)
+        entry_row.pack_start(attach, False, False, 0)
+        entry_row.pack_start(self.entry, True, True, 0)
+        box.pack_start(entry_row, False, False, 0)
+        box.pack_start(self.prompt_attachments, False, False, 0)
+        self.prompt_attachments.accept_drops(box)
 
         self.hint = label("", "prompt-hint")
         box.pack_start(self.hint, False, False, 0)
@@ -1612,11 +1650,12 @@ class AssistantWindow(Gtk.Window):
 
     def _submit(self) -> None:
         text = self.entry.get_text().strip()
-        if not text:
+        if not (text or self.prompt_attachments.paths):
             return
         config = self._ready_config()
         if config is not None:
-            self._start_conversation(config, text)
+            self._start_conversation(config, text or "Have a look at the attachments.",
+                                     attachments=self.prompt_attachments.take())
 
     def resume(self, conversation_id: str) -> None:
         data = history.load(conversation_id)
@@ -1851,8 +1890,8 @@ class AssistantWindow(Gtk.Window):
             self.model_button.set_active(True)
 
     def _start_conversation(self, config: Config, text: str | None, conversation_id: str | None = None,
-                            saved: dict | None = None) -> None:
-        """A new conversation starting with `text`, or a `saved` one from the history."""
+                            saved: dict | None = None, attachments: list[str] | None = None) -> None:
+        """A new conversation starting with `text` (and `attachments`), or a `saved` one from the history."""
         self.conversation_id = conversation_id = conversation_id or history.new_id()
         on_event = lambda kind, data: GLib.idle_add(self._on_agent_event, kind, data)  # noqa: E731
         if config.agent in CLI_AGENTS:
@@ -1901,7 +1940,7 @@ class AssistantWindow(Gtk.Window):
                                "request-error")
         self._grow()
         if text is not None:
-            self._send(text)
+            self._send(text, attachments or ())
         else:
             GLib.idle_add(self._deliver_jobs)  # jobs that ended while it was closed
 
