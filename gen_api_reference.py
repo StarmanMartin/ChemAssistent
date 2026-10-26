@@ -1,6 +1,6 @@
 """Build CHEMOTION_API.md for the AI agent from the chemotionapi docs.
 
-The Sphinx docs of the chemotionapi repository (branch version-3) are mostly
+The Sphinx docs of the chemotionapi repository (tag v312.0.1) are mostly
 autodoc directives, so this script walks docs/index.rst in toctree order,
 keeps the prose and code blocks, and replaces every `autoclass`,
 `automodule` and `autoenum` directive with the signatures and docstrings of
@@ -204,8 +204,8 @@ def toctree(index: Path) -> list[str]:
 def build(repo: Path) -> str:
     docs = repo / "docs"
     parts = [
-        "# chemotion_api reference (branch version-3)",
-        "Generated from the docs of https://github.com/Chemotion/chemotionapi (branch version-3) "
+        "# chemotion_api reference (tag v312.0.1)",
+        "Generated from the docs of https://github.com/Chemotion/chemotionapi (tag v312.0.1) "
         "and the docstrings of the installed package. The full source is in ./chemotionapi/.",
     ]
     for name in toctree(docs / "index.rst"):

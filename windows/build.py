@@ -38,7 +38,7 @@ PACKAGE = DIST / "ChemAssistent-windows-x64.zip"
 GTK_RELEASE = "2026.8.0"
 GTK_URL = f"https://github.com/wingtk/gvsbuild/releases/download/{GTK_RELEASE}/GTK3_Gvsbuild_{GTK_RELEASE}_x64.zip"
 CHEMOTION_REPO = "https://github.com/Chemotion/chemotionapi"
-CHEMOTION_REF = "version-3"
+CHEMOTION_REF = "v312.0.1"
 # chemotion_api's dependencies the bundle leaves out: windows/magic.py replaces
 # python-magic, which needs libmagic.
 SKIP_DEPENDENCIES = {"python-magic"}
@@ -92,10 +92,9 @@ def gtk_wheels(gtk: Path) -> list[Path]:
 
 
 def fetch_chemotionapi() -> tuple[Path, str]:
-    """The chemotionapi branch as build/windows/workspace/chemotionapi and its commit."""
+    """The chemotionapi tag as build/windows/workspace/chemotionapi and its commit."""
     archive = DOWNLOADS / f"chemotionapi-{CHEMOTION_REF}.zip"
-    archive.unlink(missing_ok=True)  # always the newest commit of the branch
-    download(f"{CHEMOTION_REPO}/archive/refs/heads/{CHEMOTION_REF}.zip", archive)
+    download(f"{CHEMOTION_REPO}/archive/refs/tags/{CHEMOTION_REF}.zip", archive)
     checkout = WORKSPACE / "chemotionapi"
     shutil.rmtree(WORKSPACE, ignore_errors=True)
     checkout.mkdir(parents=True)

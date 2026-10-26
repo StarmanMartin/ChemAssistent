@@ -11,8 +11,8 @@ OpenAI-compatible API, by default the
 to [Claude Code](https://claude.com/claude-code) or
 [Codex](https://github.com/openai/codex), with the same tools and the same
 confirmation (see [Agents](#agents)). It uses the Python package
-[chemotion_api](https://github.com/Chemotion/chemotionapi) (branch
-`version-3`) and knows its API from the package documentation and skills.
+[chemotion_api](https://github.com/Chemotion/chemotionapi) (tag
+`v312.0.1`) and knows its API from the package documentation and skills.
 
 **Nothing runs against Chemotion without your confirmation**: every piece of
 code the agent wants to run is shown to you first, you can edit it, and it runs
@@ -222,7 +222,7 @@ installs another branch.
 Run it as your normal user (it calls `sudo` only when Ubuntu packages are
 missing: GTK 3, the AppIndicator library, GtkSourceView, libmagic, git).
 It copies the app to `~/.local/share/chem-assistent/` with its own virtual
-environment, clones **chemotionapi** (branch `version-3`, with its skills)
+environment, clones **chemotionapi** (tag `v312.0.1`, with its skills)
 into the app's workspace, installs it, generates the API reference for the
 agent, asks once for your KI-Toolbox API key (saved as `ai_token` in the
 config) and installs and starts the systemd user service, so the icon appears
@@ -333,8 +333,8 @@ On Windows the files live in other places:
 Differences from Linux:
 
 - a left click on the tray icon opens the prompt, a right click the menu;
-- chemotionapi is part of the build (the newest `version-3` when it was
-  built) instead of being cloned at install time;
+- chemotionapi is part of the build (tag `v312.0.1`) instead of being cloned
+  at install time;
 - confirmed code runs in the bundled Python: the standard library,
   chemotion_api and its dependencies (requests, PyYAML, jsonschema, rdflib,
   …); other packages such as numpy or pandas are not available;
