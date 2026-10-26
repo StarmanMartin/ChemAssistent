@@ -176,12 +176,13 @@ FROZEN_PROGRAMS = {
     "app.py": ["ChemAssistent.exe"],
     "settings.py": ["ChemAssistent.exe", "--settings"],
     "chemotion_runner.py": ["chem-assistent-runner.exe"],
+    "mcp_bridge.py": ["chem-assistent-runner.exe", "--mcp-bridge"],
 }
 
 
 def command(script: str, console: bool = False) -> list[str]:
-    """The command line that starts app.py, settings.py or chemotion_runner.py
-    in a child process. `console`: the child needs stdio, which on Windows
+    """The command line that starts app.py, settings.py, chemotion_runner.py
+    or mcp_bridge.py in a child process. `console`: the child needs stdio, which on Windows
     python.exe has and pythonw.exe (no console window) has not. The Windows
     build has no Python: there the bundle's exes run the scripts."""
     if FROZEN:

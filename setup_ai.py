@@ -3,7 +3,8 @@
 Fills a missing ai_url/ai_model with the KIT KI-Toolbox defaults (and turns
 an opencode-era model id like ki-toolbox/complex-local into alias.complex-local).
 If the config has no ai_token yet, it takes KI_TOOLBOX_API_KEY from the
-environment (where older installs put it) or asks for the key.
+environment (where older installs put it) or asks for the key. Other agents
+(Ollama, Claude Code, Codex; config key `agent`) need no token.
 Standard library only.
 """
 from __future__ import annotations
@@ -12,11 +13,15 @@ import getpass
 import os
 import sys
 
-from config import AI_TOKEN_ENV, CONFIG_FILE, KI_TOOLBOX_URL, read_raw_config, save_raw_config
+from config import AGENT_LABELS, AI_TOKEN_ENV, CONFIG_FILE, KI_TOOLBOX_URL, agent_of, read_raw_config, save_raw_config
 
 
 def main() -> None:
     data = read_raw_config()  # fills defaults and migrates the model id
+    if agent_of(data) != "api":
+        save_raw_config(data)
+        print(f"Agent: {AGENT_LABELS[agent_of(data)]}; no API token needed.")
+        return
     if str(data.get("ai_token") or "").strip():
         print("AI token already set.")
     elif os.environ.get(AI_TOKEN_ENV, "").strip():
