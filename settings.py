@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import subprocess
+import sys
 import threading
+import webbrowser
 from pathlib import Path
 
 import gi
@@ -11,9 +14,11 @@ gi.require_version("Gtk", "3.0")
 
 from gi.repository import GLib, Gtk  # type: ignore  # noqa: E402
 
+import api_versions  # noqa: E402
 import app_control  # noqa: E402
 import history  # noqa: E402
 import hotkey  # noqa: E402
+import issues  # noqa: E402
 import lessons  # noqa: E402
 from agent import AgentError, list_models  # noqa: E402
 from cli_agent import check_command, cli_models  # noqa: E402
@@ -28,6 +33,9 @@ from jupyter import JupyterClient, JupyterError, split_url  # noqa: E402
 
 PRGNAME = "chem-assistent-settings"
 ICON_FILE = Path(__file__).with_name("chem-assistent.svg")
+SETUP_WORKSPACE = Path(__file__).with_name("setup_workspace.sh")
+# Fetch, pip install and the API reference of another chemotion_api version.
+SETUP_TIMEOUT_S = 900
 
 # What the settings say below the agent's fields.
 AGENT_NOTES = {
@@ -114,6 +122,33 @@ class SettingsWindow(Gtk.Window):
         self.test_button.connect("clicked", self._on_test)
         grid.attach(self.test_button, 1, row, 1, 1)
         row += 1
+
+        # The chemotion_api release in the workspace (setup_workspace.sh, a
+        # bash script); the Windows bundle comes with its own.
+        installed = api_versions.installed_label()
+        if WINDOWS:
+            version_label = Gtk.Label(label=installed or "unknown", xalign=0, selectable=True)
+            row = self._add_row(grid, row, "chemotion_api version", version_label)
+        else:
+            self.api_version = Gtk.ComboBoxText(hexpand=True)
+            self.api_version.connect("changed", lambda *_: self._update_api_button())
+            self.api_install_button = Gtk.Button(label="Install", sensitive=False)
+            self.api_install_button.set_tooltip_text(
+                "Fetch this version (or, in developer mode, the head of this branch) of chemotion_api, "
+                "install it and rebuild the API reference for the assistant. Applies to the next snippet "
+                "and the next conversation.")
+            self.api_install_button.connect("clicked", self._on_install_api)
+            version_box = Gtk.Box(spacing=8)
+            version_box.pack_start(self.api_version, True, True, 0)
+            version_box.pack_start(self.api_install_button, False, False, 0)
+            row = self._add_row(grid, row, "chemotion_api version", version_box)
+            self.api_note = Gtk.Label(xalign=0, wrap=True, max_width_chars=60)
+            self.api_note.get_style_context().add_class("dim-label")
+            grid.attach(self.api_note, 1, row, 1, 1)
+            row += 1
+            self.api_busy, self.api_tags, self.api_branches = True, [], []
+            self.api_note.set_text(f"Installed: {installed or 'unknown'}. Loading the released versions...")
+            threading.Thread(target=self._api_tags_worker, daemon=True).start()
 
         grid, row = self._page("AI agent", "The built-in agent against an OpenAI-compatible API or Ollama, "
                                            "or a CLI agent."), 1
@@ -254,6 +289,55 @@ class SettingsWindow(Gtk.Window):
         grid.attach(note, 0, row, 2, 1)
         row += 1
         row = self._add_row(grid, row, *timeout_row)
+
+        grid, row = self._page("Developer", "For developers of chemotion_api."), 1
+        self.developer_mode = Gtk.Switch(halign=Gtk.Align.START)
+        self.developer_mode.set_active(bool(self.data.get("developer_mode", False)))
+        if not WINDOWS:
+            self.developer_mode.connect("notify::active", lambda *_: self._fill_api_versions())
+        row = self._add_row(grid, row, "Developer mode", self.developer_mode)
+        note = Gtk.Label(
+            label="The assistant reports every bug it finds in chemotion_api as an issue of "
+                  f"{issues.REPO} on GitHub, with the date, the AI model, the Chemotion instance "
+                  "(URL, version) and the chemotion_api branch. "
+                  + ("" if WINDOWS else "The Chemotion tab also offers the branches of chemotion_api. ")
+                  + "Applies to the next conversation.",
+            xalign=0, wrap=True, max_width_chars=60,
+        )
+        note.get_style_context().add_class("dim-label")
+        grid.attach(note, 1, row, 1, 1)
+        row += 1
+        self.github_token = self._secret_entry(str(self.data.get("github_token") or ""))
+        self.github_token.set_placeholder_text("Optional: creates the issues directly")
+        row = self._add_row(grid, row, "GitHub token", self.github_token)
+        token_button = Gtk.Button(label="Create token on GitHub…")
+        token_button.set_tooltip_text(
+            "Opens GitHub's form for a fine-grained token, filled in with only “Issues: read and write”. "
+            f"Choose “Only select repositories” → {issues.REPO.split('/')[1]} there."
+        )
+        token_button.connect("clicked", lambda *_: webbrowser.open(issues.token_url()))
+        classic_button = Gtk.Button(label="Classic token…")
+        classic_button.set_tooltip_text(
+            f"For non-members of {issues.REPO.split('/')[0]}: GitHub's form for a classic token with public_repo "
+            "(fine-grained tokens cannot write to public repositories of other organizations)."
+        )
+        classic_button.connect("clicked", lambda *_: webbrowser.open(issues.classic_token_url()))
+        token_buttons = Gtk.Box(spacing=8)
+        token_buttons.pack_start(token_button, False, False, 0)
+        token_buttons.pack_start(classic_button, False, False, 0)
+        grid.attach(token_buttons, 1, row, 1, 1)
+        row += 1
+        note = Gtk.Label(
+            label="A fine-grained token with “Issues: read and write” on the repository: the button fills "
+                  f"in everything but the repository (choose “Only select repositories” → {issues.REPO}); "
+                  f"it works if you are a member of {issues.REPO.split('/')[0]}. Otherwise a classic token "
+                  f"with public_repo. Without a token, every report is saved in {issues.ISSUES_DIR} and the "
+                  "assistant gives you a link to GitHub's new-issue form, filled in, to submit it yourself.",
+            xalign=0, wrap=True, max_width_chars=60,
+        )
+        note.get_style_context().add_class("dim-label")
+        grid.attach(note, 1, row, 1, 1)
+        row += 1
 
         grid, row = general_grid, general_row
         self.clear_history_button = Gtk.Button(label="Clear history")
@@ -458,6 +542,8 @@ class SettingsWindow(Gtk.Window):
             "jupyter_password": self.jupyter_password.get_text(),
             "jupyter_folder": self.jupyter_folder.get_text().strip(),
             "jupyter_verify_tls": self.jupyter_verify_tls.get_active(),
+            "developer_mode": self.developer_mode.get_active(),
+            "github_token": self.github_token.get_text().strip(),
             "use_keyring": self.use_keyring.get_active(),
         }
         self._store_agent_fields()
@@ -554,6 +640,81 @@ class SettingsWindow(Gtk.Window):
         self.jupyter_note.set_text(text)
         return False
 
+    # --- chemotion_api version ----------------------------------------------
+    def _api_tags_worker(self) -> None:
+        try:
+            (tags, branches), error = api_versions.list_refs(), ""
+        except api_versions.VersionError as exc:
+            tags, branches, error = [], [], str(exc)
+        GLib.idle_add(self._api_tags_done, tags, branches, error)
+
+    def _api_tags_done(self, tags: list[str], branches: list[str], error: str) -> bool:
+        self.api_busy = False
+        self.api_tags, self.api_branches = tags, branches
+        self._fill_api_versions(error)
+        return False
+
+    def _fill_api_versions(self, error: str = "") -> None:
+        """The released tags, in developer mode also the branches (id "branch:<name>")."""
+        tags, branches = self.api_tags, self.api_branches if self.developer_mode.get_active() else []
+        tag, branch = api_versions.installed_tag(), api_versions.installed_branch()
+        installed = api_versions.installed_label() or "unknown"
+        self.api_version.remove_all()
+        for name in tags:
+            self.api_version.append(name, f"{name} (installed)" if name == tag else name)
+        for name in branches:
+            self.api_version.append(f"branch:{name}", f"branch {name}" + (" (installed)" if name == branch else ""))
+        active = f"branch:{branch}" if branch in branches else tag if tag in tags else (tags[0] if tags else None)
+        self.api_version.set_active_id(active)
+        if error:
+            self.api_note.set_text(f"Installed: {installed}. Cannot list the released versions: {error}")
+        elif not tags:
+            self.api_note.set_text(f"Installed: {installed}. No released version found.")
+        else:
+            more = f" and {len(branches)} branch{'' if len(branches) == 1 else 'es'}" if branches else ""
+            self.api_note.set_text(f"Installed: {installed}. "
+                                   f"{len(tags)} released version{'' if len(tags) == 1 else 's'}{more}.")
+        self._update_api_button()
+
+    def _update_api_button(self) -> None:
+        self.api_install_button.set_sensitive(not self.api_busy and bool(self.api_version.get_active_id()))
+
+    def _on_install_api(self, _button: Gtk.Button) -> None:
+        ref = self.api_version.get_active_id()
+        if self.api_busy or not ref:
+            return
+        self.api_busy = True
+        self._update_api_button()
+        self.api_version.set_sensitive(False)
+        self.developer_mode.set_sensitive(False)  # it refills the list
+        label = f"branch {ref.removeprefix('branch:')}" if ref.startswith("branch:") else ref
+        self.api_note.set_text(f"Installing chemotion_api {label}, this takes a minute...")
+        threading.Thread(target=self._install_api_worker, args=(ref, label), daemon=True).start()
+
+    def _install_api_worker(self, ref: str, label: str) -> None:
+        # Runs in a thread: no GTK calls here. sys.executable is the app's venv.
+        command = [str(SETUP_WORKSPACE), str(SETUP_WORKSPACE.parent), sys.executable]
+        command += ["--branch", ref.removeprefix("branch:")] if ref.startswith("branch:") else [ref]
+        try:
+            done = subprocess.run(command, capture_output=True, text=True, timeout=SETUP_TIMEOUT_S)
+            if done.returncode == 0:
+                text = done.stdout.strip().splitlines()[-1]  # "chemotionapi <label> (<commit>) installed, ..."
+            else:
+                lines = (done.stderr or done.stdout).strip().splitlines()
+                text = f"Installing {label} failed: {lines[-1] if lines else f'exit code {done.returncode}'}"
+        except subprocess.TimeoutExpired:
+            text = f"Installing {label} took longer than {SETUP_TIMEOUT_S} s and was stopped."
+        except OSError as exc:
+            text = f"Installing {label} failed: {exc}"
+        GLib.idle_add(self._install_api_done, text)
+
+    def _install_api_done(self, text: str) -> bool:
+        self.api_version.set_sensitive(True)
+        self.developer_mode.set_sensitive(True)
+        self._api_tags_done(self.api_tags, self.api_branches, "")  # moves "(installed)"
+        self.api_note.set_text(text)
+        return False
+
     # --- Test connection ----------------------------------------------------
     def _on_test(self, _button: Gtk.Button) -> None:
         values = self._form_values()
@@ -608,7 +769,7 @@ class SettingsWindow(Gtk.Window):
                              f"({problem}), and saving would delete them.")
             return False
         for key, entry in (("password", self.password), ("jupyter_token", self.jupyter_token),
-                           ("jupyter_password", self.jupyter_password)):
+                           ("jupyter_password", self.jupyter_password), ("github_token", self.github_token)):
             if not entry.get_text():
                 entry.set_text(secrets[key])
         self._store_agent_fields()

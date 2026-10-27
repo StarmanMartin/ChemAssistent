@@ -88,13 +88,14 @@ CLI_MODELS = {"claude": ["", "opus", "sonnet", "haiku"], "codex": [""]}
 AI_TOKEN_ENV = "KI_TOOLBOX_API_KEY"
 # The settings that are secrets. With a system keyring (keystore.py) they live
 # there, and config.json has them empty plus "secret_store": "keyring";
-# without one, or with "use_keyring": false, they stay in config.json (0600). CHEMOTION_PASSWORD and
-# KI_TOOLBOX_API_KEY still override both.
+# without one, or with "use_keyring": false, they stay in config.json (0600).
+# CHEMOTION_PASSWORD and KI_TOOLBOX_API_KEY still override both.
 SECRET_KEYS = {
     "password": "Chemotion password",
     "ai_token": "AI API token",
     "jupyter_token": "JupyterLab token",
     "jupyter_password": "JupyterLab password",
+    "github_token": "GitHub token",
 }
 SECRET_STORE_KEY = "secret_store"
 KEYRING = "keyring"
@@ -135,6 +136,10 @@ class Config:
     agent: str = "api"
     # CLI agents: the program (a name on the PATH or a full path).
     agent_command: str = ""
+    # Developer mode: chemotion_api branches in the settings, and the agent
+    # reports chemotion_api bugs as GitHub issues (issues.py).
+    developer_mode: bool = False
+    github_token: str = ""
 
     @property
     def jupyter(self) -> bool:
@@ -165,6 +170,8 @@ EXAMPLE = {
     "claude_model": "",
     "codex_command": "codex",
     "codex_model": "",
+    "developer_mode": False,
+    "github_token": "",
     "use_keyring": True,
 }
 
@@ -421,4 +428,6 @@ def load_config() -> Config:
         jupyter_verify_tls=bool(data.get("jupyter_verify_tls", True)),
         agent=agent,
         agent_command=str(data.get(keys.get("command", "")) or "").strip(),
+        developer_mode=bool(data.get("developer_mode", False)),
+        github_token=str(data.get("github_token") or "").strip(),
     )

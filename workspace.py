@@ -10,6 +10,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import api_versions
 import lessons
 from config import FROZEN, SKILLS_DIR, WINDOWS, WORKSPACE_DIR
 
@@ -24,7 +25,7 @@ The user chats with you in a window; next to the chat is a result panel.
 
 How you work with Chemotion:
 - The only way to read or change data in Chemotion is the tool `execute_python`.
-  It runs Python code with the `chemotion_api` package (tag v312.0.1). A
+  It runs Python code with the `chemotion_api` package{{api_version}}. A
   logged-in `instance` (chemotion_api.Instance) is predefined: never log in, never
   ask for credentials, never use `requests` against the server directly.
 - Before you write code for the first time in a conversation, read `{REFERENCE}`
@@ -143,6 +144,24 @@ start a new conversation. Do not work around it.
 """
 
 
+# Appended in developer mode (config.developer_mode); report_api_bug: issues.py.
+DEVELOPER_PROMPT = """
+Developer mode (the user develops chemotion_api; installed: {api_version}):
+- Whenever you find a bug in chemotion_api (an exception or a wrong result from
+  a call that follows the reference, a method that does not do what its
+  docstring says, a crash inside the package), report it with
+  `report_api_bug` before you work around it, and tell the user. Not for
+  mistakes in your own code or for missing features you merely assumed.
+- First make sure: read the package source in `chemotionapi/chemotion_api/`
+  and narrow it down to a minimal snippet. One report per bug; do not report
+  the same bug twice in a conversation.
+- The issue is public: describe it with placeholders, never with the user's
+  data from Chemotion (names, ids, values) or credentials. The app adds date,
+  AI model, Chemotion URL and version and the chemotion_api branch.
+- Then continue with the user's task (with a workaround if there is one).
+"""
+
+
 # Always appended; the lessons themselves (lessons.py) follow it.
 LESSONS_PROMPT = """
 Lessons (shared by all conversations):
@@ -162,10 +181,15 @@ or outdated, e.g. after a chemotion_api update: verify before relying on them):
 """
 
 
-def system_prompt(exchange: Path | None = None) -> str:
-    """`exchange`: the conversation's exchange folder when JupyterLab is on."""
-    prompt = SYSTEM_PROMPT.format(skills=skill_lines(jupyter=exchange is not None))
+def system_prompt(exchange: Path | None = None, developer: bool = False) -> str:
+    """`exchange`: the conversation's exchange folder when JupyterLab is on;
+    `developer`: developer mode (config.developer_mode)."""
+    tag, branch = api_versions.installed_tag(), api_versions.installed_branch()
+    version = f" (branch {branch})" if branch else f" (tag {tag})" if tag else ""
+    prompt = SYSTEM_PROMPT.format(skills=skill_lines(jupyter=exchange is not None), api_version=version)
     prompt += JUPYTER_PROMPT.format(exchange=exchange) if exchange is not None else NO_JUPYTER_PROMPT
+    if developer:
+        prompt += DEVELOPER_PROMPT.format(api_version=api_versions.installed_label() or "unknown")
     learned = lessons.prompt_section()  # not formatted: lessons may contain braces
     return prompt + LESSONS_PROMPT + (LESSONS_HEADER + learned + "\n" if learned else "")
 

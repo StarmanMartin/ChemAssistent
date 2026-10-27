@@ -98,7 +98,8 @@ def use_config_file(tmp_path, monkeypatch):
 
 SETTINGS = {"url": "http://chemotion.test", "user": "u", "password": "p",
             "ai_url": "http://ai.test/v1", "ai_model": "m", "ai_token": "t",
-            "jupyter_url": "http://j.test", "jupyter_token": "", "jupyter_password": "jp"}
+            "jupyter_url": "http://j.test", "jupyter_token": "", "jupyter_password": "jp",
+            "github_token": "gh"}
 
 
 def test_secrets_go_into_the_keyring(tmp_path, monkeypatch, keyring):
@@ -109,18 +110,18 @@ def test_secrets_go_into_the_keyring(tmp_path, monkeypatch, keyring):
     assert on_disk["secret_store"] == "keyring"
     assert all(on_disk[key] == "" for key in app_config.SECRET_KEYS)
     assert on_disk["user"] == "u"
-    assert keyring.secrets == {"password": "p", "ai_token": "t", "jupyter_password": "jp"}
+    assert keyring.secrets == {"password": "p", "ai_token": "t", "jupyter_password": "jp", "github_token": "gh"}
 
     assert read_raw_config()["password"] == "p"
     loaded = load_config()
-    assert (loaded.password, loaded.ai_token, loaded.jupyter_password) == ("p", "t", "jp")
+    assert (loaded.password, loaded.ai_token, loaded.jupyter_password, loaded.github_token) == ("p", "t", "jp", "gh")
     # The environment still overrides the keyring.
     monkeypatch.setenv("CHEMOTION_PASSWORD", "from the environment")
     assert load_config().password == "from the environment"
 
     # An emptied secret is deleted from the keyring.
     save_raw_config({**read_raw_config(), "jupyter_password": "", "jupyter_token": "jt"})
-    assert keyring.secrets == {"password": "p", "ai_token": "t", "jupyter_token": "jt"}
+    assert keyring.secrets == {"password": "p", "ai_token": "t", "jupyter_token": "jt", "github_token": "gh"}
 
 
 def test_secrets_are_read_again_when_the_file_changes(tmp_path, monkeypatch, keyring):

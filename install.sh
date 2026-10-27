@@ -6,7 +6,8 @@
 # One file is enough: without the source tree next to it the script fetches
 # the app from GitHub, e.g.
 #   curl -fsSL https://raw.githubusercontent.com/StarmanMartin/ChemAssistent/main/install.sh | bash
-# CHEM_ASSISTENT_REPO and CHEM_ASSISTENT_REF choose another repository or branch.
+# CHEM_ASSISTENT_REPO and CHEM_ASSISTENT_REF choose another repository or branch,
+# CHEMOTION_API_TAG the chemotionapi version (else the script asks).
 set -euo pipefail
 
 APP_NAME="chem-assistent"
@@ -29,8 +30,8 @@ DESKTOP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 DESKTOP_FILES=("${APP_NAME}.desktop" "${APP_NAME}-settings.desktop")
 ICON_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps"
 
-APP_FILES=(agent.py app.py app_control.py chemotion_runner.py cli_agent.py config.py gen_api_reference.py history.py hotkey.py ipc.py
-  jobs.py jupyter.py keystore.py mcp_bridge.py
+APP_FILES=(agent.py api_versions.py app.py app_control.py chemotion_runner.py cli_agent.py config.py gen_api_reference.py history.py hotkey.py ipc.py
+  issues.py jobs.py jupyter.py keystore.py lessons.py mcp_bridge.py
   settings.py workspace.py setup_workspace.sh uninstall.sh requirements.txt
   chem-assistent.svg chem-assistent-panel.svg)
 # Folders copied as a whole (the app's agent skills).
@@ -153,8 +154,11 @@ if ! "$venv_python" -c 'import gi; gi.require_version("Gtk", "3.0"); from gi.rep
   exit 1
 fi
 
-# chemotionapi (tag v312.0.1) with its skills, and the API reference for the agent.
-"$APP_DIR/setup_workspace.sh" "$APP_DIR" "$venv_python"
+# chemotionapi with its skills, and the API reference for the agent. The
+# version is asked for on a terminal (default: the installed one, else the
+# newest release); CHEMOTION_API_TAG chooses it without asking.
+chemotion_tag="$(with_terminal "$venv_python" "$APP_DIR/api_versions.py" choose "$APP_DIR/workspace")"
+"$APP_DIR/setup_workspace.sh" "$APP_DIR" "$venv_python" "$chemotion_tag"
 
 # --- Configuration ----------------------------------------------------------
 if [[ ! -f "$CONFIG_DIR/config.json" ]]; then

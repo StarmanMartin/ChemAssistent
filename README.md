@@ -11,8 +11,8 @@ OpenAI-compatible API, by default the
 to [Claude Code](https://claude.com/claude-code) or
 [Codex](https://github.com/openai/codex), with the same tools and the same
 confirmation (see [Agents](#agents)). It uses the Python package
-[chemotion_api](https://github.com/Chemotion/chemotionapi) (tag
-`v312.0.1`) and knows its API from the package documentation and skills.
+[chemotion_api](https://github.com/Chemotion/chemotionapi) (a release
+tag of your choice, e.g. `v312.0.1`) and knows its API from the package documentation and skills.
 
 **Nothing runs against Chemotion without your confirmation**: every piece of
 code the agent wants to run is shown to you first, you can edit it, and it runs
@@ -217,20 +217,24 @@ curl -fsSL https://raw.githubusercontent.com/StarmanMartin/ChemAssistent/main/in
 
 The script fetches the app from GitHub by itself. From a checkout,
 `./install.sh` installs that checkout instead. `CHEM_ASSISTENT_REF=<branch>`
-installs another branch.
+installs another branch, `CHEMOTION_API_TAG=<tag>` another chemotionapi
+version without asking.
 
 Run it as your normal user (it calls `sudo` only when Ubuntu packages are
 missing: GTK 3, the AppIndicator library, GtkSourceView, libsecret, libmagic,
 git).
 It copies the app to `~/.local/share/chem-assistent/` with its own virtual
-environment, clones **chemotionapi** (tag `v312.0.1`, with its skills)
-into the app's workspace, installs it, generates the API reference for the
+environment, lists the released **chemotionapi** versions (tags starting
+with `v` and three digits, e.g. `v312.0.1`) and asks which one to install
+(default: the installed one, on a first install the newest), clones it with
+its skills into the app's workspace, installs it, generates the API reference for the
 agent, asks once for your KI-Toolbox API key (saved as `ai_token`, in the
 system keyring) and installs and starts the systemd user service, so the icon appears
 in the top bar now and at every login.
 
 Run it again to update the app and chemotionapi; the configuration is
-kept.
+kept. The settings (tab "Chemotion", "chemotion_api version") switch to
+another chemotionapi version later.
 
 Requirements:
 
@@ -428,7 +432,7 @@ fill it in before distributing builds.
 ```
 
 Passwords and tokens (`password`, `ai_token`, `jupyter_token`,
-`jupyter_password`) are kept in the system keyring when there is one: the
+`jupyter_password`, `github_token`) are kept in the system keyring when there is one: the
 GNOME Keyring (or another Secret Service, e.g. KWallet) on Linux, the
 Credential Manager on Windows. The file then has them empty and says
 `"secret_store": "keyring"`. Secrets of older versions in the file move into
@@ -485,7 +489,7 @@ Changes apply to the next conversation; no restart needed.
 ```bash
 /usr/bin/python3 -m venv --system-site-packages .venv
 .venv/bin/pip install -r requirements.txt
-./setup_workspace.sh "$PWD" "$PWD/.venv/bin/python"
+./setup_workspace.sh "$PWD" "$PWD/.venv/bin/python"   # optional 3rd argument: a chemotionapi tag
 .venv/bin/python app.py --show
 ```
 

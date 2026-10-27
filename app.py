@@ -1898,15 +1898,15 @@ class AssistantWindow(Gtk.Window):
         if config.agent in CLI_AGENTS:
             # A CLI agent reaches only execute_python (mcp_bridge.py), not JupyterLab.
             listener = self.app.server.listener
-            self.agent = CliAgent(config, workspace.system_prompt(), on_event, auto_run=config.auto_run,
-                                  endpoint=(listener.address, listener.token))
+            self.agent = CliAgent(config, workspace.system_prompt(developer=config.developer_mode), on_event,
+                                  auto_run=config.auto_run, endpoint=(listener.address, listener.token))
         else:
             if config.jupyter:
                 self.exchange = history.exchange_dir(self.conversation_id)
                 self.jupyter = JupyterBridge(config, self.conversation_id, self.exchange)
             self.agent = Agent(
                 config,
-                workspace.system_prompt(self.exchange),
+                workspace.system_prompt(self.exchange, config.developer_mode),
                 self._execute,
                 on_event,
                 auto_run=config.auto_run,
