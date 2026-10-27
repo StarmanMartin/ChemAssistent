@@ -31,6 +31,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import issues
 import lessons
 from config import AUTO_RUN_MODES, SKILLS_DIR, WORKSPACE_DIR, Config
 
@@ -219,13 +220,43 @@ SAVE_LESSON_TOOL = {
 }
 
 
-def build_tools(mode: str, jupyter: bool = False) -> list[dict]:
+# Developer mode only (config.developer_mode, issues.py); mcp_bridge.py offers it too.
+REPORT_API_BUG_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "report_api_bug",
+        "description": (
+            "Report a bug in chemotion_api as an issue of its GitHub repository (developer mode). Use it "
+            "for every bug you find in chemotion_api (wrong results, exceptions from correct calls, "
+            "methods that do not work as documented), once you are sure it is the package's fault and not "
+            "your code. The app adds the date, the AI model, the Chemotion instance (URL, version) and the "
+            "chemotion_api branch itself. The issue is public: no data from Chemotion (names, ids, "
+            "values of the user's elements), no credentials, nothing about the user; use placeholders."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Short summary of the bug."},
+                "description": {"type": "string",
+                                "description": "Markdown: what you did, a minimal code snippet that reproduces "
+                                               "it, the expected and the actual behaviour (with the traceback), "
+                                               "and the cause in the source if you found it."},
+            },
+            "required": ["title", "description"],
+        },
+    },
+}
+
+
+def build_tools(mode: str, jupyter: bool = False, developer: bool = False) -> list[dict]:
     """The tools with the execute_* descriptions for `mode`; the JupyterLab
-    tools only with JupyterLab configured."""
+    tools only with JupyterLab configured, report_api_bug in developer mode."""
     if not jupyter:
-        return [execute_python_tool(mode)] + READ_ONLY_TOOLS + [SAVE_LESSON_TOOL]
-    return ([execute_python_tool(mode), execute_jupyter_tool(mode), start_jupyter_job_tool(mode), JUPYTER_JOBS_TOOL]
-            + READ_ONLY_TOOLS + [SAVE_LESSON_TOOL])
+        tools = [execute_python_tool(mode)] + READ_ONLY_TOOLS + [SAVE_LESSON_TOOL]
+    else:
+        tools = ([execute_python_tool(mode), execute_jupyter_tool(mode), start_jupyter_job_tool(mode),
+                  JUPYTER_JOBS_TOOL] + READ_ONLY_TOOLS + [SAVE_LESSON_TOOL])
+    return tools + [REPORT_API_BUG_TOOL] if developer else tools
 
 # The read-only tools; build_tools() prepends execute_python with the
 # description for the current auto-run mode.
@@ -431,6 +462,8 @@ def tool_summary(name: str, arguments: dict) -> str:
         return "Checked the background jobs"
     if name == "save_lesson":
         return f"{'Removed' if arguments.get('remove') else 'Saved'} a lesson: {arguments.get('key')}"
+    if name == "report_api_bug":
+        return f"Reported a chemotion_api bug: {arguments.get('title')}"
     return f"Listed {arguments.get('path') or 'the workspace'}"
 
 
@@ -561,7 +594,7 @@ class Agent:
         self.on_event = on_event
         self.auto_run = auto_run if auto_run in AUTO_RUN_MODES else "off"
         # The tool descriptions depend on the auto-run mode (execute_python).
-        self.tools = build_tools(self.auto_run, self.jupyter)
+        self.tools = build_tools(self.auto_run, self.jupyter, self.config.developer_mode)
         self.messages: list[dict] = [{"role": "system", "content": system_prompt}]
         # What the read-only tools may read: the workspace and every attachment.
         self.roots: list[Path] = [WORKSPACE_DIR.resolve()]
@@ -582,12 +615,12 @@ class Agent:
         """Switch the auto-run mode mid-conversation (the header menu); the
         changed tool description goes out with the next request."""
         self.auto_run = mode if mode in AUTO_RUN_MODES else "off"
-        self.tools = build_tools(self.auto_run, self.jupyter)
+        self.tools = build_tools(self.auto_run, self.jupyter, self.config.developer_mode)
 
     def set_model(self, model: str) -> None:
         """Switch the model mid-conversation (the header menu); the next
         request uses it. Reasoning only goes back to the model that wrote it
-        (DeepSeek wants it), other backends may refuse the field. The worker
+        (Deept,Seek wants it), other backends may refuse the field. The worker
         thread drops it (it may be sending the messages right now)."""
         self.config = dataclasses.replace(self.config, ai_model=model)
         self._drop_reasoning = True
@@ -824,6 +857,10 @@ class Agent:
                 if text.startswith("Lesson "):  # saved or removed; refusals stay out of the chat
                     self.on_event("tool", tool_summary(name, arguments))
                 return text
+            if name == "report_api_bug" and self.config.developer_mode:
+                self.on_event("tool", tool_summary(name, arguments))
+                return issues.report(self.config, issues.model_label(self.config), str(arguments.get("title") or ""),
+                                     str(arguments.get("description") or ""))
             if name == "read_file":
                 text = read_file(str(arguments.get("path") or ""), self.roots, arguments.get("offset") or 1,
                                  arguments.get("limit") or MAX_READ_LINES)

@@ -6,7 +6,7 @@ keeps the prose and code blocks, and replaces every `autoclass`,
 `automodule` and `autoenum` directive with the signatures and docstrings of
 the installed chemotion_api package (the same thing Sphinx would render).
 
-Usage: python gen_api_reference.py <chemotionapi checkout> <output.md> [<tag>]
+Usage: python gen_api_reference.py <chemotionapi checkout> <output.md> [<tag> | "branch <name>"]
 """
 from __future__ import annotations
 
@@ -203,7 +203,8 @@ def toctree(index: Path) -> list[str]:
 
 def build(repo: Path, tag: str = "") -> str:
     docs = repo / "docs"
-    version = f" (tag {tag})" if tag else ""
+    # setup_workspace.sh passes a tag or "branch <name>".
+    version = f" ({tag})" if tag.startswith("branch ") else f" (tag {tag})" if tag else ""
     parts = [
         f"# chemotion_api reference{version}",
         f"Generated from the docs of https://github.com/Chemotion/chemotionapi{version} "

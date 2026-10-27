@@ -11,6 +11,10 @@ tag in TAG_FILE. Run as a script it serves the installers:
 Both print the tag to use on stdout: the installed one if it is still
 released, else the newest (CHEMOTION_API_TAG preselects another); `choose`
 lists the released tags on stderr and reads the answer from stdin.
+
+In developer mode (config `developer_mode`) the settings also offer the
+repository's branches; setup_workspace.sh --branch records an installed
+branch in BRANCH_FILE instead (the installers only know tags).
 """
 from __future__ import annotations
 
@@ -28,6 +32,8 @@ TAG_PATTERN = re.compile(r"v\d{3,}")
 TAG_NAME = "chemotionapi.tag"
 TAG_FILE = WORKSPACE_DIR / TAG_NAME
 TAG_ENV = "CHEMOTION_API_TAG"
+BRANCH_NAME = "chemotionapi.branch"
+BRANCH_FILE = WORKSPACE_DIR / BRANCH_NAME
 
 
 class VersionError(Exception):
@@ -43,11 +49,12 @@ def version_key(tag: str) -> tuple:
     return tuple(int(number) for number in re.findall(r"\d+", tag)), tag
 
 
-def list_tags(repo: str = REPO_URL, timeout: float = 60) -> list[str]:
-    """The usable tags of `repo`, newest first (git ls-remote, no clone)."""
+def list_refs(repo: str = REPO_URL, timeout: float = 60) -> tuple[list[str], list[str]]:
+    """The usable tags of `repo`, newest first, and its branches, sorted by
+    name (git ls-remote, no clone)."""
     env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
     try:
-        done = subprocess.run(["git", "ls-remote", "--tags", "--refs", repo],
+        done = subprocess.run(["git", "ls-remote", "--tags", "--heads", "--refs", repo],
                               capture_output=True, text=True, timeout=timeout, env=env)
     except FileNotFoundError:
         raise VersionError("git is not installed") from None
@@ -56,8 +63,15 @@ def list_tags(repo: str = REPO_URL, timeout: float = 60) -> list[str]:
     if done.returncode:
         lines = done.stderr.strip().splitlines()
         raise VersionError(lines[-1] if lines else f"git ls-remote failed ({done.returncode})")
-    tags = {line.split("refs/tags/", 1)[1] for line in done.stdout.splitlines() if "refs/tags/" in line}
-    return sorted((tag for tag in tags if usable(tag)), key=version_key, reverse=True)
+    refs = [line.split("\t", 1)[-1] for line in done.stdout.splitlines()]
+    tags = {ref.removeprefix("refs/tags/") for ref in refs if ref.startswith("refs/tags/")}
+    branches = {ref.removeprefix("refs/heads/") for ref in refs if ref.startswith("refs/heads/")}
+    return sorted((tag for tag in tags if usable(tag)), key=version_key, reverse=True), sorted(branches)
+
+
+def list_tags(repo: str = REPO_URL, timeout: float = 60) -> list[str]:
+    """The usable tags of `repo`, newest first."""
+    return list_refs(repo, timeout)[0]
 
 
 def installed_tag(workspace: Path = WORKSPACE_DIR) -> str:
@@ -67,6 +81,20 @@ def installed_tag(workspace: Path = WORKSPACE_DIR) -> str:
     except OSError:
         return ""
     return tag if usable(tag) else ""
+
+
+def installed_branch(workspace: Path = WORKSPACE_DIR) -> str:
+    """The branch setup_workspace.sh --branch installed, or "" (a tag is installed)."""
+    try:
+        return (workspace / BRANCH_NAME).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def installed_label(workspace: Path = WORKSPACE_DIR) -> str:
+    """What is installed: "v312.0.1", "branch version-3" or ""."""
+    branch = installed_branch(workspace)
+    return f"branch {branch}" if branch else installed_tag(workspace)
 
 
 def default_tag(tags: list[str], current: str) -> str:

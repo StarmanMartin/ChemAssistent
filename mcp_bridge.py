@@ -1,7 +1,8 @@
 """The tools of CLI agents (Claude Code, Codex): a stdio MCP server the CLI
 starts (no GTK, standard library only).
 
-It offers the built-in agent's four tools and nothing else (the CLIs' own
+It offers the built-in agent's four tools (and in developer mode
+`report_api_bug`, issues.py) and nothing else (the CLIs' own
 tools are switched off, cli_agent.py): read-only `read_file`, `grep` and
 `list_files` (agent.py's, confined to the workspace and the attachments), and
 `execute_python`, which goes over ipc.py to the running app as
@@ -14,8 +15,9 @@ So a CLI agent reaches Chemotion only through the user-confirmed path.
 
 The session file (written by cli_agent.py for every turn, mode 0600) holds
 the app's ipc `address` and `token`, the conversation's `session` token,
-which the app checks, its `auto_run` mode for the tool description and the
-`roots` the read-only tools may read.
+which the app checks, its `auto_run` mode for the tool description, the
+`roots` the read-only tools may read, and `developer` and `model` for
+report_api_bug.
 """
 from __future__ import annotations
 
@@ -25,7 +27,10 @@ import threading
 from pathlib import Path
 
 import ipc
-from agent import MAX_READ_LINES, READ_ONLY_TOOLS, AgentError, execute_python_tool, grep, list_files, read_file
+import issues
+from agent import (MAX_READ_LINES, READ_ONLY_TOOLS, REPORT_API_BUG_TOOL, AgentError, execute_python_tool, grep,
+                   list_files, read_file)
+from config import load_config
 
 
 SERVER_NAME = "chemotion"
@@ -48,6 +53,10 @@ class Bridge:
         self.roots = [Path(root) for root in data.get("roots") or []]
         self.tools = ([mcp_tool(execute_python_tool(str(data.get("auto_run") or "off")), False)]
                       + [mcp_tool(tool, True) for tool in READ_ONLY_TOOLS])
+        self.developer = bool(data.get("developer"))
+        self.model = str(data.get("model") or "")
+        if self.developer:
+            self.tools.append(mcp_tool(REPORT_API_BUG_TOOL, False))
         self.lock = threading.Lock()
 
     def write(self, message: dict) -> None:
@@ -101,7 +110,12 @@ class Bridge:
             return grep(str(arguments.get("pattern") or ""), self.roots, arguments.get("path"), arguments.get("glob"))
         if name == "list_files":
             return list_files(self.roots, arguments.get("path"))
-        raise AgentError(f"There is no tool {name}. Use execute_python, read_file, grep or list_files.")
+        if name == "report_api_bug" and self.developer:
+            # Fresh settings (URL, GitHub token); load_config() raises ValueError while incomplete.
+            return issues.report(load_config(), self.model, str(arguments.get("title") or ""),
+                                 str(arguments.get("description") or ""))
+        names = ", ".join(tool["name"] for tool in self.tools)
+        raise AgentError(f"There is no tool {name}. Use {names}.")
 
     def execute(self, purpose: str, code: str) -> str:
         request = {"type": "execute", "token": self.token, "session": self.session, "purpose": purpose, "code": code}

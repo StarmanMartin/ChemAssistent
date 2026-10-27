@@ -21,5 +21,7 @@
   "claude_command": "claude",
   "claude_model": "",
   "codex_command": "codex",
-  "codex_model": ""
+  "codex_model": "",
+  "developer_mode": false,
+  "github_token": ""
 }

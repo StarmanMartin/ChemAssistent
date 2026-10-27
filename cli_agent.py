@@ -29,6 +29,7 @@ import threading
 from collections import deque
 from pathlib import Path
 
+import issues
 import workspace
 from agent import ATTACHMENT_NOTE, AgentError, describe_attachment, tool_summary
 from config import AGENT_LABELS, AUTO_RUN_MODES, CLI_MODELS, STATE_DIR, WINDOWS, WORKSPACE_DIR, Config, write_private_json
@@ -303,6 +304,7 @@ class CliAgent:
         write_private_json(session_file, {
             "address": self.endpoint[0], "token": self.endpoint[1], "session": self.session_token,
             "auto_run": self.auto_run, "roots": [str(root) for root in self.roots],
+            "developer": self.config.developer_mode, "model": issues.model_label(self.config),
         })
         return workspace.command("mcp_bridge.py", console=True) + ["--session-file", str(session_file)]
 
@@ -362,7 +364,7 @@ class CliAgent:
                 arguments = json.loads(arguments) if isinstance(arguments, str) else {}
             except ValueError:
                 arguments = {}
-        if name in READ_TOOLS:
+        if name in READ_TOOLS or name == "report_api_bug":
             self.on_event("tool", tool_summary(name, arguments if isinstance(arguments, dict) else {}))
         elif name != "execute_python":  # that one shows its card
             self.on_event("tool", f"Used {name}")

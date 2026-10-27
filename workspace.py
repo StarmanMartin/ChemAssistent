@@ -144,6 +144,24 @@ start a new conversation. Do not work around it.
 """
 
 
+# Appended in developer mode (config.developer_mode); report_api_bug: issues.py.
+DEVELOPER_PROMPT = """
+Developer mode (the user develops chemotion_api; installed: {api_version}):
+- Whenever you find a bug in chemotion_api (an exception or a wrong result from
+  a call that follows the reference, a method that does not do what its
+  docstring says, a crash inside the package), report it with
+  `report_api_bug` before you work around it, and tell the user. Not for
+  mistakes in your own code or for missing features you merely assumed.
+- First make sure: read the package source in `chemotionapi/chemotion_api/`
+  and narrow it down to a minimal snippet. One report per bug; do not report
+  the same bug twice in a conversation.
+- The issue is public: describe it with placeholders, never with the user's
+  data from Chemotion (names, ids, values) or credentials. The app adds date,
+  AI model, Chemotion URL and version and the chemotion_api branch.
+- Then continue with the user's task (with a workaround if there is one).
+"""
+
+
 # Always appended; the lessons themselves (lessons.py) follow it.
 LESSONS_PROMPT = """
 Lessons (shared by all conversations):
@@ -163,12 +181,15 @@ or outdated, e.g. after a chemotion_api update: verify before relying on them):
 """
 
 
-def system_prompt(exchange: Path | None = None) -> str:
-    """`exchange`: the conversation's exchange folder when JupyterLab is on."""
-    tag = api_versions.installed_tag()
-    prompt = SYSTEM_PROMPT.format(skills=skill_lines(jupyter=exchange is not None),
-                                  api_version=f" (tag {tag})" if tag else "")
+def system_prompt(exchange: Path | None = None, developer: bool = False) -> str:
+    """`exchange`: the conversation's exchange folder when JupyterLab is on;
+    `developer`: developer mode (config.developer_mode)."""
+    tag, branch = api_versions.installed_tag(), api_versions.installed_branch()
+    version = f" (branch {branch})" if branch else f" (tag {tag})" if tag else ""
+    prompt = SYSTEM_PROMPT.format(skills=skill_lines(jupyter=exchange is not None), api_version=version)
     prompt += JUPYTER_PROMPT.format(exchange=exchange) if exchange is not None else NO_JUPYTER_PROMPT
+    if developer:
+        prompt += DEVELOPER_PROMPT.format(api_version=api_versions.installed_label() or "unknown")
     learned = lessons.prompt_section()  # not formatted: lessons may contain braces
     return prompt + LESSONS_PROMPT + (LESSONS_HEADER + learned + "\n" if learned else "")
 

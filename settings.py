@@ -17,6 +17,7 @@ import api_versions  # noqa: E402
 import app_control  # noqa: E402
 import history  # noqa: E402
 import hotkey  # noqa: E402
+import issues  # noqa: E402
 import lessons  # noqa: E402
 from agent import AgentError, list_models  # noqa: E402
 from cli_agent import check_command, cli_models  # noqa: E402
@@ -107,7 +108,7 @@ class SettingsWindow(Gtk.Window):
 
         # The chemotion_api release in the workspace (setup_workspace.sh, a
         # bash script); the Windows bundle comes with its own.
-        installed = api_versions.installed_tag()
+        installed = api_versions.installed_label()
         if WINDOWS:
             version_label = Gtk.Label(label=installed or "unknown", xalign=0, selectable=True)
             row = self._add_row(grid, row, "chemotion_api version", version_label)
@@ -116,8 +117,9 @@ class SettingsWindow(Gtk.Window):
             self.api_version.connect("changed", lambda *_: self._update_api_button())
             self.api_install_button = Gtk.Button(label="Install", sensitive=False)
             self.api_install_button.set_tooltip_text(
-                "Fetch this version of chemotion_api, install it and rebuild the API reference "
-                "for the assistant. Applies to the next snippet and the next conversation.")
+                "Fetch this version (or, in developer mode, the head of this branch) of chemotion_api, "
+                "install it and rebuild the API reference for the assistant. Applies to the next snippet "
+                "and the next conversation.")
             self.api_install_button.connect("clicked", self._on_install_api)
             version_box = Gtk.Box(spacing=8)
             version_box.pack_start(self.api_version, True, True, 0)
@@ -127,7 +129,7 @@ class SettingsWindow(Gtk.Window):
             self.api_note.get_style_context().add_class("dim-label")
             grid.attach(self.api_note, 1, row, 1, 1)
             row += 1
-            self.api_busy, self.api_tags = True, []
+            self.api_busy, self.api_tags, self.api_branches = True, [], []
             self.api_note.set_text(f"Installed: {installed or 'unknown'}. Loading the released versions...")
             threading.Thread(target=self._api_tags_worker, daemon=True).start()
 
@@ -270,6 +272,36 @@ class SettingsWindow(Gtk.Window):
         grid.attach(note, 0, row, 2, 1)
         row += 1
         row = self._add_row(grid, row, *timeout_row)
+
+        grid, row = self._page("Developer", "For developers of chemotion_api."), 1
+        self.developer_mode = Gtk.Switch(halign=Gtk.Align.START)
+        self.developer_mode.set_active(bool(self.data.get("developer_mode", False)))
+        if not WINDOWS:
+            self.developer_mode.connect("notify::active", lambda *_: self._fill_api_versions())
+        row = self._add_row(grid, row, "Developer mode", self.developer_mode)
+        note = Gtk.Label(
+            label="The assistant reports every bug it finds in chemotion_api as an issue of "
+                  f"{issues.REPO} on GitHub, with the date, the AI model, the Chemotion instance "
+                  "(URL, version) and the chemotion_api branch. "
+                  + ("" if WINDOWS else "The Chemotion tab also offers the branches of chemotion_api. ")
+                  + "Applies to the next conversation.",
+            xalign=0, wrap=True, max_width_chars=60,
+        )
+        note.get_style_context().add_class("dim-label")
+        grid.attach(note, 1, row, 1, 1)
+        row += 1
+        self.github_token = self._secret_entry(str(self.data.get("github_token") or ""))
+        self.github_token.set_placeholder_text("Optional: creates the issues directly")
+        row = self._add_row(grid, row, "GitHub token", self.github_token)
+        note = Gtk.Label(
+            label="A fine-grained token with “Issues: read and write” on the repository (or a classic one "
+                  f"with public_repo). Without one, every report is saved in {issues.ISSUES_DIR} and the "
+                  "assistant gives you a link to GitHub's new-issue form, filled in, to submit it yourself.",
+            xalign=0, wrap=True, max_width_chars=60,
+        )
+        note.get_style_context().add_class("dim-label")
+        grid.attach(note, 1, row, 1, 1)
+        row += 1
 
         grid, row = general_grid, general_row
         self.clear_history_button = Gtk.Button(label="Clear history")
@@ -471,6 +503,8 @@ class SettingsWindow(Gtk.Window):
             "jupyter_password": self.jupyter_password.get_text(),
             "jupyter_folder": self.jupyter_folder.get_text().strip(),
             "jupyter_verify_tls": self.jupyter_verify_tls.get_active(),
+            "developer_mode": self.developer_mode.get_active(),
+            "github_token": self.github_token.get_text().strip(),
         }
         self._store_agent_fields()
         values.update(self.agent_values)
@@ -569,62 +603,75 @@ class SettingsWindow(Gtk.Window):
     # --- chemotion_api version ----------------------------------------------
     def _api_tags_worker(self) -> None:
         try:
-            tags, error = api_versions.list_tags(), ""
+            (tags, branches), error = api_versions.list_refs(), ""
         except api_versions.VersionError as exc:
-            tags, error = [], str(exc)
-        GLib.idle_add(self._api_tags_done, tags, error)
+            tags, branches, error = [], [], str(exc)
+        GLib.idle_add(self._api_tags_done, tags, branches, error)
 
-    def _api_tags_done(self, tags: list[str], error: str) -> bool:
+    def _api_tags_done(self, tags: list[str], branches: list[str], error: str) -> bool:
         self.api_busy = False
-        self.api_tags = tags
-        installed = api_versions.installed_tag()
-        self.api_version.remove_all()
-        for tag in tags:
-            self.api_version.append(tag, f"{tag} (installed)" if tag == installed else tag)
-        self.api_version.set_active_id(installed if installed in tags else (tags[0] if tags else None))
-        if error:
-            self.api_note.set_text(f"Installed: {installed or 'unknown'}. "
-                                   f"Cannot list the released versions: {error}")
-        elif not tags:
-            self.api_note.set_text(f"Installed: {installed or 'unknown'}. No released version found.")
-        else:
-            self.api_note.set_text(f"Installed: {installed or 'unknown'}. "
-                                   f"{len(tags)} released version{'' if len(tags) == 1 else 's'}.")
-        self._update_api_button()
+        self.api_tags, self.api_branches = tags, branches
+        self._fill_api_versions(error)
         return False
+
+    def _fill_api_versions(self, error: str = "") -> None:
+        """The released tags, in developer mode also the branches (id "branch:<name>")."""
+        tags, branches = self.api_tags, self.api_branches if self.developer_mode.get_active() else []
+        tag, branch = api_versions.installed_tag(), api_versions.installed_branch()
+        installed = api_versions.installed_label() or "unknown"
+        self.api_version.remove_all()
+        for name in tags:
+            self.api_version.append(name, f"{name} (installed)" if name == tag else name)
+        for name in branches:
+            self.api_version.append(f"branch:{name}", f"branch {name}" + (" (installed)" if name == branch else ""))
+        active = f"branch:{branch}" if branch in branches else tag if tag in tags else (tags[0] if tags else None)
+        self.api_version.set_active_id(active)
+        if error:
+            self.api_note.set_text(f"Installed: {installed}. Cannot list the released versions: {error}")
+        elif not tags:
+            self.api_note.set_text(f"Installed: {installed}. No released version found.")
+        else:
+            more = f" and {len(branches)} branch{'' if len(branches) == 1 else 'es'}" if branches else ""
+            self.api_note.set_text(f"Installed: {installed}. "
+                                   f"{len(tags)} released version{'' if len(tags) == 1 else 's'}{more}.")
+        self._update_api_button()
 
     def _update_api_button(self) -> None:
         self.api_install_button.set_sensitive(not self.api_busy and bool(self.api_version.get_active_id()))
 
     def _on_install_api(self, _button: Gtk.Button) -> None:
-        tag = self.api_version.get_active_id()
-        if self.api_busy or not tag:
+        ref = self.api_version.get_active_id()
+        if self.api_busy or not ref:
             return
         self.api_busy = True
         self._update_api_button()
         self.api_version.set_sensitive(False)
-        self.api_note.set_text(f"Installing chemotion_api {tag}, this takes a minute...")
-        threading.Thread(target=self._install_api_worker, args=(tag,), daemon=True).start()
+        self.developer_mode.set_sensitive(False)  # it refills the list
+        label = f"branch {ref.removeprefix('branch:')}" if ref.startswith("branch:") else ref
+        self.api_note.set_text(f"Installing chemotion_api {label}, this takes a minute...")
+        threading.Thread(target=self._install_api_worker, args=(ref, label), daemon=True).start()
 
-    def _install_api_worker(self, tag: str) -> None:
+    def _install_api_worker(self, ref: str, label: str) -> None:
         # Runs in a thread: no GTK calls here. sys.executable is the app's venv.
-        command = [str(SETUP_WORKSPACE), str(SETUP_WORKSPACE.parent), sys.executable, tag]
+        command = [str(SETUP_WORKSPACE), str(SETUP_WORKSPACE.parent), sys.executable]
+        command += ["--branch", ref.removeprefix("branch:")] if ref.startswith("branch:") else [ref]
         try:
             done = subprocess.run(command, capture_output=True, text=True, timeout=SETUP_TIMEOUT_S)
             if done.returncode == 0:
-                text = done.stdout.strip().splitlines()[-1]  # "chemotionapi <tag> (<commit>) installed, ..."
+                text = done.stdout.strip().splitlines()[-1]  # "chemotionapi <label> (<commit>) installed, ..."
             else:
                 lines = (done.stderr or done.stdout).strip().splitlines()
-                text = f"Installing {tag} failed: {lines[-1] if lines else f'exit code {done.returncode}'}"
+                text = f"Installing {label} failed: {lines[-1] if lines else f'exit code {done.returncode}'}"
         except subprocess.TimeoutExpired:
-            text = f"Installing {tag} took longer than {SETUP_TIMEOUT_S} s and was stopped."
+            text = f"Installing {label} took longer than {SETUP_TIMEOUT_S} s and was stopped."
         except OSError as exc:
-            text = f"Installing {tag} failed: {exc}"
+            text = f"Installing {label} failed: {exc}"
         GLib.idle_add(self._install_api_done, text)
 
     def _install_api_done(self, text: str) -> bool:
         self.api_version.set_sensitive(True)
-        self._api_tags_done(self.api_tags, "")  # moves "(installed)"
+        self.developer_mode.set_sensitive(True)
+        self._api_tags_done(self.api_tags, self.api_branches, "")  # moves "(installed)"
         self.api_note.set_text(text)
         return False
 
