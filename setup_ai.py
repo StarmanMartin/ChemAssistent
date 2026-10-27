@@ -22,7 +22,7 @@ def main() -> None:
     data = read_raw_config()  # fills defaults and migrates the model id
     if keyring_problem():
         # Saving the secrets it could not read would delete them.
-        print(f"Warning: could not read the system keyring ({keyring_problem()}); left the config as it is.")
+        print("Warning: could not read the system keyring; left the config as it is.")
         return
     if agent_of(data) != "api":
         save_raw_config(data)
