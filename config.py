@@ -99,8 +99,11 @@ SECRET_KEYS = {
 }
 SECRET_STORE_KEY = "secret_store"
 KEYRING = "keyring"
-# After the keyring failed to answer, ask it again at most this often.
-SECRET_RETRY_S = 300
+# Read the keyring again after this long even if config.json did not change
+# (secrets edited in Seahorse or the Credential Manager) ...
+SECRET_TTL_S = 300
+# ... and after it failed to answer, at most this often.
+SECRET_RETRY_S = 30
 # ai_model ids of the opencode era ("<provider>/<model>") -> KI-Toolbox ids.
 LEGACY_MODELS = {
     "complex-local": "alias.complex-local",
@@ -191,11 +194,11 @@ def _read_file() -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def read_raw_config() -> dict:
-    """The config file as a dict with the secrets from the keyring, without
-    validation (for the settings app)."""
+def read_raw_config(secrets: bool = True) -> dict:
+    """The config file as a dict with the secrets from the keyring (unless
+    not `secrets`), without validation (for the settings app)."""
     data = {**EXAMPLE, **_read_file()}
-    if data.get(SECRET_STORE_KEY) == KEYRING:
+    if secrets and data.get(SECRET_STORE_KEY) == KEYRING:
         for key, value in keyring_secrets().items():
             # A value typed into config.json wins; migrate_secrets() moves it.
             if not str(data.get(key) or ""):
@@ -270,8 +273,19 @@ def write_private_json(path: Path, data: object) -> None:
 
 
 _secrets_lock = threading.Lock()
-# (config.json's stamp, monotonic time of a failure or None, its error, the secrets)
-_secrets_cache: tuple[object, float | None, str, dict[str, str]] | None = None
+# (config.json's stamp, monotonic time of the read, its error or "", the secrets)
+_secrets_cache: tuple[object, float, str, dict[str, str]] | None = None
+# The thread that reads the keyring for keyring_secrets().
+_reader: threading.Thread | None = None
+# How long keyring_secrets() in the main thread waits for the keyring (None:
+# until it answers). GUI processes set it (limit_main_thread_wait()): their
+# main loop must not hang while the keyring asks to be unlocked.
+_main_thread_wait: float | None = None
+
+
+def limit_main_thread_wait(seconds: float) -> None:
+    global _main_thread_wait
+    _main_thread_wait = seconds
 
 
 def _file_stamp() -> tuple | None:
@@ -282,36 +296,63 @@ def _file_stamp() -> tuple | None:
     return str(CONFIG_FILE), stat.st_ino, stat.st_mtime_ns, stat.st_size
 
 
+def _cache_valid(stamp: tuple | None) -> bool:
+    if _secrets_cache is None or _secrets_cache[0] != stamp:
+        return False
+    age = time.monotonic() - _secrets_cache[1]
+    return age < (SECRET_RETRY_S if _secrets_cache[2] else SECRET_TTL_S)
+
+
+def _read_keyring(stamp: tuple | None) -> None:
+    global _secrets_cache
+    secrets, error = dict.fromkeys(SECRET_KEYS, ""), ""
+    try:
+        secrets.update(keystore.read_all(SECRET_KEYS))
+    except keystore.KeystoreError as exc:
+        keystore.LOG.warning("Could not read the secrets from the keyring: %s", exc)
+        error = str(exc)
+    with _secrets_lock:
+        _secrets_cache = (stamp, time.monotonic(), error, secrets)
+
+
 def keyring_secrets(fresh: bool = False) -> dict[str, str]:
-    """The secrets in the keyring ("" for those it has none of).
+    """The secrets in the keyring ("" for those it has none of, and while it
+    cannot be read: keyring_problem() says why).
 
     load_config() runs for every snippet and in the job watcher, so unless
     `fresh`, they are read again only when config.json changed
-    (save_raw_config() rewrites it, also in other processes) or, after a
-    failure, every SECRET_RETRY_S.
+    (save_raw_config() rewrites it, also in other processes), after
+    SECRET_TTL_S, or after a failure every SECRET_RETRY_S. One thread reads;
+    the main thread of a GUI process waits for it at most
+    limit_main_thread_wait() seconds, and not at all for a read it did not start.
     """
-    global _secrets_cache
+    global _reader
     with _secrets_lock:
         stamp = _file_stamp()
-        if not fresh and _secrets_cache is not None and _secrets_cache[0] == stamp:
-            failed = _secrets_cache[1]
-            if failed is None or time.monotonic() - failed < SECRET_RETRY_S:
-                return dict(_secrets_cache[3])
-        secrets, failed, error = dict.fromkeys(SECRET_KEYS, ""), None, ""
-        try:
-            for key in SECRET_KEYS:
-                secrets[key] = keystore.read(key)
-        except keystore.KeystoreError as exc:
-            keystore.LOG.warning("Could not read the secrets from the keyring: %s", exc)
-            failed, error = time.monotonic(), str(exc)
-        _secrets_cache = (stamp, failed, error, secrets)
-        return dict(secrets)
+        if not fresh and _cache_valid(stamp):
+            return dict(_secrets_cache[3])
+        started = _reader is None or not _reader.is_alive()
+        if started:
+            _reader = threading.Thread(target=_read_keyring, args=(stamp,), name="keyring", daemon=True)
+            _reader.start()
+        reader = _reader
+    timeout = None
+    if _main_thread_wait is not None and threading.current_thread() is threading.main_thread():
+        timeout = _main_thread_wait if started else 0
+    reader.join(timeout)
+    with _secrets_lock:
+        if reader.is_alive() or _secrets_cache is None:
+            return dict.fromkeys(SECRET_KEYS, "")
+        return dict(_secrets_cache[3])
 
 
 def keyring_problem() -> str:
-    """Why the last read of the keyring failed ("" when it worked): saving
-    the empty values read_raw_config() then had would delete the secrets."""
+    """Why the last read of the keyring failed or is not done yet ("" when it
+    worked): saving the empty values read_raw_config() then had would delete
+    the secrets."""
     with _secrets_lock:
+        if _reader is not None and _reader.is_alive():
+            return "the system keyring has not answered yet (is it locked?)"
         return _secrets_cache[2] if _secrets_cache is not None else ""
 
 
@@ -320,20 +361,25 @@ def uses_keyring(data: dict) -> bool:
     return data.get("use_keyring", True) is not False
 
 
-def secret_storage(data: dict) -> str:
-    """Where save_raw_config() puts the secrets of `data`, for the settings."""
-    if not uses_keyring(data):
+def secret_storage(use_keyring: bool) -> str:
+    """Where save_raw_config() puts the secrets (`use_keyring`: uses_keyring()),
+    for the settings and the installers."""
+    if not use_keyring:
         return f"{CONFIG_FILE} (the system keyring is switched off)"
     if keystore.available():
         return "Windows Credential Manager" if WINDOWS else "system keyring"
     return f"{CONFIG_FILE} (no system keyring: {keystore.problem()})"
 
 
-def save_raw_config(data: dict) -> None:
+def save_raw_config(data: dict, if_stamp: tuple | None | bool = False) -> bool:
     """Write config.json; with a system keyring the secrets go there instead
     (if storing one fails, all of them stay in the file). With use_keyring
-    off they go into the file and leave the keyring."""
+    off they go into the file and leave the keyring. With `if_stamp` (a
+    _file_stamp()) it writes nothing, and returns False, if config.json changed
+    meanwhile."""
     global _secrets_cache
+    if if_stamp is not False and _file_stamp() != if_stamp:
+        return False
     data = dict(data)
     data.pop(SECRET_STORE_KEY, None)
     secrets = {key: str(data.get(key) or "") for key in SECRET_KEYS}
@@ -353,8 +399,18 @@ def save_raw_config(data: dict) -> None:
             data[SECRET_STORE_KEY] = KEYRING
             in_keyring = True
     with _secrets_lock:
-        write_private_json(CONFIG_FILE, data)
-        _secrets_cache = (_file_stamp(), None, "", secrets) if in_keyring else None
+        if if_stamp is not False and _file_stamp() != if_stamp:
+            # Changed while the keyring was written: the file keeps the newer
+            # settings; the keyring is read again.
+            _secrets_cache = None
+            return False
+        try:
+            write_private_json(CONFIG_FILE, data)
+        except OSError:
+            _secrets_cache = None  # the keyring may have changed already
+            raise
+        _secrets_cache = (_file_stamp(), time.monotonic(), "", secrets) if in_keyring else None
+    return True
 
 
 def _forget_keyring_secrets() -> None:
@@ -369,6 +425,10 @@ def _forget_keyring_secrets() -> None:
 def migrate_secrets() -> bool:
     """Move secrets that config.json holds in plain text into the keyring;
     True when it did."""
+    ensure_example_config()
+    # Reading the keyring may wait for an unlock: a save in the settings
+    # meanwhile must not be overwritten with this older state.
+    stamp = _file_stamp()
     raw = _read_file()
     if (not any(str(raw.get(key) or "") for key in SECRET_KEYS) or not uses_keyring(raw)
             or not keystore.available()):
@@ -376,8 +436,7 @@ def migrate_secrets() -> bool:
     data = read_raw_config()
     if keyring_problem():  # the secrets already in the keyring are unknown
         return False
-    save_raw_config(data)
-    return _read_file().get(SECRET_STORE_KEY) == KEYRING
+    return save_raw_config(data, if_stamp=stamp) and _read_file().get(SECRET_STORE_KEY) == KEYRING
 
 
 def config_problem(data: dict) -> str | None:
@@ -395,6 +454,9 @@ def config_problem(data: dict) -> str | None:
 def load_config() -> Config:
     """The validated config. Raises ValueError when it is incomplete."""
     data = read_raw_config()
+    if data.get(SECRET_STORE_KEY) == KEYRING and keyring_problem():
+        # Not "set the password": it is stored, only not readable now.
+        raise ValueError(f"Could not read the passwords and tokens from the system keyring: {keyring_problem()}.")
     problem = config_problem(data)
     if problem:
         raise ValueError(f"{problem} ({CONFIG_FILE})")

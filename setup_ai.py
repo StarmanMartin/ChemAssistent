@@ -15,19 +15,19 @@ import os
 import sys
 
 from config import (AGENT_LABELS, AI_TOKEN_ENV, KI_TOOLBOX_URL, agent_of, keyring_problem, read_raw_config,
-                    save_raw_config, secret_storage)
+                    save_raw_config, secret_storage, uses_keyring)
 
 
 def main() -> None:
     data = read_raw_config()  # fills defaults and migrates the model id
     if keyring_problem():
         # Saving the secrets it could not read would delete them.
-        print("Warning: could not read the system keyring; left the config as it is.")
+        print("Warning: could not read the system keyring (is it locked?); left the config as it is.")
         return
     if agent_of(data) != "api":
         save_raw_config(data)
         print(f"Agent: {AGENT_LABELS[agent_of(data)]}; no API token needed.")
-        print("Sensitive credentials status updated.")
+        print(f"Passwords and tokens are saved in: {secret_storage(uses_keyring(data))}")
         return
     if str(data.get("ai_token") or "").strip():
         print("AI token already set.")
@@ -41,7 +41,7 @@ def main() -> None:
         if key:
             data["ai_token"] = key
     save_raw_config(data)
-    print("Sensitive credentials status updated.")
+    print(f"Passwords and tokens are saved in: {secret_storage(uses_keyring(data))}")
     if not str(data.get("ai_token") or "").strip():
         print("Warning: no AI token set. Enter it in ChemAssistent Settings (API token).")
 

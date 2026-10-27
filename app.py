@@ -90,8 +90,8 @@ from jobs import ACTIVE, FINISHED, REPORT_HEADER, USER_TEXT, Jobs, duration  # n
 from jupyter import JupyterBridge, JupyterError  # noqa: E402
 from config import (  # noqa: E402
     AGENT_SHORT, AUTO_RUN_LABELS, AUTO_RUN_MODES, CLI_AGENTS, CONFIG_FILE, STATE_DIR, WINDOWS,
-    WORKSPACE_DIR, Config, ai_problem, jupyter_problem, load_config, migrate_secrets, model_name,
-    read_raw_config,
+    WORKSPACE_DIR, Config, ai_problem, jupyter_problem, limit_main_thread_wait, load_config, migrate_secrets,
+    model_name, read_raw_config,
 )
 
 
@@ -118,6 +118,8 @@ RUN_MODE_ICONS = {"off": "dialog-question-symbolic", "readonly": "emblem-readonl
 MAX_MODEL_ERROR_CHARS = 120
 # Two presses of the global hotkey within this time open the prompt.
 HOTKEY_DOUBLE_S = 0.6
+# How long the main loop waits for the system keyring (it may ask to be unlocked).
+MAIN_THREAD_KEYRING_WAIT_S = 3
 # What the agent gets back from one snippet; the panel shows everything.
 MAX_ANSWER_CHARS = 20000
 MAX_TABLE_COLUMNS = 12
@@ -2387,7 +2389,7 @@ class ChemAssistentApp:
     def _register_hotkey(self) -> None:
         """GNOME: (re)write the custom shortcut, so it runs this copy's hotkey.py.
         Windows: RegisterHotKey (a change in the settings needs a restart)."""
-        accelerator = str(read_raw_config().get("hotkey") or "").strip()
+        accelerator = str(read_raw_config(secrets=False).get("hotkey") or "").strip()
         if not WINDOWS:
             try:
                 problem = hotkey.register_gnome(accelerator)
@@ -2460,7 +2462,10 @@ def main() -> None:
     GLib.set_prgname(APP_ID)
     if WINDOWS:
         app_control.write_pid()
-    # Not on the main loop: the keyring may ask to be unlocked.
+    # The keyring may ask to be unlocked: the main loop waits for it at most
+    # MAIN_THREAD_KEYRING_WAIT_S (then a conversation says it is not readable
+    # yet), the migration in a thread as long as it takes.
+    limit_main_thread_wait(MAIN_THREAD_KEYRING_WAIT_S)
     threading.Thread(target=_migrate_secrets, name="migrate-secrets", daemon=True).start()
     try:
         ChemAssistentApp(show_prompt).run()

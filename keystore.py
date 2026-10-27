@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import sys
 import threading
+import time
 
 LOG = logging.getLogger("chem-assistent")
 
@@ -23,6 +24,9 @@ TARGET_PREFIX = "ChemAssistent/"
 TIMEOUT_S = 120
 # Connecting to the Secret Service and finding its default keyring.
 PROBE_TIMEOUT_S = 10
+# After that failed, look again at most this often (the user service may
+# start before the keyring daemon is on the bus).
+PROBE_RETRY_S = 60
 
 
 class KeystoreError(Exception):
@@ -41,12 +45,12 @@ class SecretService:
         self.Gio, self.GLib, self.Secret = Gio, GLib, Secret
         self.schema = Secret.Schema.new(SCHEMA, Secret.SchemaFlags.NONE,
                                         {"key": Secret.SchemaAttributeType.STRING})
-        service = self._call(Secret.Service.get_sync, Secret.ServiceFlags.OPEN_SESSION,
-                             timeout=PROBE_TIMEOUT_S)
+        self.service = self._call(Secret.Service.get_sync, Secret.ServiceFlags.OPEN_SESSION,
+                                  timeout=PROBE_TIMEOUT_S)
         # A Secret Service without a default keyring (a bare gnome-keyring-daemon,
         # e.g. under WSL) answers lookups with nothing, and every store fails
         # only after ~15 s.
-        if self._call(Secret.Collection.for_alias_sync, service, "default", Secret.CollectionFlags.NONE,
+        if self._call(Secret.Collection.for_alias_sync, self.service, "default", Secret.CollectionFlags.NONE,
                       timeout=PROBE_TIMEOUT_S) is None:
             raise KeystoreError("the Secret Service has no default keyring")
 
@@ -67,6 +71,17 @@ class SecretService:
 
     def read(self, key: str) -> str:
         return self._call(self.Secret.password_lookup_sync, self.schema, {"key": key}) or ""
+
+    def read_all(self, keys) -> dict[str, str]:
+        # One D-Bus search for every item of the schema (and one unlock prompt).
+        flags = self.Secret.SearchFlags.ALL | self.Secret.SearchFlags.UNLOCK | self.Secret.SearchFlags.LOAD_SECRETS
+        items = self._call(self.service.search_sync, self.schema, {}, flags)
+        found = {}
+        for item in items or []:
+            key, secret = item.get_attributes().get("key"), item.get_secret()
+            if key in keys and secret is not None:
+                found[key] = secret.get_text() or ""
+        return found
 
     def write(self, key: str, value: str, label: str) -> None:
         if not self._call(self.Secret.password_store_sync, self.schema, {"key": key},
@@ -143,6 +158,10 @@ class CredentialManager:
         # UTF-16 like the passwords cmdkey and the Windows UI store.
         return blob.decode("utf-16-le", errors="replace")
 
+    def read_all(self, keys) -> dict[str, str]:
+        # Local calls without D-Bus: one per key is cheap.
+        return {key: value for key in keys if (value := self.read(key))}
+
     def write(self, key: str, value: str, label: str) -> None:
         ctypes = self.ctypes
         blob = value.encode("utf-16-le")
@@ -167,20 +186,23 @@ class CredentialManager:
 
 
 _lock = threading.Lock()
-# The backend once backend() looked for one; False: there is none (_problem says why).
+# The backend once backend() found one; False: there is none (_problem says
+# why), until PROBE_RETRY_S after _failed_at.
 _store: object = None
 _problem = ""
+_failed_at = 0.0
 
 
 def backend():
-    """The keyring of this system, or None (looked for once per process)."""
-    global _store, _problem
+    """The keyring of this system, or None (found once per process; after a
+    failure looked for again every PROBE_RETRY_S)."""
+    global _store, _problem, _failed_at
     with _lock:
-        if _store is None:
+        if _store is None or (_store is False and time.monotonic() - _failed_at >= PROBE_RETRY_S):
             try:
                 _store = CredentialManager() if sys.platform == "win32" else SecretService()
             except Exception as exc:  # no typelib, no D-Bus, no default keyring, no advapi32
-                _store, _problem = False, str(exc) or type(exc).__name__
+                _store, _problem, _failed_at = False, str(exc) or type(exc).__name__, time.monotonic()
                 LOG.info("No system keyring (%s); secrets stay in config.json.", _problem)
         return _store or None
 
@@ -204,6 +226,11 @@ def _require():
 def read(key: str) -> str:
     """The secret `key`, "" when the keyring has none. Raises KeystoreError."""
     return _require().read(key)
+
+
+def read_all(keys) -> dict[str, str]:
+    """The secrets among `keys` that the keyring has. Raises KeystoreError."""
+    return _require().read_all(keys)
 
 
 def write(key: str, value: str, label: str) -> None:

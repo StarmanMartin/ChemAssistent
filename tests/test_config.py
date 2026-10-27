@@ -2,6 +2,10 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
+
+import pytest
 
 import config as app_config
 from config import (ai_problem, config_problem, jupyter_folder, jupyter_problem, load_config,
@@ -154,7 +158,7 @@ def test_secrets_stay_in_the_file_without_a_keyring(tmp_path, monkeypatch, no_ke
     on_disk = json.loads(path.read_text(encoding="utf-8"))
     assert "secret_store" not in on_disk and on_disk["password"] == "p"
     assert load_config().ai_token == "t"
-    assert "no system keyring" in app_config.secret_storage({})
+    assert "no system keyring" in app_config.secret_storage(True)
     assert app_config.migrate_secrets() is False
 
 
@@ -256,9 +260,104 @@ def test_the_keyring_can_be_switched_off(tmp_path, monkeypatch, keyring):
     assert "secret_store" not in on_disk and on_disk["password"] == "p" and on_disk["ai_token"] == "t"
     assert keyring.secrets == {}  # not left behind
     assert load_config().password == "p"
-    assert "switched off" in app_config.secret_storage(on_disk)
+    assert "switched off" in app_config.secret_storage(app_config.uses_keyring(on_disk))
     assert app_config.migrate_secrets() is False  # plain text stays, as chosen
 
     save_raw_config({**read_raw_config(), "use_keyring": True})
     assert keyring.secrets["password"] == "p"
     assert json.loads(path.read_text(encoding="utf-8"))["password"] == ""
+
+
+def test_the_main_thread_does_not_wait_for_a_locked_keyring(tmp_path, monkeypatch, keyring):
+    use_config_file(tmp_path, monkeypatch)
+    save_raw_config(SETTINGS)
+    monkeypatch.setattr(app_config, "_secrets_cache", None)
+    unlocked = threading.Event()
+    keyring.on_read = unlocked.wait  # the keyring shows its unlock prompt
+    monkeypatch.setattr(app_config, "_main_thread_wait", 0.2)
+
+    started = time.monotonic()
+    assert read_raw_config()["password"] == ""
+    assert time.monotonic() - started < 2
+    assert "not answered yet" in app_config.keyring_problem()
+    # load_config() says why instead of asking for a password that is stored.
+    with pytest.raises(ValueError, match="Could not read the passwords and tokens from the system keyring"):
+        load_config()
+    assert keyring.reads == 1  # still the one read, not a new one per call
+
+    unlocked.set()
+    app_config._reader.join(5)
+    assert load_config().password == "p"
+    assert app_config.keyring_problem() == ""
+
+
+def test_keyring_failures_name_the_keyring(tmp_path, monkeypatch, keyring):
+    use_config_file(tmp_path, monkeypatch)
+    save_raw_config(SETTINGS)
+    monkeypatch.setattr(app_config, "_secrets_cache", None)
+    keyring.fail = True
+    with pytest.raises(ValueError, match="system keyring: the keyring is locked"):
+        load_config()
+
+
+def test_keyring_only_changes_show_after_the_ttl(tmp_path, monkeypatch, keyring):
+    use_config_file(tmp_path, monkeypatch)
+    save_raw_config(SETTINGS)
+    keyring.secrets["password"] = "changed in Seahorse"
+    assert read_raw_config()["password"] == "p"
+    monkeypatch.setattr(app_config, "SECRET_TTL_S", 0)
+    assert read_raw_config()["password"] == "changed in Seahorse"
+
+
+def test_the_migration_does_not_overwrite_a_save_meanwhile(tmp_path, monkeypatch, keyring):
+    path = use_config_file(tmp_path, monkeypatch)
+    write_private_json(path, SETTINGS)  # plain text, to be migrated
+    save_raw_config(SETTINGS)
+    write_private_json(path, {**json.loads(path.read_text()), "ai_token": "plain"})
+
+    def settings_save():  # the settings process saves while the keyring is read
+        keyring.on_read = None
+        time.sleep(0.01)  # a new mtime
+        write_private_json(path, {**json.loads(path.read_text()), "user": "saved meanwhile"})
+
+    keyring.on_read = settings_save
+    monkeypatch.setattr(app_config, "_secrets_cache", None)
+    assert app_config.migrate_secrets() is False
+    on_disk = json.loads(path.read_text(encoding="utf-8"))
+    assert on_disk["user"] == "saved meanwhile" and on_disk["ai_token"] == "plain"
+    assert keyring.secrets["ai_token"] == "t"  # not overwritten with the old snapshot
+    assert app_config.migrate_secrets() is True  # the next start moves it
+    assert keyring.secrets["ai_token"] == "plain"
+
+
+def test_a_failed_save_forgets_the_cache(tmp_path, monkeypatch, keyring):
+    use_config_file(tmp_path, monkeypatch)
+    save_raw_config(SETTINGS)
+
+    def refuse(path, data):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(app_config, "write_private_json", refuse)
+    with pytest.raises(OSError):
+        save_raw_config({**SETTINGS, "password": "new"})
+    assert app_config._secrets_cache is None
+
+
+def test_a_failed_keyring_probe_is_tried_again(monkeypatch):
+    import keystore
+
+    attempts = []
+
+    class Flaky:
+        def __init__(self):
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise keystore.KeystoreError("the keyring daemon is not up yet")
+
+    monkeypatch.setattr(keystore, "_store", None)
+    monkeypatch.setattr(keystore, "SecretService", Flaky)
+    monkeypatch.setattr(keystore, "CredentialManager", Flaky)
+    assert keystore.available() is False and "not up yet" in keystore.problem()
+    assert keystore.available() is False and len(attempts) == 1  # not before PROBE_RETRY_S
+    monkeypatch.setattr(keystore, "PROBE_RETRY_S", 0)
+    assert keystore.available() is True and len(attempts) == 2

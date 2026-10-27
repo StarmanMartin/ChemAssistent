@@ -25,8 +25,8 @@ from cli_agent import check_command, cli_models  # noqa: E402
 from config import (  # noqa: E402
     AGENT_KEYS, AGENT_LABELS, AGENTS, AI_TOKEN_ENV, AUTO_RUN_LABELS, AUTO_RUN_MODES, CLI_AGENTS,
     CONFIG_FILE, DEFAULT_JUPYTER_FOLDER, EXAMPLE, KI_TOOLBOX_URL, OLLAMA_URL, Config, agent_of, ai_problem,
-    ai_token, config_problem, jupyter_folder, jupyter_problem, keyring_problem, keyring_secrets, WINDOWS,
-    read_raw_config, save_raw_config, secret_storage, uses_keyring,
+    SECRET_KEYS, ai_token, config_problem, jupyter_folder, jupyter_problem, keyring_problem, keyring_secrets,
+    limit_main_thread_wait, WINDOWS, read_raw_config, save_raw_config, secret_storage, uses_keyring,
 )
 from jupyter import JupyterClient, JupyterError, split_url  # noqa: E402
 
@@ -49,6 +49,9 @@ AGENT_NOTES = {
              "built-in agent it reads the workspace and the attachments, and its code runs only "
              "through the result panel. Empty model: Codex's default.",
 }
+
+# How long the main thread waits for the system keyring (it may ask to be unlocked).
+MAIN_THREAD_KEYRING_WAIT_S = 3
 
 # key, label, lower bound, upper bound (the same lower bounds load_config() clamps to)
 NUMBER_FIELDS = (
@@ -367,13 +370,19 @@ class SettingsWindow(Gtk.Window):
         self.clear_lessons_button.connect("clicked", self._on_clear_lessons)
         grid.attach(self.clear_lessons_button, 0, 2, 1, 1)
 
+        # The secret fields by config key; ai_token is in agent_values (it
+        # belongs to one agent). _recover_secrets() must fill every one.
+        self.secret_entries = {"password": self.password, "jupyter_token": self.jupyter_token,
+                               "jupyter_password": self.jupyter_password, "github_token": self.github_token}
+        assert set(self.secret_entries) | {"ai_token"} == set(SECRET_KEYS)
+
         # max_width_chars keeps a long message from widening the window.
         self.status = Gtk.Label(xalign=0, wrap=True, selectable=True, max_width_chars=60)
         self.status.set_text(str(CONFIG_FILE))
         self.status.get_style_context().add_class("dim-label")
         if self.keyring_failed:
             self.status.set_text(f"Could not read the passwords and tokens from the system keyring "
-                                 f"({keyring_problem()}). Unlock it and open the settings again.")
+                                 f"({keyring_problem()}). Unlock it: Save reads it again first.")
 
         close_button = Gtk.Button(label="Close")
         close_button.connect("clicked", lambda *_: self.destroy())
@@ -755,7 +764,7 @@ class SettingsWindow(Gtk.Window):
         return False
 
     def _update_secret_note(self) -> None:
-        storage = secret_storage({"use_keyring": self.use_keyring.get_active()})
+        storage = secret_storage(self.use_keyring.get_active())
         self.secret_note.set_text(f"Passwords and tokens are saved in: {storage}")
 
     def _recover_secrets(self) -> bool:
@@ -768,8 +777,7 @@ class SettingsWindow(Gtk.Window):
             self._set_status(f"Not saved: the passwords and tokens in the system keyring cannot be read "
                              f"({problem}), and saving would delete them.")
             return False
-        for key, entry in (("password", self.password), ("jupyter_token", self.jupyter_token),
-                           ("jupyter_password", self.jupyter_password), ("github_token", self.github_token)):
+        for key, entry in self.secret_entries.items():
             if not entry.get_text():
                 entry.set_text(secrets[key])
         self._store_agent_fields()
@@ -891,6 +899,8 @@ class SettingsWindow(Gtk.Window):
 def main() -> None:
     # Matches the .desktop file name so the desktop shows its name and icon.
     GLib.set_prgname(PRGNAME)
+    # A locked keyring must not keep the window from opening.
+    limit_main_thread_wait(MAIN_THREAD_KEYRING_WAIT_S)
     window = SettingsWindow()
     window.show_all()
     Gtk.main()

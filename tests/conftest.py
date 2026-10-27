@@ -128,6 +128,8 @@ class FakeKeyring:
     def __init__(self) -> None:
         self.secrets: dict[str, str] = {}
         self.fail = False  # every call raises KeystoreError
+        self.on_read = None  # called by read_all() first (e.g. waits like an unlock prompt)
+        self.reads = 0
 
     def _check(self) -> None:
         import keystore
@@ -138,6 +140,13 @@ class FakeKeyring:
     def read(self, key: str) -> str:
         self._check()
         return self.secrets.get(key, "")
+
+    def read_all(self, keys) -> dict[str, str]:
+        self.reads += 1
+        if self.on_read is not None:
+            self.on_read()
+        self._check()
+        return {key: value for key, value in self.secrets.items() if key in keys}
 
     def write(self, key: str, value: str, label: str) -> None:
         self._check()
@@ -156,6 +165,8 @@ def keyring(monkeypatch) -> FakeKeyring:
     store = FakeKeyring()
     monkeypatch.setattr(keystore, "_store", store)
     monkeypatch.setattr(app_config, "_secrets_cache", None)
+    monkeypatch.setattr(app_config, "_reader", None)
+    monkeypatch.setattr(app_config, "_main_thread_wait", None)
     return store
 
 
