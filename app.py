@@ -1083,6 +1083,7 @@ class ResultsPanel(Gtk.Box):
         card.set_margin_end(10)
         card.set_margin_top(10)
         card.set_margin_bottom(10)
+        card.set_valign(Gtk.Align.START)  # its natural height, not the whole tab
         self.cards.append(card)
         code = Gtk.ScrolledWindow()
         code.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)

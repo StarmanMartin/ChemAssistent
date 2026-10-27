@@ -25,9 +25,9 @@ ran, and you can stop a run while it executes.
 
 [![Screencast: ChemAssistent lists the samples of a collection and adds a new one, each step after a click on Run](docs/assets/screencast.jpg)](docs/assets/screencast.mp4)
 
-*Screencast (1:40): from the top-bar icon to a question, the code to confirm,
-the result table and a follow-up that adds a sample. Click the picture to
-play it. It is recorded from the real app by `docs/screencast.py`.*
+*Screencast (1:15): from the top-bar icon to a question, the code to confirm,
+the result table, a follow-up that adds a sample and the Links tab. Click the
+picture to play it. It is recorded from the real app by `docs/screencast.py`.*
 
 ## How it works
 

@@ -7,13 +7,22 @@ a second. Each frame is composed onto a 16:9 stage with a simple top bar,
 a pointer and captions and encoded with GStreamer (x264, no ffmpeg needed).
 Waits for the model are fast-forwarded.
 
-    .venv/bin/python docs/screencast.py [output.mp4]
+    .venv/bin/python docs/screencast.py [output.mp4] [--stills] [--model NAME]
+
+--stills also writes the screenshots of the README and the slides into
+docs/assets: confirm.png (the first code card), results.png (the result
+panel after the first run), workspace.png (the window after the follow-up)
+and screencast.jpg (the video's poster). confirm.png is the whole card: crop
+the empty space below its status line.
 
 The window really opens on the screen; keep the mouse away from it. The
-demo creates a sample, so point the config at a test instance.
+demo creates a sample, so point the config at a test instance. Auto-run,
+JupyterLab and developer mode are off for the demo, whatever the config says;
+--model replaces the configured model (e.g. alias.complex-local).
 """
 from __future__ import annotations
 
+import dataclasses
 import math
 import re
 import sys
@@ -32,9 +41,16 @@ import gi  # noqa: E402
 gi.require_version("Gst", "1.0")
 import cairo  # noqa: E402
 from gi.repository import GdkPixbuf, Gst  # type: ignore  # noqa: E402
-from PIL import Image  # noqa: E402
+from PIL import Image, ImageDraw  # noqa: E402
 
-OUTPUT = Path(sys.argv[1]) if len(sys.argv) > 1 else HERE / "assets" / "screencast.mp4"
+ARGS = sys.argv[1:]
+STILLS = "--stills" in ARGS
+MODEL = ARGS[ARGS.index("--model") + 1] if "--model" in ARGS[:-1] else ""
+ARGS = [arg for index, arg in enumerate(ARGS)
+        if arg != "--stills" and arg != "--model" and (index == 0 or ARGS[index - 1] != "--model")]
+ASSETS = HERE / "assets"
+OUTPUT = Path(ARGS[0]) if ARGS else ASSETS / "screencast.mp4"
+POSTER = (1280, 720)
 WIDTH, HEIGHT = 1920, 1080  # video pixels
 STAGE_W, STAGE_H = 1440, 810  # logical (GDK) pixels shown in the video
 TOP_BAR = 28
@@ -69,11 +85,27 @@ def demo_work_area() -> Gdk.Rectangle:
     return rect
 
 
+class NoJobs:
+    """ChemAssistentApp.jobs without JupyterLab."""
+
+    def list(self, _conversation: str) -> list:
+        return []
+
+    def undelivered(self, _conversation: str) -> list:
+        return []
+
+    def info(self, _conversation: str) -> str:
+        return "No background jobs."
+
+
 class DemoApp:
     """What AssistantWindow needs from ChemAssistentApp."""
 
     def __init__(self) -> None:
         self.window: app.AssistantWindow | None = None
+        self.jobs = NoJobs()
+        self.models: list[str] | None = []
+        self.models_error = ""
         provider = Gtk.CssProvider()
         provider.load_from_data(app.CSS)
         Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), provider,
@@ -82,6 +114,9 @@ class DemoApp:
 
     def new_conversation(self) -> None:
         pass
+
+    def load_models(self, _config, _again: bool = False) -> None:
+        pass  # the header's model menu is not used in the demo
 
     def window_closed(self, _window) -> None:
         self.window = None
@@ -387,6 +422,41 @@ class Stage:
         cr.new_path()
 
 
+def save_still(widget: Gtk.Widget, name: str) -> None:
+    """A screenshot of `widget` as docs/assets/<name>.png (with --stills), in
+    device pixels (twice the size on a HiDPI screen)."""
+    if not STILLS:
+        return
+    toplevel = widget.get_toplevel()
+    x, y = widget.translate_coordinates(toplevel, 0, 0)
+    allocation = widget.get_allocation()
+    pixbuf = Gdk.pixbuf_get_from_window(toplevel.get_window(), x, y, allocation.width, allocation.height)
+    if pixbuf is None:
+        print(f"could not capture {name}.png", flush=True)
+        return
+    pixbuf.savev(str(ASSETS / f"{name}.png"), "png", [], [])
+    print(f"wrote {name}.png ({pixbuf.get_width()}x{pixbuf.get_height()})", flush=True)
+
+
+def save_poster(surface: cairo.ImageSurface) -> None:
+    """The current video frame with a play button as docs/assets/screencast.jpg (with --stills)."""
+    if not STILLS:
+        return
+    surface.flush()
+    image = Image.frombuffer("RGBA", (WIDTH, HEIGHT), bytes(surface.get_data()), "raw", "BGRA", 0, 1)
+    image = image.convert("RGB").resize(POSTER, Image.LANCZOS)
+    overlay = Image.new("RGBA", POSTER, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    cx, cy, radius = POSTER[0] // 2, POSTER[1] // 2, 62
+    accent = tuple(round(255 * value) for value in ACCENT)
+    draw.ellipse((cx - radius, cy - radius, cx + radius, cy + radius), fill=(0, 0, 0, 110),
+                 outline=(*accent, 255), width=6)
+    draw.polygon([(cx - 20, cy - 35), (cx - 20, cy + 35), (cx + 38, cy)], fill=(255, 255, 255, 255))
+    image = Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
+    image.save(ASSETS / "screencast.jpg", quality=88)
+    print("wrote screencast.jpg", flush=True)
+
+
 def stage_center(widget: Gtk.Widget) -> tuple[float, float]:
     toplevel = widget.get_toplevel()
     x, y = widget.translate_coordinates(toplevel, 0, 0)
@@ -401,6 +471,7 @@ class Demo:
         self.stage = Stage()
         self.recorder = Recorder()
         self.window: app.AssistantWindow | None = None
+        self.confirm_saved = False
         self.script = self.run()
         self.wait_until = 0.0
         self.condition = None
@@ -517,12 +588,15 @@ class Demo:
                 cards += 1
                 self.say(first_card_caption if cards == 1 else later_card_caption)
                 yield 4.5 if cards == 1 else 2.0
+                if not self.confirm_saved:
+                    save_still(card, "confirm")
+                    self.confirm_saved = True
                 yield from self.move(lambda: stage_center(card.run_button))
                 yield 0.3
                 yield from self.click()
                 card.run()
                 yield 0.5
-                self.say("It runs in its own process; the output opens as a tab below the code.")
+                self.say("It runs in its own process; the output appears below the code, in the same tab.")
                 continue
             self.stage.fast = status not in ("Writing…",)
             yield 0
@@ -571,7 +645,10 @@ class Demo:
             "Every further step needs your OK as well.",
         )
         self.say("Results are tables; a click on a row opens the element in Chemotion.")
-        yield 4.0
+        yield 1.5
+        save_still(self.window.results, "results")
+        save_poster(self.stage.draw(self.window, time.monotonic()))
+        yield 2.5
 
         self.say("Ask follow-up questions in the chat. Files and folders can be attached with the paperclip.")
         yield from self.move(lambda: stage_center(self.window.chat.input), 0.9)
@@ -588,6 +665,17 @@ class Demo:
             "Every further step needs your OK as well.",
         )
         yield 5.0  # time to read the answer
+        save_still(self.window, "workspace")
+        results = self.window.results
+        if results.links_page is not None:
+            self.say("Every element and notebook of the conversation is collected in the <b>Links</b> tab.",
+                     5.0, place="results")
+            tab = results.tabs.get_tab_label(results.links_page)
+            yield from self.move(lambda: stage_center(tab), 0.9)
+            yield from self.click()
+            results.tabs.set_current_page(results.tabs.page_num(results.links_page))
+            stage.pointer_visible = False
+            yield 5.0
         self.say("Conversations are saved: the prompt offers to continue recent ones.", 4.0,
                  place="results")
         yield 4.5
@@ -606,6 +694,14 @@ def main() -> None:
     # Keep the video's 16:9 stage: no maximizing to the real (wide) work area.
     app.AssistantWindow.maximize = lambda self: None
     app.history.save = lambda *args, **kwargs: None
+    app.history.entries = lambda *args, **kwargs: []  # the prompt shows no real conversations
+    load_config = app.load_config
+    # Cards wait for a click; no JupyterLab or developer prompt in the demo.
+    def demo_config():
+        config = dataclasses.replace(load_config(), auto_run="off", jupyter_url="", developer_mode=False)
+        return dataclasses.replace(config, ai_model=MODEL) if MODEL else config
+
+    app.load_config = demo_config
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     Demo()
     Gtk.main()
