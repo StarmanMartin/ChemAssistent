@@ -33,6 +33,7 @@ from pathlib import Path
 
 import issues
 import lessons
+import history
 from config import AUTO_RUN_MODES, SKILLS_DIR, WORKSPACE_DIR, Config
 
 
@@ -596,8 +597,9 @@ class Agent:
         # The tool descriptions depend on the auto-run mode (execute_python).
         self.tools = build_tools(self.auto_run, self.jupyter, self.config.developer_mode)
         self.messages: list[dict] = [{"role": "system", "content": system_prompt}]
-        # What the read-only tools may read: the workspace and every attachment.
-        self.roots: list[Path] = [WORKSPACE_DIR.resolve()]
+        # What the read-only tools may read: the workspace, the saved conversations
+        # (when the user asks about them, workspace.HISTORY_PROMPT) and every attachment.
+        self.roots: list[Path] = [WORKSPACE_DIR.resolve(), history.HISTORY_DIR.resolve()]
         if exchange is not None:
             exchange.mkdir(parents=True, exist_ok=True)
             self.roots.append(exchange.resolve())

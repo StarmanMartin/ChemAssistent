@@ -2107,7 +2107,7 @@ class AssistantWindow(Gtk.Window):
         messages = list(self.agent.messages[1:])  # without the system prompt
         if len(messages) == self.saved_messages or not any(message.get("role") == "user" for message in messages):
             return
-        own = {WORKSPACE_DIR.resolve(), self.exchange.resolve() if self.exchange else None}
+        own = {WORKSPACE_DIR.resolve(), history.HISTORY_DIR.resolve(), self.exchange.resolve() if self.exchange else None}
         roots = [str(root) for root in self.agent.roots if root not in own]
         try:
             history.save(self.conversation_id, self.conversation_title, model_name(self.agent.config.ai_model),

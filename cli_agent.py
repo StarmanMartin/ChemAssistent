@@ -29,6 +29,7 @@ import threading
 from collections import deque
 from pathlib import Path
 
+import history
 import issues
 import workspace
 from agent import ATTACHMENT_NOTE, AgentError, describe_attachment, tool_summary
@@ -148,7 +149,8 @@ class CliAgent:
         self.session_token = secrets.token_urlsafe(24)
         # Like Agent.messages (history.py, ChatPanel.replay()): plain user and assistant texts.
         self.messages: list[dict] = [{"role": "system", "content": system_prompt}]
-        self.roots: list[Path] = [WORKSPACE_DIR.resolve()]
+        # The read-only tools of mcp_bridge.py: as Agent.roots.
+        self.roots: list[Path] = [WORKSPACE_DIR.resolve(), history.HISTORY_DIR.resolve()]
         # The CLI's own session id (claude session_id, codex thread_id); resumed by later turns.
         self.session = ""
         self.cancelled = threading.Event()

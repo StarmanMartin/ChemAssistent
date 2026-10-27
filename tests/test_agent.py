@@ -138,6 +138,31 @@ def test_grep_and_list_files(fake_ai, ai_config, workspace, recorder):
     assert "CHEMOTION_API.md" in results[1] and "chemotionapi/" in results[1]
 
 
+def test_saved_conversations_are_readable(fake_ai, ai_config, workspace, recorder, state_dir):
+    import history
+    import workspace as workspace_module
+
+    history.save("20261020-101500-abcdef", "Samples of Main Test", "test-model",
+                 [{"role": "user", "content": "Which samples are in Main Test?"},
+                  {"role": "assistant", "content": "MS-17 Benzene is the only one."}], [])
+    folder = str(state_dir / "history")
+    fake_ai.script_next(
+        {"tool_calls": [{"name": "grep", "arguments": {"pattern": '^  "title":', "path": folder}},
+                        {"name": "read_file", "arguments": {"path": f"{folder}/20261020-101500-abcdef.json"}}]},
+        {"content": "Last time: MS-17."},
+    )
+    agent = make_agent(ai_config, recorder)
+
+    agent.send("What did we find last week?")
+
+    results = [m["content"] for m in agent.messages if m.get("role") == "tool"]
+    assert "Samples of Main Test" in results[0]
+    assert "MS-17 Benzene" in results[1]
+    # The prompt says where they are and that they are read only on request.
+    prompt = workspace_module.system_prompt()
+    assert folder in prompt and "only when the user asks" in prompt
+
+
 def test_paths_outside_the_workspace_are_refused(fake_ai, ai_config, workspace, recorder, tmp_path):
     outside = tmp_path / "secret.txt"
     outside.write_text("password", encoding="utf-8")
