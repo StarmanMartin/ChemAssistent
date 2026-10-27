@@ -126,6 +126,8 @@ MAX_IMAGE_WIDTH = 720
 MAX_CELL_CHARS = 120
 # Tabs (code + result) kept in the panel; older finished ones are dropped.
 MAX_RESULT_TABS = 10
+# The Links tab's sections, in this order.
+LINK_SECTIONS = ("Chemotion", "JupyterLab", "Exchange folder")
 # An ipc request; a CLI agent's execute_python request carries its code.
 MAX_REQUEST_BYTES = 2_000_000
 # Old conversations the prompt offers to continue.
@@ -661,6 +663,26 @@ def result_widget(value) -> Gtk.Widget:
     return text_block(text)
 
 
+def result_links(value, found: list[tuple[str, str]] | None = None) -> list[tuple[str, str]]:
+    """(text, url) of every element in a result: the dicts with a "url"."""
+    found = [] if found is None else found
+    if isinstance(value, dict):
+        if isinstance(value.get("url"), str) and value["url"]:
+            parts = []
+            for key in ("short_label", "name", "label", "element_type"):
+                text = str(value.get(key) or "")
+                if text and text not in parts:
+                    parts.append(text)
+            found.append((" · ".join(parts) or value["url"], value["url"]))
+        for item in value.values():
+            if isinstance(item, (dict, list)):
+                result_links(item, found)
+    elif isinstance(value, list):
+        for item in value:
+            result_links(item, found)
+    return found
+
+
 def image_widget(data: str) -> Gtk.Widget | None:
     """A base64 PNG (a JupyterLab figure), at most MAX_IMAGE_WIDTH wide."""
     from gi.repository import GdkPixbuf  # type: ignore
@@ -798,6 +820,7 @@ class RequestCard(Gtk.Box):
         self.on_state_change = on_state_change
         self.on_result = on_result
         self.execution: Execution | JupyterExecution | None = None
+        self.outcome: dict = {}  # of the run, for the Links tab
         self.state = "waiting"
         pending.on_abandoned = self._on_abandoned
         self.get_style_context().add_class("request-card")
@@ -931,6 +954,7 @@ class RequestCard(Gtk.Box):
         error = str(outcome.get("error") or "")
         result = outcome.get("result")
 
+        self.outcome = outcome
         self.on_result(self, result_page(stdout, error, result if ok else None, outcome))
 
         abandoned = self.pending.done.is_set() and self.pending.reply is None
@@ -1014,7 +1038,9 @@ class BottomFollower:
 class ResultsPanel(Gtk.Box):
     """One tab per snippet: its code to confirm on top and, once it ran, its
     output below. Tabs of waiting or running code stay; at most
-    MAX_RESULT_TABS are kept."""
+    MAX_RESULT_TABS are kept. The first tab, "Links", collects every link the
+    conversation showed (Chemotion elements, JupyterLab notebooks, exchanged
+    files); it appears with the first link and is never dropped."""
 
     def __init__(self) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
@@ -1023,6 +1049,10 @@ class ResultsPanel(Gtk.Box):
         # Per card: its tab page, the state dot and the close button in its tab.
         self.pages: dict[RequestCard, Gtk.Paned] = {}
         self.tab_parts: dict[RequestCard, tuple[Gtk.Label, Gtk.Widget]] = {}
+        self.links_page: Gtk.Widget | None = None  # the Links tab, made with the first link
+        self.links_label: Gtk.Label | None = None
+        self.link_sections: dict[str, Gtk.Box] = {}
+        self.link_urls: set[str] = set()
 
         head = Gtk.Box(spacing=8, border_width=10)
         head.pack_start(label("Results", "results-heading", wrap=False), False, False, 0)
@@ -1071,6 +1101,69 @@ class ResultsPanel(Gtk.Box):
             card.focus_code()
         return card
 
+    def add_link(self, section: str, text: str, url: str, source: str = "") -> None:
+        """A link in the Links tab (section one of LINK_SECTIONS), once per URL."""
+        if not url or url in self.link_urls:
+            return
+        if self.links_page is None:
+            self._build_links_tab()
+        self.link_urls.add(url)
+        row = Gtk.Box(spacing=8)
+        row.pack_start(link_row(text, url, url), False, False, 0)
+        if source:
+            hint = label(source, "dim", wrap=False)
+            hint.set_ellipsize(Pango.EllipsizeMode.END)
+            row.pack_start(hint, True, True, 0)
+        box = self.link_sections[section]
+        box.pack_start(row, False, False, 0)
+        box.set_no_show_all(False)
+        box.show_all()
+        self.links_label.set_text(f"Links ({len(self.link_urls)})")
+
+    def _build_links_tab(self) -> None:
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, border_width=10)
+        for name in LINK_SECTIONS:
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            box.pack_start(label(name, "dim"), False, False, 0)
+            box.set_no_show_all(True)  # shown with its first link
+            content.pack_start(box, False, False, 0)
+            self.link_sections[name] = box
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroller.add(content)
+        tab = Gtk.Box(spacing=4)
+        tab.pack_start(Gtk.Image.new_from_icon_name("web-browser-symbolic", Gtk.IconSize.MENU), False, False, 0)
+        self.links_label = label("Links", wrap=False)
+        tab.pack_start(self.links_label, False, False, 0)
+        tab.set_tooltip_text("Every link of this conversation: Chemotion elements, JupyterLab notebooks, files")
+        tab.show_all()
+        scroller.show_all()
+        self.links_page = scroller
+        current = self.tabs.get_nth_page(self.tabs.get_current_page())
+        self.tabs.insert_page(scroller, tab, 0)
+        if current is not None:
+            self.tabs.set_current_page(self.tabs.page_num(current))
+        self.empty.hide()
+        self.tabs.show()
+
+    def _collect_links(self, card: RequestCard) -> None:
+        """The links one run showed, into the Links tab."""
+        outcome = card.outcome
+        source = f"#{card.number} {card.pending.purpose}".strip()
+        if outcome.get("ok") and card.pending.target == "chemotion":
+            for text, url in result_links(outcome.get("result")):
+                self.add_link("Chemotion", text, url, source)
+        if outcome.get("notebook_url"):
+            text = (f"Job notebook: {card.pending.purpose or outcome['job']}" if outcome.get("job")
+                    else "Notebook of this conversation")
+            self.add_link("JupyterLab", text, outcome["notebook_url"], source)
+        folder = outcome.get("exchange")
+        if folder:
+            for key in ("figures", "saved", "uploaded", "downloaded"):
+                for name in outcome.get(key) or []:
+                    path = Path(folder) / name
+                    self.add_link("Exchange folder", name, path.as_uri(), source)
+
     def _tab_label(self, card: RequestCard) -> Gtk.Widget:
         title = card.pending.purpose or "Code"
         tab = Gtk.Box(spacing=4)
@@ -1107,18 +1200,19 @@ class ResultsPanel(Gtk.Box):
             self.tabs.remove_page(self.tabs.page_num(page))
         if card in self.cards:
             self.cards.remove(card)
-        if not self.tabs.get_n_pages():
+        if not self.tabs.get_n_pages():  # the Links tab stays once it exists
             self.tabs.hide()
             self.empty.show()
 
     def _prune(self) -> None:
         """Drop the oldest finished tabs above MAX_RESULT_TABS; waiting or running code stays."""
         finished = [card for card in self.cards if card.state not in ("waiting", "running")]
-        while self.tabs.get_n_pages() > MAX_RESULT_TABS and finished:
+        while len(self.pages) > MAX_RESULT_TABS and finished:
             self._remove(finished.pop(0))
 
     def _add_result(self, card: RequestCard, page: Gtk.Widget) -> None:
         """The output goes below the card's code, in the same tab."""
+        self._collect_links(card)
         paned = self.pages.get(card)
         if paned is None:
             return
@@ -1755,6 +1849,7 @@ class AssistantWindow(Gtk.Window):
 
         self.chat = ChatPanel(self._send, self._stop)
         self.results = ResultsPanel()
+        self._fill_jobs_menu()  # puts the conversation's job notebooks into the Links tab
         self.paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         self.paned.set_wide_handle(True)
         self.paned.pack1(self.chat, True, False)
@@ -1839,6 +1934,9 @@ class AssistantWindow(Gtk.Window):
                 problem = Gtk.MenuItem(label=f"Cannot check it: {job['problem'][:MAX_MODEL_ERROR_CHARS]}")
                 problem.set_sensitive(False)
                 submenu.append(problem)
+            if self.results is not None:
+                self.results.add_link("JupyterLab", f"Job notebook: {job.get('purpose') or job['id']}",
+                                      job["notebook_url"])
             notebook = Gtk.MenuItem(label="Open its notebook in JupyterLab")
             notebook.connect("activate", lambda _item, url=job["notebook_url"]: open_url(url))
             submenu.append(notebook)
@@ -1987,6 +2085,10 @@ class AssistantWindow(Gtk.Window):
                 self.agent.restore(saved["messages"], roots)
             self.chat.replay(self.agent.messages[1:])
             self.saved_messages = len(self.agent.messages) - 1
+            if self.jupyter is not None and any(
+                    call.get("function", {}).get("name") == "execute_jupyter"
+                    for message in self.agent.messages for call in message.get("tool_calls") or []):
+                self.results.add_link("JupyterLab", "Notebook of this conversation", self.jupyter.notebook_url)
         # Set but unusable: say so, or the agent quietly works without it.
         problem = jupyter_problem(read_raw_config())
         if problem:

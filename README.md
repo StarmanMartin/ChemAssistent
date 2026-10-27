@@ -51,7 +51,10 @@ play it. It is recorded from the real app by `docs/screencast.py`.*
      waits for you, runs, ran or failed.
 4. The output appears in the same tab below the code (the latest ten tabs are
    kept; code that waits or runs is never dropped): tables for lists and dicts,
-   text otherwise, the error traceback when it fails. Chemotion elements (samples, reactions, …) are rows you can click to
+   text otherwise, the error traceback when it fails. The first tab, **Links**,
+   collects every link the conversation showed: Chemotion elements, the
+   JupyterLab notebooks (also of background jobs) and files in the exchange
+   folder. Chemotion elements (samples, reactions, …) are rows you can click to
    open the element in the browser. “Copy JSON” copies the result.
 
 The header buttons start a new conversation, open the settings, minimize the
