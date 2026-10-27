@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import threading
+import webbrowser
 from pathlib import Path
 
 import gi
@@ -293,9 +294,28 @@ class SettingsWindow(Gtk.Window):
         self.github_token = self._secret_entry(str(self.data.get("github_token") or ""))
         self.github_token.set_placeholder_text("Optional: creates the issues directly")
         row = self._add_row(grid, row, "GitHub token", self.github_token)
+        token_button = Gtk.Button(label="Create token on GitHub…")
+        token_button.set_tooltip_text(
+            "Opens GitHub's form for a fine-grained token, filled in with only “Issues: read and write”. "
+            f"Choose “Only select repositories” → {issues.REPO.split('/')[1]} there."
+        )
+        token_button.connect("clicked", lambda *_: webbrowser.open(issues.token_url()))
+        classic_button = Gtk.Button(label="Classic token…")
+        classic_button.set_tooltip_text(
+            f"For non-members of {issues.REPO.split('/')[0]}: GitHub's form for a classic token with public_repo "
+            "(fine-grained tokens cannot write to public repositories of other organizations)."
+        )
+        classic_button.connect("clicked", lambda *_: webbrowser.open(issues.classic_token_url()))
+        token_buttons = Gtk.Box(spacing=8)
+        token_buttons.pack_start(token_button, False, False, 0)
+        token_buttons.pack_start(classic_button, False, False, 0)
+        grid.attach(token_buttons, 1, row, 1, 1)
+        row += 1
         note = Gtk.Label(
-            label="A fine-grained token with “Issues: read and write” on the repository (or a classic one "
-                  f"with public_repo). Without one, every report is saved in {issues.ISSUES_DIR} and the "
+            label="A fine-grained token with “Issues: read and write” on the repository: the button fills "
+                  f"in everything but the repository (choose “Only select repositories” → {issues.REPO}); "
+                  f"it works if you are a member of {issues.REPO.split('/')[0]}. Otherwise a classic token "
+                  f"with public_repo. Without a token, every report is saved in {issues.ISSUES_DIR} and the "
                   "assistant gives you a link to GitHub's new-issue form, filled in, to submit it yourself.",
             xalign=0, wrap=True, max_width_chars=60,
         )

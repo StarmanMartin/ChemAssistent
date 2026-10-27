@@ -36,6 +36,28 @@ MAX_URL_BODY_CHARS = 6000
 MAX_TITLE_CHARS = 120
 MAX_BODY_CHARS = 20000
 TIMEOUT_S = 15
+# GitHub's forms for a new token, prefilled for creating issues only. The
+# repository itself cannot be preselected for a fine-grained token, and those
+# work on a public repository only for members of its organization; everybody
+# else needs a classic token with public_repo (which can write more than issues).
+TOKEN_NAME = "ChemAssistent bug reports"
+TOKEN_DESCRIPTION = f"ChemAssistent creates the chemotion_api bugs it finds as issues of {REPO}."
+TOKEN_DAYS = 366  # the longest GitHub allows
+
+
+def token_url() -> str:
+    """GitHub's form for a fine-grained token with only Issues: read and write."""
+    query = urllib.parse.urlencode({
+        "name": TOKEN_NAME, "description": TOKEN_DESCRIPTION, "target_name": REPO.split("/")[0],
+        "expires_in": TOKEN_DAYS, "issues": "write",
+    })
+    return f"https://github.com/settings/personal-access-tokens/new?{query}"
+
+
+def classic_token_url() -> str:
+    """GitHub's form for a classic token with the public_repo scope."""
+    query = urllib.parse.urlencode({"scopes": "public_repo", "description": TOKEN_NAME})
+    return f"https://github.com/settings/tokens/new?{query}"
 
 
 def eln_version(config: Config) -> str:

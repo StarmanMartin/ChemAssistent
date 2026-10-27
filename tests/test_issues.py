@@ -200,3 +200,13 @@ def test_installed_branch(tmp_path):
     (tmp_path / api_versions.BRANCH_NAME).write_text("feature/x\n")
     assert api_versions.installed_branch(tmp_path) == "feature/x"
     assert api_versions.installed_label(tmp_path) == "branch feature/x"
+
+
+def test_token_urls_ask_for_issues_only():
+    query = urllib.parse.parse_qs(urllib.parse.urlsplit(issues.token_url()).query)
+    assert query["issues"] == ["write"]
+    assert query["target_name"] == [issues.REPO.split("/")[0]]
+    assert len(query["name"][0]) <= 40 and len(query["description"][0]) <= 1024
+    assert not set(query) - {"name", "description", "target_name", "expires_in", "issues"}
+    classic = urllib.parse.parse_qs(urllib.parse.urlsplit(issues.classic_token_url()).query)
+    assert classic["scopes"] == ["public_repo"]
