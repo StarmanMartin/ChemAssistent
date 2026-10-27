@@ -44,13 +44,14 @@ play it. It is recorded from the real app by `docs/screencast.py`.*
      message: the agent may read them and use them in its code, e.g. to
      upload a measurement file to a sample;
    - **right**: the results. Each time the agent wants to call the Chemotion
-     API, a card appears with its purpose and the Python code. **Run** executes
+     API, a new tab opens with its purpose and the Python code. **Run** executes
      it (Ctrl+Enter in the code also works), **Reject** refuses it; the optional
      reason is sent to the agent. You can edit the code before running it; the
-     agent is told what actually ran. Only the newest code is shown.
-4. The output appears in a tab below the code (the latest ten are kept):
-   tables for lists and dicts, text otherwise, the error traceback when it
-   fails. Chemotion elements (samples, reactions, …) are rows you can click to
+     agent is told what actually ran. The dot in the tab shows whether the code
+     waits for you, runs, ran or failed.
+4. The output appears in the same tab below the code (the latest ten tabs are
+   kept; code that waits or runs is never dropped): tables for lists and dicts,
+   text otherwise, the error traceback when it fails. Chemotion elements (samples, reactions, …) are rows you can click to
    open the element in the browser. “Copy JSON” copies the result.
 
 The header buttons start a new conversation, open the settings, minimize the

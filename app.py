@@ -124,7 +124,7 @@ MAX_TABLE_COLUMNS = 12
 # Figures from JupyterLab are scaled down to this width in the result tab.
 MAX_IMAGE_WIDTH = 720
 MAX_CELL_CHARS = 120
-# Result tabs kept in the panel; older ones are dropped.
+# Tabs (code + result) kept in the panel; older finished ones are dropped.
 MAX_RESULT_TABS = 10
 # An ipc request; a CLI agent's execute_python request carries its code.
 MAX_REQUEST_BYTES = 2_000_000
@@ -175,6 +175,18 @@ CSS = b"""
     color: #ffffff;
     font-weight: bold;
     font-size: 14px;
+}
+.tab-state.waiting {
+    color: #d6da1e;
+}
+.tab-state.running {
+    color: #ffffff;
+}
+.tab-state.done {
+    color: #2a9fd8;
+}
+.tab-state.failed {
+    color: #c0505a;
 }
 .request-card {
     background: #2a2c30;
@@ -777,7 +789,7 @@ def code_editor(code: str) -> tuple[Gtk.Widget, Gtk.TextView]:
 
 class RequestCard(Gtk.Box):
     """One snippet: editable until the user runs or rejects it. Its output goes
-    to a result tab through `on_result(card, page)`."""
+    below it in its tab through `on_result(card, page)`."""
 
     def __init__(self, number: int, pending: PendingRequest, on_state_change, on_result) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -1000,12 +1012,17 @@ class BottomFollower:
 
 
 class ResultsPanel(Gtk.Box):
-    """The newest snippet (and older ones still waiting or running) on top, the
-    latest results as tabs below."""
+    """One tab per snippet: its code to confirm on top and, once it ran, its
+    output below. Tabs of waiting or running code stay; at most
+    MAX_RESULT_TABS are kept."""
 
     def __init__(self) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.cards: list[RequestCard] = []
+        self.count = 0
+        # Per card: its tab page, the state dot and the close button in its tab.
+        self.pages: dict[RequestCard, Gtk.Paned] = {}
+        self.tab_parts: dict[RequestCard, tuple[Gtk.Label, Gtk.Widget]] = {}
 
         head = Gtk.Box(spacing=8, border_width=10)
         head.pack_start(label("Results", "results-heading", wrap=False), False, False, 0)
@@ -1013,74 +1030,110 @@ class ResultsPanel(Gtk.Box):
         head.pack_start(self.counter, False, False, 0)
         self.pack_start(head, False, False, 0)
 
-        self.scroller = Gtk.ScrolledWindow()
-        self.scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        self.list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, border_width=10)
         self.empty = label(
             "Code the assistant wants to run against Chemotion appears here.\n"
             "You can read and edit it, then Run or Reject it. Nothing runs without your confirmation.",
             "dim",
         )
         self.empty.set_margin_top(20)
-        self.list.pack_start(self.empty, False, False, 0)
-        self.scroller.add(self.list)
-        self.follower = BottomFollower(self.scroller)
+        self.empty.set_margin_start(10)
+        self.empty.set_margin_end(10)
+        self.pack_start(self.empty, False, False, 0)
 
         self.tabs = Gtk.Notebook()
         self.tabs.set_scrollable(True)
-        self.tabs.set_no_show_all(True)  # shown with the first result
-        self.paned = Gtk.Paned(orientation=Gtk.Orientation.VERTICAL)
-        self.paned.pack1(self.scroller, True, False)
-        self.paned.pack2(self.tabs, True, False)
-        self.pack_start(self.paned, True, True, 0)
-
+        self.tabs.set_no_show_all(True)  # shown with the first card
+        self.pack_start(self.tabs, True, True, 0)
 
     def add_request(self, pending: PendingRequest) -> RequestCard:
         self.empty.hide()
-        card = RequestCard(len(self.cards) + 1, pending, self._update_counter, self._add_result)
+        self.count += 1
+        card = RequestCard(self.count, pending, self._update_counter, self._add_result)
+        card.set_margin_start(10)
+        card.set_margin_end(10)
+        card.set_margin_top(10)
+        card.set_margin_bottom(10)
         self.cards.append(card)
+        code = Gtk.ScrolledWindow()
+        code.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        code.add(card)
+        page = Gtk.Paned(orientation=Gtk.Orientation.VERTICAL)
+        page.pack1(code, True, False)
+        self.pages[card] = page
+        page.show_all()
+        self.tabs.show()
+        self.tabs.set_current_page(self.tabs.append_page(page, self._tab_label(card)))
         self._prune()
-        self.list.pack_start(card, False, False, 0)
-        card.show_all()
         self._update_counter()
-        self.follower.active = True
         if pending.auto:
             GLib.idle_add(card.run)  # auto-run: start as soon as the card is on screen
         else:
             card.focus_code()
         return card
 
-    def _prune(self) -> None:
-        """Only the newest code stays visible, plus older code still waiting or running."""
-        for card in self.cards[:-1]:
-            if card.state not in ("waiting", "running") and card.get_parent() is self.list:
-                self.list.remove(card)
-
-    def _add_result(self, card: RequestCard, page: Gtk.Widget) -> None:
-        title = card.pending.purpose or "Result"
+    def _tab_label(self, card: RequestCard) -> Gtk.Widget:
+        title = card.pending.purpose or "Code"
         tab = Gtk.Box(spacing=4)
+        dot = label("●", "tab-state", wrap=False)
+        tab.pack_start(dot, False, False, 0)
         text = label(f"#{card.number} {title}", wrap=False)
         text.set_ellipsize(Pango.EllipsizeMode.END)
         text.set_width_chars(min(len(text.get_text()), 22))
         text.set_max_width_chars(22)
         tab.pack_start(text, True, True, 0)
-        tab.pack_start(icon_button("window-close-symbolic", "Close this result",
-                                   lambda: self.tabs.remove_page(self.tabs.page_num(page))), False, False, 0)
+        close = icon_button("window-close-symbolic", "Close this tab", lambda: self._remove(card))
+        close.set_no_show_all(True)  # only once the code is decided and ran or failed
+        tab.pack_start(close, False, False, 0)
         tab.set_tooltip_text(title)
+        self.tab_parts[card] = (dot, close)
+        self._update_tab(card)
         tab.show_all()
+        return tab
+
+    def _update_tab(self, card: RequestCard) -> None:
+        dot, close = self.tab_parts[card]
+        context = dot.get_style_context()
+        for state in ("waiting", "running", "done", "failed"):
+            context.remove_class(state)
+        context.add_class(card.state)
+        dot.set_tooltip_text({"waiting": "Waiting for your confirmation", "running": "Running",
+                              "done": "Ran", "failed": "Failed or not run"}.get(card.state, card.state))
+        close.set_visible(card.state not in ("waiting", "running"))
+
+    def _remove(self, card: RequestCard) -> None:
+        page = self.pages.pop(card, None)
+        self.tab_parts.pop(card, None)
+        if page is not None:
+            self.tabs.remove_page(self.tabs.page_num(page))
+        if card in self.cards:
+            self.cards.remove(card)
+        if not self.tabs.get_n_pages():
+            self.tabs.hide()
+            self.empty.show()
+
+    def _prune(self) -> None:
+        """Drop the oldest finished tabs above MAX_RESULT_TABS; waiting or running code stays."""
+        finished = [card for card in self.cards if card.state not in ("waiting", "running")]
+        while self.tabs.get_n_pages() > MAX_RESULT_TABS and finished:
+            self._remove(finished.pop(0))
+
+    def _add_result(self, card: RequestCard, page: Gtk.Widget) -> None:
+        """The output goes below the card's code, in the same tab."""
+        paned = self.pages.get(card)
+        if paned is None:
+            return
         page.show_all()
-        if not self.tabs.get_visible():
-            self.tabs.show()
-            self.paned.set_position(int(self.paned.get_allocated_height() * 0.4))
-        index = self.tabs.append_page(page, tab)
-        self.tabs.set_current_page(index)
-        while self.tabs.get_n_pages() > MAX_RESULT_TABS:
-            self.tabs.remove_page(0)
+        paned.pack2(page, True, False)
+        # The code keeps its natural height, at most half of the tab.
+        code_height = card.get_preferred_height()[1] + 20
+        paned.set_position(min(code_height, int(self.tabs.get_allocated_height() * 0.5)))
 
     def waiting(self) -> int:
         return sum(card.state == "waiting" for card in self.cards)
 
     def _update_counter(self) -> None:
+        for card in self.tab_parts:
+            self._update_tab(card)
         self._prune()
         count = self.waiting()
         self.counter.set_text(f"· {count} waiting for confirmation" if count else "")
