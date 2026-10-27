@@ -158,7 +158,7 @@ def test_secrets_stay_in_the_file_without_a_keyring(tmp_path, monkeypatch, no_ke
     on_disk = json.loads(path.read_text(encoding="utf-8"))
     assert "secret_store" not in on_disk and on_disk["password"] == "p"
     assert load_config().ai_token == "t"
-    assert "no system keyring" in app_config.secret_storage(True)
+    assert "no system keyring" in app_config.storage_location(True)
     assert app_config.migrate_secrets() is False
 
 
@@ -260,7 +260,7 @@ def test_the_keyring_can_be_switched_off(tmp_path, monkeypatch, keyring):
     assert "secret_store" not in on_disk and on_disk["password"] == "p" and on_disk["ai_token"] == "t"
     assert keyring.secrets == {}  # not left behind
     assert load_config().password == "p"
-    assert "switched off" in app_config.secret_storage(app_config.uses_keyring(on_disk))
+    assert "switched off" in app_config.storage_location(app_config.uses_keyring(on_disk))
     assert app_config.migrate_secrets() is False  # plain text stays, as chosen
 
     save_raw_config({**read_raw_config(), "use_keyring": True})

@@ -26,7 +26,7 @@ from config import (  # noqa: E402
     AGENT_KEYS, AGENT_LABELS, AGENTS, AI_TOKEN_ENV, AUTO_RUN_LABELS, AUTO_RUN_MODES, CLI_AGENTS,
     CONFIG_FILE, DEFAULT_JUPYTER_FOLDER, EXAMPLE, KI_TOOLBOX_URL, OLLAMA_URL, Config, agent_of, ai_problem,
     SECRET_KEYS, ai_token, config_problem, jupyter_folder, jupyter_problem, keyring_problem, keyring_secrets,
-    limit_main_thread_wait, WINDOWS, read_raw_config, save_raw_config, secret_storage, uses_keyring,
+    limit_main_thread_wait, WINDOWS, read_raw_config, save_raw_config, storage_location, uses_keyring,
 )
 from jupyter import JupyterClient, JupyterError, split_url  # noqa: E402
 
@@ -764,7 +764,7 @@ class SettingsWindow(Gtk.Window):
         return False
 
     def _update_secret_note(self) -> None:
-        storage = secret_storage(self.use_keyring.get_active())
+        storage = storage_location(self.use_keyring.get_active())
         self.secret_note.set_text(f"Passwords and tokens are saved in: {storage}")
 
     def _recover_secrets(self) -> bool:

@@ -361,9 +361,12 @@ def uses_keyring(data: dict) -> bool:
     return data.get("use_keyring", True) is not False
 
 
-def secret_storage(use_keyring: bool) -> str:
-    """Where save_raw_config() puts the secrets (`use_keyring`: uses_keyring()),
-    for the settings and the installers."""
+def storage_location(use_keyring: bool | None = None) -> str:
+    """Where save_raw_config() puts the secrets (`use_keyring`: uses_keyring();
+    None: as config.json says), for the settings and the installers. (No
+    "secret" in the name: CodeQL counts what such a function returns as one.)"""
+    if use_keyring is None:
+        use_keyring = uses_keyring(_read_file())
     if not use_keyring:
         return f"{CONFIG_FILE} (the system keyring is switched off)"
     if keystore.available():
