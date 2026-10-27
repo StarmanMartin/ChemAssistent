@@ -27,7 +27,7 @@ def main() -> None:
     if agent_of(data) != "api":
         save_raw_config(data)
         print(f"Agent: {AGENT_LABELS[agent_of(data)]}; no API token needed.")
-        print(f"Passwords and tokens: {secret_storage(data)}")
+        print("Sensitive credentials status updated.")
         return
     if str(data.get("ai_token") or "").strip():
         print("AI token already set.")
@@ -41,7 +41,7 @@ def main() -> None:
         if key:
             data["ai_token"] = key
     save_raw_config(data)
-    print(f"Passwords and tokens: {secret_storage(data)}")
+    print("Sensitive credentials status updated.")
     if not str(data.get("ai_token") or "").strip():
         print("Warning: no AI token set. Enter it in ChemAssistent Settings (API token).")
 
