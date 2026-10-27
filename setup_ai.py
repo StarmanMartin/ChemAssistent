@@ -18,6 +18,12 @@ from config import (AGENT_LABELS, AI_TOKEN_ENV, KI_TOOLBOX_URL, agent_of, keyrin
                     save_raw_config, secret_storage, uses_keyring)
 
 
+def storage_note() -> str:
+    # The switch from the saved file, not from `data`: CodeQL counts anything
+    # derived from the dict that holds the token as a secret.
+    return f"Passwords and tokens are saved in: {secret_storage(uses_keyring(read_raw_config(secrets=False)))}"
+
+
 def main() -> None:
     data = read_raw_config()  # fills defaults and migrates the model id
     if keyring_problem():
@@ -27,7 +33,7 @@ def main() -> None:
     if agent_of(data) != "api":
         save_raw_config(data)
         print(f"Agent: {AGENT_LABELS[agent_of(data)]}; no API token needed.")
-        print(f"Passwords and tokens are saved in: {secret_storage(uses_keyring(data))}")
+        print(storage_note())
         return
     if str(data.get("ai_token") or "").strip():
         print("AI token already set.")
@@ -41,7 +47,7 @@ def main() -> None:
         if key:
             data["ai_token"] = key
     save_raw_config(data)
-    print(f"Passwords and tokens are saved in: {secret_storage(uses_keyring(data))}")
+    print(storage_note())
     if not str(data.get("ai_token") or "").strip():
         print("Warning: no AI token set. Enter it in ChemAssistent Settings (API token).")
 
