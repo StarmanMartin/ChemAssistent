@@ -3,8 +3,12 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
+
+import keystore
 
 
 APP_NAME = "chem-assistent"
@@ -82,6 +86,20 @@ AGENT_KEYS = {
 CLI_MODELS = {"claude": ["", "opus", "sonnet", "haiku"], "codex": [""]}
 # Used when ai_token is empty (older installs put the key there).
 AI_TOKEN_ENV = "KI_TOOLBOX_API_KEY"
+# The settings that are secrets. With a system keyring (keystore.py) they live
+# there, and config.json has them empty plus "secret_store": "keyring";
+# without one they stay in config.json (0600). CHEMOTION_PASSWORD and
+# KI_TOOLBOX_API_KEY still override both.
+SECRET_KEYS = {
+    "password": "Chemotion password",
+    "ai_token": "AI API token",
+    "jupyter_token": "JupyterLab token",
+    "jupyter_password": "JupyterLab password",
+}
+SECRET_STORE_KEY = "secret_store"
+KEYRING = "keyring"
+# After the keyring failed to answer, ask it again at most this often.
+SECRET_RETRY_S = 300
 # ai_model ids of the opencode era ("<provider>/<model>") -> KI-Toolbox ids.
 LEGACY_MODELS = {
     "complex-local": "alias.complex-local",
@@ -156,16 +174,24 @@ def ensure_example_config() -> None:
         write_private_json(CONFIG_FILE, EXAMPLE)
 
 
-def read_raw_config() -> dict:
-    """The config file as a dict, without validation (for the settings app)."""
+def _read_file() -> dict:
     ensure_example_config()
     try:
         data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
     except ValueError:
         data = {}
-    if not isinstance(data, dict):
-        data = {}
-    data = {**EXAMPLE, **data}
+    return data if isinstance(data, dict) else {}
+
+
+def read_raw_config() -> dict:
+    """The config file as a dict with the secrets from the keyring, without
+    validation (for the settings app)."""
+    data = {**EXAMPLE, **_read_file()}
+    if data.get(SECRET_STORE_KEY) == KEYRING:
+        for key, value in keyring_secrets().items():
+            # A value typed into config.json wins; migrate_secrets() moves it.
+            if not str(data.get(key) or ""):
+                data[key] = value
     model = str(data.get("ai_model") or "")
     if model.startswith("ki-toolbox/"):
         model = model.split("/", 1)[1]
@@ -235,8 +261,92 @@ def write_private_json(path: Path, data: object) -> None:
     os.replace(tmp, path)
 
 
+_secrets_lock = threading.Lock()
+# (config.json's stamp, monotonic time of a failure or None, its error, the secrets)
+_secrets_cache: tuple[object, float | None, str, dict[str, str]] | None = None
+
+
+def _file_stamp() -> tuple | None:
+    try:
+        stat = CONFIG_FILE.stat()
+    except OSError:
+        return None
+    return str(CONFIG_FILE), stat.st_ino, stat.st_mtime_ns, stat.st_size
+
+
+def keyring_secrets() -> dict[str, str]:
+    """The secrets in the keyring ("" for those it has none of).
+
+    load_config() runs for every snippet and in the job watcher, so they are
+    read again only when config.json changed (save_raw_config() rewrites it,
+    also in other processes) or, after a failure, every SECRET_RETRY_S.
+    """
+    global _secrets_cache
+    with _secrets_lock:
+        stamp = _file_stamp()
+        if _secrets_cache is not None and _secrets_cache[0] == stamp:
+            failed = _secrets_cache[1]
+            if failed is None or time.monotonic() - failed < SECRET_RETRY_S:
+                return dict(_secrets_cache[3])
+        secrets, failed, error = dict.fromkeys(SECRET_KEYS, ""), None, ""
+        try:
+            for key in SECRET_KEYS:
+                secrets[key] = keystore.read(key)
+        except keystore.KeystoreError as exc:
+            keystore.LOG.warning("Could not read the secrets from the keyring: %s", exc)
+            failed, error = time.monotonic(), str(exc)
+        _secrets_cache = (stamp, failed, error, secrets)
+        return dict(secrets)
+
+
+def keyring_problem() -> str:
+    """Why the last read of the keyring failed ("" when it worked): saving
+    the empty values read_raw_config() then had would delete the secrets."""
+    with _secrets_lock:
+        return _secrets_cache[2] if _secrets_cache is not None else ""
+
+
+def secret_storage() -> str:
+    """Where save_raw_config() puts the secrets, for the settings."""
+    if keystore.available():
+        return "system keyring"
+    return f"{CONFIG_FILE} (no system keyring: {keystore.problem()})"
+
+
 def save_raw_config(data: dict) -> None:
-    write_private_json(CONFIG_FILE, data)
+    """Write config.json; with a system keyring the secrets go there instead
+    (if storing one fails, all of them stay in the file)."""
+    global _secrets_cache
+    data = dict(data)
+    data.pop(SECRET_STORE_KEY, None)
+    secrets = {key: str(data.get(key) or "") for key in SECRET_KEYS}
+    in_keyring = False
+    if keystore.available():
+        try:
+            for key, value in secrets.items():
+                keystore.write(key, value, f"ChemAssistent: {SECRET_KEYS[key]}")
+        except keystore.KeystoreError as exc:
+            keystore.LOG.warning("Could not store the secrets in the keyring, keeping them in %s: %s",
+                                 CONFIG_FILE, exc)
+        else:
+            data.update(dict.fromkeys(SECRET_KEYS, ""))
+            data[SECRET_STORE_KEY] = KEYRING
+            in_keyring = True
+    with _secrets_lock:
+        write_private_json(CONFIG_FILE, data)
+        _secrets_cache = (_file_stamp(), None, "", secrets) if in_keyring else None
+
+
+def migrate_secrets() -> bool:
+    """Move secrets that config.json holds in plain text into the keyring;
+    True when it did."""
+    if not any(str(_read_file().get(key) or "") for key in SECRET_KEYS) or not keystore.available():
+        return False
+    data = read_raw_config()
+    if keyring_problem():  # the secrets already in the keyring are unknown
+        return False
+    save_raw_config(data)
+    return _read_file().get(SECRET_STORE_KEY) == KEYRING
 
 
 def config_problem(data: dict) -> str | None:

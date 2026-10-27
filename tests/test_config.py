@@ -87,6 +87,114 @@ def test_legacy_models_are_mapped(tmp_path, monkeypatch):
     assert read_raw_config()["ai_model"] == app_config.LEGACY_MODELS["claude-opus-5"]
 
 
+def use_config_file(tmp_path, monkeypatch):
+    path = config_file(tmp_path)
+    monkeypatch.setattr(app_config, "CONFIG_FILE", path)
+    monkeypatch.setattr(app_config, "CONFIG_DIR", tmp_path)
+    monkeypatch.delenv("CHEMOTION_PASSWORD", raising=False)
+    monkeypatch.delenv("KI_TOOLBOX_API_KEY", raising=False)
+    return path
+
+
+SETTINGS = {"url": "http://chemotion.test", "user": "u", "password": "p",
+            "ai_url": "http://ai.test/v1", "ai_model": "m", "ai_token": "t",
+            "jupyter_url": "http://j.test", "jupyter_token": "", "jupyter_password": "jp"}
+
+
+def test_secrets_go_into_the_keyring(tmp_path, monkeypatch, keyring):
+    path = use_config_file(tmp_path, monkeypatch)
+    save_raw_config(SETTINGS)
+
+    on_disk = json.loads(path.read_text(encoding="utf-8"))
+    assert on_disk["secret_store"] == "keyring"
+    assert all(on_disk[key] == "" for key in app_config.SECRET_KEYS)
+    assert on_disk["user"] == "u"
+    assert keyring.secrets == {"password": "p", "ai_token": "t", "jupyter_password": "jp"}
+
+    assert read_raw_config()["password"] == "p"
+    loaded = load_config()
+    assert (loaded.password, loaded.ai_token, loaded.jupyter_password) == ("p", "t", "jp")
+    # The environment still overrides the keyring.
+    monkeypatch.setenv("CHEMOTION_PASSWORD", "from the environment")
+    assert load_config().password == "from the environment"
+
+    # An emptied secret is deleted from the keyring.
+    save_raw_config({**read_raw_config(), "jupyter_password": "", "jupyter_token": "jt"})
+    assert keyring.secrets == {"password": "p", "ai_token": "t", "jupyter_token": "jt"}
+
+
+def test_secrets_are_read_again_when_the_file_changes(tmp_path, monkeypatch, keyring):
+    use_config_file(tmp_path, monkeypatch)
+    save_raw_config(SETTINGS)
+    keyring.secrets["password"] = "changed elsewhere"
+    assert read_raw_config()["password"] == "p"  # cached: config.json is unchanged
+    # Another process (the settings) saved: config.json changed.
+    write_private_json(app_config.CONFIG_FILE, {**json.loads(app_config.CONFIG_FILE.read_text()), "user": "v"})
+    assert read_raw_config()["password"] == "changed elsewhere"
+
+
+def test_a_failing_keyring_is_asked_again_later(tmp_path, monkeypatch, keyring):
+    use_config_file(tmp_path, monkeypatch)
+    save_raw_config(SETTINGS)
+    monkeypatch.setattr(app_config, "_secrets_cache", None)
+    keyring.fail = True
+    assert read_raw_config()["password"] == ""
+    assert "locked" in app_config.keyring_problem()
+    keyring.fail = False
+    assert read_raw_config()["password"] == ""  # not before SECRET_RETRY_S
+    monkeypatch.setattr(app_config, "SECRET_RETRY_S", 0)
+    assert read_raw_config()["password"] == "p"
+    assert app_config.keyring_problem() == ""
+
+
+def test_secrets_stay_in_the_file_without_a_keyring(tmp_path, monkeypatch, no_keyring):
+    path = use_config_file(tmp_path, monkeypatch)
+    save_raw_config({**SETTINGS, "secret_store": "keyring"})
+    on_disk = json.loads(path.read_text(encoding="utf-8"))
+    assert "secret_store" not in on_disk and on_disk["password"] == "p"
+    assert load_config().ai_token == "t"
+    assert "no system keyring" in app_config.secret_storage()
+    assert app_config.migrate_secrets() is False
+
+
+def test_secrets_stay_in_the_file_when_the_keyring_fails(tmp_path, monkeypatch, keyring):
+    path = use_config_file(tmp_path, monkeypatch)
+    keyring.fail = True
+    save_raw_config(SETTINGS)
+    on_disk = json.loads(path.read_text(encoding="utf-8"))
+    assert "secret_store" not in on_disk and on_disk["password"] == "p"
+    keyring.fail = False
+    keyring.secrets["password"] = "stale"  # not consulted without the marker
+    assert read_raw_config()["password"] == "p"
+
+
+def test_plain_text_secrets_are_migrated(tmp_path, monkeypatch, keyring):
+    path = use_config_file(tmp_path, monkeypatch)
+    write_private_json(path, SETTINGS)  # an older install
+    assert app_config.migrate_secrets() is True
+    on_disk = json.loads(path.read_text(encoding="utf-8"))
+    assert on_disk["secret_store"] == "keyring" and on_disk["password"] == ""
+    assert keyring.secrets["password"] == "p"
+    assert load_config().password == "p"
+    assert app_config.migrate_secrets() is False  # nothing left to move
+
+    # A value typed into config.json later wins over the keyring and is moved too.
+    write_private_json(path, {**on_disk, "ai_token": "new"})
+    assert read_raw_config()["ai_token"] == "new"
+    assert app_config.migrate_secrets() is True
+    assert keyring.secrets["ai_token"] == "new" and keyring.secrets["password"] == "p"
+
+
+def test_no_migration_while_the_keyring_cannot_be_read(tmp_path, monkeypatch, keyring):
+    path = use_config_file(tmp_path, monkeypatch)
+    save_raw_config(SETTINGS)
+    write_private_json(path, {**json.loads(path.read_text()), "ai_token": "new"})
+    keyring.fail = True
+    assert app_config.migrate_secrets() is False  # would have deleted the password
+    keyring.fail = False
+    assert keyring.secrets["password"] == "p"
+
+
 def test_the_config_file_is_private(tmp_path):
     path = config_file(tmp_path)
     write_private_json(path, {"password": "secret"})

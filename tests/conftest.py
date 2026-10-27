@@ -122,6 +122,52 @@ def lessons_file(tmp_path, monkeypatch) -> Path:
     return path
 
 
+class FakeKeyring:
+    """keystore's backend interface, in memory."""
+
+    def __init__(self) -> None:
+        self.secrets: dict[str, str] = {}
+        self.fail = False  # every call raises KeystoreError
+
+    def _check(self) -> None:
+        import keystore
+
+        if self.fail:
+            raise keystore.KeystoreError("the keyring is locked")
+
+    def read(self, key: str) -> str:
+        self._check()
+        return self.secrets.get(key, "")
+
+    def write(self, key: str, value: str, label: str) -> None:
+        self._check()
+        self.secrets[key] = value
+
+    def delete(self, key: str) -> None:
+        self._check()
+        self.secrets.pop(key, None)
+
+
+@pytest.fixture(autouse=True)
+def keyring(monkeypatch) -> FakeKeyring:
+    """Every test gets an empty in-memory keyring, never the user's."""
+    import keystore
+
+    store = FakeKeyring()
+    monkeypatch.setattr(keystore, "_store", store)
+    monkeypatch.setattr(app_config, "_secrets_cache", None)
+    return store
+
+
+@pytest.fixture
+def no_keyring(monkeypatch) -> None:
+    """A system without a keyring."""
+    import keystore
+
+    monkeypatch.setattr(keystore, "_store", False)
+    monkeypatch.setattr(keystore, "_problem", "no Secret Service")
+
+
 @pytest.fixture
 def fake_ai():
     """A scripted AI endpoint; add turns with `script_next()`."""
