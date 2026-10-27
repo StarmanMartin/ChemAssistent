@@ -10,6 +10,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import api_versions
 import lessons
 from config import FROZEN, SKILLS_DIR, WINDOWS, WORKSPACE_DIR
 
@@ -24,7 +25,7 @@ The user chats with you in a window; next to the chat is a result panel.
 
 How you work with Chemotion:
 - The only way to read or change data in Chemotion is the tool `execute_python`.
-  It runs Python code with the `chemotion_api` package (tag v312.0.1). A
+  It runs Python code with the `chemotion_api` package{{api_version}}. A
   logged-in `instance` (chemotion_api.Instance) is predefined: never log in, never
   ask for credentials, never use `requests` against the server directly.
 - Before you write code for the first time in a conversation, read `{REFERENCE}`
@@ -164,7 +165,9 @@ or outdated, e.g. after a chemotion_api update: verify before relying on them):
 
 def system_prompt(exchange: Path | None = None) -> str:
     """`exchange`: the conversation's exchange folder when JupyterLab is on."""
-    prompt = SYSTEM_PROMPT.format(skills=skill_lines(jupyter=exchange is not None))
+    tag = api_versions.installed_tag()
+    prompt = SYSTEM_PROMPT.format(skills=skill_lines(jupyter=exchange is not None),
+                                  api_version=f" (tag {tag})" if tag else "")
     prompt += JUPYTER_PROMPT.format(exchange=exchange) if exchange is not None else NO_JUPYTER_PROMPT
     learned = lessons.prompt_section()  # not formatted: lessons may contain braces
     return prompt + LESSONS_PROMPT + (LESSONS_HEADER + learned + "\n" if learned else "")

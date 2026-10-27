@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -11,6 +13,7 @@ gi.require_version("Gtk", "3.0")
 
 from gi.repository import GLib, Gtk  # type: ignore  # noqa: E402
 
+import api_versions  # noqa: E402
 import app_control  # noqa: E402
 import history  # noqa: E402
 import hotkey  # noqa: E402
@@ -27,6 +30,9 @@ from jupyter import JupyterClient, JupyterError, split_url  # noqa: E402
 
 PRGNAME = "chem-assistent-settings"
 ICON_FILE = Path(__file__).with_name("chem-assistent.svg")
+SETUP_WORKSPACE = Path(__file__).with_name("setup_workspace.sh")
+# Fetch, pip install and the API reference of another chemotion_api version.
+SETUP_TIMEOUT_S = 900
 
 # What the settings say below the agent's fields.
 AGENT_NOTES = {
@@ -98,6 +104,32 @@ class SettingsWindow(Gtk.Window):
         self.test_button.connect("clicked", self._on_test)
         grid.attach(self.test_button, 1, row, 1, 1)
         row += 1
+
+        # The chemotion_api release in the workspace (setup_workspace.sh, a
+        # bash script); the Windows bundle comes with its own.
+        installed = api_versions.installed_tag()
+        if WINDOWS:
+            version_label = Gtk.Label(label=installed or "unknown", xalign=0, selectable=True)
+            row = self._add_row(grid, row, "chemotion_api version", version_label)
+        else:
+            self.api_version = Gtk.ComboBoxText(hexpand=True)
+            self.api_version.connect("changed", lambda *_: self._update_api_button())
+            self.api_install_button = Gtk.Button(label="Install", sensitive=False)
+            self.api_install_button.set_tooltip_text(
+                "Fetch this version of chemotion_api, install it and rebuild the API reference "
+                "for the assistant. Applies to the next snippet and the next conversation.")
+            self.api_install_button.connect("clicked", self._on_install_api)
+            version_box = Gtk.Box(spacing=8)
+            version_box.pack_start(self.api_version, True, True, 0)
+            version_box.pack_start(self.api_install_button, False, False, 0)
+            row = self._add_row(grid, row, "chemotion_api version", version_box)
+            self.api_note = Gtk.Label(xalign=0, wrap=True, max_width_chars=60)
+            self.api_note.get_style_context().add_class("dim-label")
+            grid.attach(self.api_note, 1, row, 1, 1)
+            row += 1
+            self.api_busy, self.api_tags = True, []
+            self.api_note.set_text(f"Installed: {installed or 'unknown'}. Loading the released versions...")
+            threading.Thread(target=self._api_tags_worker, daemon=True).start()
 
         grid, row = self._page("AI agent", "The built-in agent against an OpenAI-compatible API or Ollama, "
                                            "or a CLI agent."), 1
@@ -532,6 +564,68 @@ class SettingsWindow(Gtk.Window):
         self.testing_jupyter = False
         self.jupyter_test_button.set_sensitive(True)
         self.jupyter_note.set_text(text)
+        return False
+
+    # --- chemotion_api version ----------------------------------------------
+    def _api_tags_worker(self) -> None:
+        try:
+            tags, error = api_versions.list_tags(), ""
+        except api_versions.VersionError as exc:
+            tags, error = [], str(exc)
+        GLib.idle_add(self._api_tags_done, tags, error)
+
+    def _api_tags_done(self, tags: list[str], error: str) -> bool:
+        self.api_busy = False
+        self.api_tags = tags
+        installed = api_versions.installed_tag()
+        self.api_version.remove_all()
+        for tag in tags:
+            self.api_version.append(tag, f"{tag} (installed)" if tag == installed else tag)
+        self.api_version.set_active_id(installed if installed in tags else (tags[0] if tags else None))
+        if error:
+            self.api_note.set_text(f"Installed: {installed or 'unknown'}. "
+                                   f"Cannot list the released versions: {error}")
+        elif not tags:
+            self.api_note.set_text(f"Installed: {installed or 'unknown'}. No released version found.")
+        else:
+            self.api_note.set_text(f"Installed: {installed or 'unknown'}. "
+                                   f"{len(tags)} released version{'' if len(tags) == 1 else 's'}.")
+        self._update_api_button()
+        return False
+
+    def _update_api_button(self) -> None:
+        self.api_install_button.set_sensitive(not self.api_busy and bool(self.api_version.get_active_id()))
+
+    def _on_install_api(self, _button: Gtk.Button) -> None:
+        tag = self.api_version.get_active_id()
+        if self.api_busy or not tag:
+            return
+        self.api_busy = True
+        self._update_api_button()
+        self.api_version.set_sensitive(False)
+        self.api_note.set_text(f"Installing chemotion_api {tag}, this takes a minute...")
+        threading.Thread(target=self._install_api_worker, args=(tag,), daemon=True).start()
+
+    def _install_api_worker(self, tag: str) -> None:
+        # Runs in a thread: no GTK calls here. sys.executable is the app's venv.
+        command = [str(SETUP_WORKSPACE), str(SETUP_WORKSPACE.parent), sys.executable, tag]
+        try:
+            done = subprocess.run(command, capture_output=True, text=True, timeout=SETUP_TIMEOUT_S)
+            if done.returncode == 0:
+                text = done.stdout.strip().splitlines()[-1]  # "chemotionapi <tag> (<commit>) installed, ..."
+            else:
+                lines = (done.stderr or done.stdout).strip().splitlines()
+                text = f"Installing {tag} failed: {lines[-1] if lines else f'exit code {done.returncode}'}"
+        except subprocess.TimeoutExpired:
+            text = f"Installing {tag} took longer than {SETUP_TIMEOUT_S} s and was stopped."
+        except OSError as exc:
+            text = f"Installing {tag} failed: {exc}"
+        GLib.idle_add(self._install_api_done, text)
+
+    def _install_api_done(self, text: str) -> bool:
+        self.api_version.set_sensitive(True)
+        self._api_tags_done(self.api_tags, "")  # moves "(installed)"
+        self.api_note.set_text(text)
         return False
 
     # --- Test connection ----------------------------------------------------

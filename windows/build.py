@@ -158,7 +158,8 @@ def main() -> int:
     run([*pip, "-r", ROOT / "requirements.txt", PYINSTALLER, *chemotionapi_dependencies(checkout)], env)
     run([*pip, "--no-deps", "--force-reinstall", checkout], env)
 
-    run([python, ROOT / "gen_api_reference.py", checkout, WORKSPACE / "CHEMOTION_API.md"], shim_env)
+    run([python, ROOT / "gen_api_reference.py", checkout, WORKSPACE / "CHEMOTION_API.md", CHEMOTION_REF], shim_env)
+    (WORKSPACE / "chemotionapi.tag").write_text(CHEMOTION_REF + "\n", encoding="utf-8")
     run([python, ROOT / "windows" / "make_ico.py", ROOT / "chem-assistent.svg", BUILD / "chem-assistent.ico"], env)
     run([python, "-m", "PyInstaller", "--noconfirm", "--clean",
          "--distpath", BUILD / "dist", "--workpath", BUILD / "pyinstaller",

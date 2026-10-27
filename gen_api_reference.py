@@ -1,12 +1,12 @@
 """Build CHEMOTION_API.md for the AI agent from the chemotionapi docs.
 
-The Sphinx docs of the chemotionapi repository (tag v312.0.1) are mostly
+The Sphinx docs of the chemotionapi repository are mostly
 autodoc directives, so this script walks docs/index.rst in toctree order,
 keeps the prose and code blocks, and replaces every `autoclass`,
 `automodule` and `autoenum` directive with the signatures and docstrings of
 the installed chemotion_api package (the same thing Sphinx would render).
 
-Usage: python gen_api_reference.py <chemotionapi checkout> <output.md>
+Usage: python gen_api_reference.py <chemotionapi checkout> <output.md> [<tag>]
 """
 from __future__ import annotations
 
@@ -201,11 +201,12 @@ def toctree(index: Path) -> list[str]:
     return names
 
 
-def build(repo: Path) -> str:
+def build(repo: Path, tag: str = "") -> str:
     docs = repo / "docs"
+    version = f" (tag {tag})" if tag else ""
     parts = [
-        "# chemotion_api reference (tag v312.0.1)",
-        "Generated from the docs of https://github.com/Chemotion/chemotionapi (tag v312.0.1) "
+        f"# chemotion_api reference{version}",
+        f"Generated from the docs of https://github.com/Chemotion/chemotionapi{version} "
         "and the docstrings of the installed package. The full source is in ./chemotionapi/.",
     ]
     for name in toctree(docs / "index.rst"):
@@ -216,10 +217,10 @@ def build(repo: Path) -> str:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 3:
+    if len(argv) not in (3, 4):
         print(__doc__.strip().splitlines()[-1], file=sys.stderr)
         return 2
-    Path(argv[2]).write_text(build(Path(argv[1])), encoding="utf-8")
+    Path(argv[2]).write_text(build(Path(argv[1]), *argv[3:]), encoding="utf-8")
     return 0
 
 
