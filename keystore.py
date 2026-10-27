@@ -81,8 +81,10 @@ class CredentialManager:
     """Generic credentials of the Windows Credential Manager."""
 
     CRED_TYPE_GENERIC = 1
-    # Roams with the user profile, like config.json in %APPDATA%.
-    CRED_PERSIST_ENTERPRISE = 3
+    # Roams with a roaming profile, like config.json in %APPDATA% (without
+    # one, e.g. a local or Microsoft account, Windows keeps it locally). Where
+    # a policy refuses it, this computer only.
+    PERSIST = (3, 2)  # CRED_PERSIST_ENTERPRISE, CRED_PERSIST_LOCAL_MACHINE
     ERROR_NOT_FOUND = 1168
     # CRED_MAX_CREDENTIAL_BLOB_SIZE
     MAX_BLOB = 5 * 512
@@ -147,13 +149,16 @@ class CredentialManager:
         if len(blob) > self.MAX_BLOB:
             raise KeystoreError(f"{key} is too long for the Credential Manager")
         buffer = ctypes.create_string_buffer(blob, len(blob))
-        credential = self.CREDENTIAL(
-            Type=self.CRED_TYPE_GENERIC, TargetName=TARGET_PREFIX + key, Comment=label,
-            CredentialBlobSize=len(blob), CredentialBlob=ctypes.cast(buffer, ctypes.POINTER(ctypes.c_char)),
-            Persist=self.CRED_PERSIST_ENTERPRISE, UserName=key,
-        )
-        if not self.cred_write(ctypes.byref(credential), 0):
-            raise self._error("store", key)
+        for persist in self.PERSIST:
+            credential = self.CREDENTIAL(
+                Type=self.CRED_TYPE_GENERIC, TargetName=TARGET_PREFIX + key, Comment=label,
+                CredentialBlobSize=len(blob), CredentialBlob=ctypes.cast(buffer, ctypes.POINTER(ctypes.c_char)),
+                Persist=persist, UserName=key,
+            )
+            if self.cred_write(ctypes.byref(credential), 0):
+                return
+        # E.g. ERROR_NO_SUCH_LOGON_SESSION: a network logon (SSH) has no credential set.
+        raise self._error("store", key)
 
     def delete(self, key: str) -> None:
         if not self.cred_delete(TARGET_PREFIX + key, self.CRED_TYPE_GENERIC, 0):

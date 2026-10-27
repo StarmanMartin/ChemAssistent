@@ -153,7 +153,7 @@ def test_secrets_stay_in_the_file_without_a_keyring(tmp_path, monkeypatch, no_ke
     on_disk = json.loads(path.read_text(encoding="utf-8"))
     assert "secret_store" not in on_disk and on_disk["password"] == "p"
     assert load_config().ai_token == "t"
-    assert "no system keyring" in app_config.secret_storage()
+    assert "no system keyring" in app_config.secret_storage({})
     assert app_config.migrate_secrets() is False
 
 
@@ -207,3 +207,57 @@ def test_config_is_hashable():
     config = app_config.Config(url="u", user="x", password="p", jupyter_url="http://j")
     assert hash(config) == hash(app_config.Config(url="u", user="x", password="p", jupyter_url="http://j"))
     assert {("conversation", config): 1}[("conversation", config)] == 1
+
+
+def test_setup_ai_moves_the_secrets_into_the_keyring(tmp_path, monkeypatch, keyring, capsys):
+    import setup_ai
+
+    path = use_config_file(tmp_path, monkeypatch)
+    write_private_json(path, {**SETTINGS, "ai_url": app_config.KI_TOOLBOX_URL})  # an older install
+    setup_ai.main()
+    assert "system keyring" in capsys.readouterr().out
+    on_disk = json.loads(path.read_text(encoding="utf-8"))
+    assert on_disk["secret_store"] == "keyring" and on_disk["ai_token"] == "" and on_disk["password"] == ""
+    assert keyring.secrets["ai_token"] == "t" and keyring.secrets["password"] == "p"
+
+
+def test_setup_ai_takes_the_token_from_the_environment(tmp_path, monkeypatch, keyring):
+    import setup_ai
+
+    use_config_file(tmp_path, monkeypatch)
+    save_raw_config({**SETTINGS, "ai_token": ""})
+    monkeypatch.setenv("KI_TOOLBOX_API_KEY", "from the environment")
+    setup_ai.main()
+    assert keyring.secrets["ai_token"] == "from the environment"
+
+
+def test_setup_ai_leaves_the_config_while_the_keyring_fails(tmp_path, monkeypatch, keyring, capsys):
+    import setup_ai
+
+    path = use_config_file(tmp_path, monkeypatch)
+    save_raw_config(SETTINGS)
+    before = path.read_text(encoding="utf-8")
+    monkeypatch.setattr(app_config, "_secrets_cache", None)
+    keyring.fail = True
+    setup_ai.main()
+    assert "could not read the system keyring" in capsys.readouterr().out
+    assert path.read_text(encoding="utf-8") == before
+    assert keyring.secrets["password"] == "p"
+
+
+def test_the_keyring_can_be_switched_off(tmp_path, monkeypatch, keyring):
+    path = use_config_file(tmp_path, monkeypatch)
+    save_raw_config(SETTINGS)
+    assert keyring.secrets["password"] == "p"
+
+    save_raw_config({**read_raw_config(), "use_keyring": False})
+    on_disk = json.loads(path.read_text(encoding="utf-8"))
+    assert "secret_store" not in on_disk and on_disk["password"] == "p" and on_disk["ai_token"] == "t"
+    assert keyring.secrets == {}  # not left behind
+    assert load_config().password == "p"
+    assert "switched off" in app_config.secret_storage(on_disk)
+    assert app_config.migrate_secrets() is False  # plain text stays, as chosen
+
+    save_raw_config({**read_raw_config(), "use_keyring": True})
+    assert keyring.secrets["password"] == "p"
+    assert json.loads(path.read_text(encoding="utf-8"))["password"] == ""

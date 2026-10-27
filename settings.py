@@ -20,7 +20,8 @@ from cli_agent import check_command, cli_models  # noqa: E402
 from config import (  # noqa: E402
     AGENT_KEYS, AGENT_LABELS, AGENTS, AI_TOKEN_ENV, AUTO_RUN_LABELS, AUTO_RUN_MODES, CLI_AGENTS,
     CONFIG_FILE, DEFAULT_JUPYTER_FOLDER, EXAMPLE, KI_TOOLBOX_URL, OLLAMA_URL, Config, agent_of, ai_problem,
-    ai_token, config_problem, jupyter_folder, jupyter_problem, WINDOWS, read_raw_config, save_raw_config,
+    ai_token, config_problem, jupyter_folder, jupyter_problem, keyring_problem, keyring_secrets, WINDOWS,
+    read_raw_config, save_raw_config, secret_storage, uses_keyring,
 )
 from jupyter import JupyterClient, JupyterError, split_url  # noqa: E402
 
@@ -60,6 +61,8 @@ class SettingsWindow(Gtk.Window):
         self.connect("destroy", Gtk.main_quit)
 
         self.data = read_raw_config()
+        # The secret fields are empty then; _recover_secrets() must read them before a save.
+        self.keyring_failed = bool(keyring_problem())
         self.testing = False
 
         # One tab per topic: the whole form does not fit on small screens.
@@ -88,6 +91,19 @@ class SettingsWindow(Gtk.Window):
             note.get_style_context().add_class("dim-label")
             grid.attach(note, 1, row, 1, 1)
             row += 1
+
+        # Passwords and tokens of all tabs (config.SECRET_KEYS).
+        self.use_keyring = Gtk.Switch(halign=Gtk.Align.START)
+        self.use_keyring.set_active(uses_keyring(self.data))
+        self.use_keyring.set_tooltip_text("Off: all passwords and tokens are saved in plain text in "
+                                          f"{CONFIG_FILE} (readable only by you), and removed from the keyring.")
+        self.use_keyring.connect("notify::active", lambda *_: self._update_secret_note())
+        row = self._add_row(grid, row, "Use the system keyring", self.use_keyring)
+        self.secret_note = Gtk.Label(xalign=0, wrap=True, max_width_chars=60, selectable=True)
+        self.secret_note.get_style_context().add_class("dim-label")
+        grid.attach(self.secret_note, 1, row, 1, 1)
+        row += 1
+        self._update_secret_note()
 
         self.verify_tls = Gtk.Switch(halign=Gtk.Align.START)
         self.verify_tls.set_active(bool(self.data.get("verify_tls", True)))
@@ -271,6 +287,9 @@ class SettingsWindow(Gtk.Window):
         self.status = Gtk.Label(xalign=0, wrap=True, selectable=True, max_width_chars=60)
         self.status.set_text(str(CONFIG_FILE))
         self.status.get_style_context().add_class("dim-label")
+        if self.keyring_failed:
+            self.status.set_text(f"Could not read the passwords and tokens from the system keyring "
+                                 f"({keyring_problem()}). Unlock it and open the settings again.")
 
         close_button = Gtk.Button(label="Close")
         close_button.connect("clicked", lambda *_: self.destroy())
@@ -439,6 +458,7 @@ class SettingsWindow(Gtk.Window):
             "jupyter_password": self.jupyter_password.get_text(),
             "jupyter_folder": self.jupyter_folder.get_text().strip(),
             "jupyter_verify_tls": self.jupyter_verify_tls.get_active(),
+            "use_keyring": self.use_keyring.get_active(),
         }
         self._store_agent_fields()
         values.update(self.agent_values)
@@ -573,7 +593,35 @@ class SettingsWindow(Gtk.Window):
         self._set_status(text)
         return False
 
+    def _update_secret_note(self) -> None:
+        storage = secret_storage({"use_keyring": self.use_keyring.get_active()})
+        self.secret_note.set_text(f"Passwords and tokens are saved in: {storage}")
+
+    def _recover_secrets(self) -> bool:
+        """Read the keyring again after it failed when the window opened: the
+        secret fields were empty then, and saving them would delete the
+        secrets. Fills the fields that are still empty; False if it fails again."""
+        secrets = keyring_secrets(fresh=True)
+        problem = keyring_problem()
+        if problem:
+            self._set_status(f"Not saved: the passwords and tokens in the system keyring cannot be read "
+                             f"({problem}), and saving would delete them.")
+            return False
+        for key, entry in (("password", self.password), ("jupyter_token", self.jupyter_token),
+                           ("jupyter_password", self.jupyter_password)):
+            if not entry.get_text():
+                entry.set_text(secrets[key])
+        self._store_agent_fields()
+        if not self.agent_values.get("ai_token"):
+            self.agent_values["ai_token"] = secrets["ai_token"]
+            if self.current_agent == "api":
+                self.ai_token.set_text(secrets["ai_token"])
+        self.keyring_failed = False
+        return True
+
     def _on_save(self, _button: Gtk.Button) -> None:
+        if self.keyring_failed and not self._recover_secrets():
+            return
         values = self._form_values()
         if values["hotkey"] and not Gtk.accelerator_parse(values["hotkey"])[0]:
             self._set_status(f"“{values['hotkey']}” is not a key: write it like <Control>space or <Super>c.")

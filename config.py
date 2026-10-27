@@ -88,7 +88,7 @@ CLI_MODELS = {"claude": ["", "opus", "sonnet", "haiku"], "codex": [""]}
 AI_TOKEN_ENV = "KI_TOOLBOX_API_KEY"
 # The settings that are secrets. With a system keyring (keystore.py) they live
 # there, and config.json has them empty plus "secret_store": "keyring";
-# without one they stay in config.json (0600). CHEMOTION_PASSWORD and
+# without one, or with "use_keyring": false, they stay in config.json (0600). CHEMOTION_PASSWORD and
 # KI_TOOLBOX_API_KEY still override both.
 SECRET_KEYS = {
     "password": "Chemotion password",
@@ -165,6 +165,7 @@ EXAMPLE = {
     "claude_model": "",
     "codex_command": "codex",
     "codex_model": "",
+    "use_keyring": True,
 }
 
 
@@ -274,17 +275,18 @@ def _file_stamp() -> tuple | None:
     return str(CONFIG_FILE), stat.st_ino, stat.st_mtime_ns, stat.st_size
 
 
-def keyring_secrets() -> dict[str, str]:
+def keyring_secrets(fresh: bool = False) -> dict[str, str]:
     """The secrets in the keyring ("" for those it has none of).
 
-    load_config() runs for every snippet and in the job watcher, so they are
-    read again only when config.json changed (save_raw_config() rewrites it,
-    also in other processes) or, after a failure, every SECRET_RETRY_S.
+    load_config() runs for every snippet and in the job watcher, so unless
+    `fresh`, they are read again only when config.json changed
+    (save_raw_config() rewrites it, also in other processes) or, after a
+    failure, every SECRET_RETRY_S.
     """
     global _secrets_cache
     with _secrets_lock:
         stamp = _file_stamp()
-        if _secrets_cache is not None and _secrets_cache[0] == stamp:
+        if not fresh and _secrets_cache is not None and _secrets_cache[0] == stamp:
             failed = _secrets_cache[1]
             if failed is None or time.monotonic() - failed < SECRET_RETRY_S:
                 return dict(_secrets_cache[3])
@@ -306,22 +308,33 @@ def keyring_problem() -> str:
         return _secrets_cache[2] if _secrets_cache is not None else ""
 
 
-def secret_storage() -> str:
-    """Where save_raw_config() puts the secrets, for the settings."""
+def uses_keyring(data: dict) -> bool:
+    """Whether the user lets save_raw_config() use the keyring (config key use_keyring)."""
+    return data.get("use_keyring", True) is not False
+
+
+def secret_storage(data: dict) -> str:
+    """Where save_raw_config() puts the secrets of `data`, for the settings."""
+    if not uses_keyring(data):
+        return f"{CONFIG_FILE} (the system keyring is switched off)"
     if keystore.available():
-        return "system keyring"
+        return "Windows Credential Manager" if WINDOWS else "system keyring"
     return f"{CONFIG_FILE} (no system keyring: {keystore.problem()})"
 
 
 def save_raw_config(data: dict) -> None:
     """Write config.json; with a system keyring the secrets go there instead
-    (if storing one fails, all of them stay in the file)."""
+    (if storing one fails, all of them stay in the file). With use_keyring
+    off they go into the file and leave the keyring."""
     global _secrets_cache
     data = dict(data)
     data.pop(SECRET_STORE_KEY, None)
     secrets = {key: str(data.get(key) or "") for key in SECRET_KEYS}
     in_keyring = False
-    if keystore.available():
+    if not uses_keyring(data):
+        if _read_file().get(SECRET_STORE_KEY) == KEYRING:
+            _forget_keyring_secrets()
+    elif keystore.available():
         try:
             for key, value in secrets.items():
                 keystore.write(key, value, f"ChemAssistent: {SECRET_KEYS[key]}")
@@ -337,10 +350,21 @@ def save_raw_config(data: dict) -> None:
         _secrets_cache = (_file_stamp(), None, "", secrets) if in_keyring else None
 
 
+def _forget_keyring_secrets() -> None:
+    """Delete the secrets from the keyring (the user switched it off)."""
+    try:
+        for key in SECRET_KEYS:
+            keystore.delete(key)
+    except keystore.KeystoreError as exc:
+        keystore.LOG.warning("Could not delete the secrets from the keyring: %s", exc)
+
+
 def migrate_secrets() -> bool:
     """Move secrets that config.json holds in plain text into the keyring;
     True when it did."""
-    if not any(str(_read_file().get(key) or "") for key in SECRET_KEYS) or not keystore.available():
+    raw = _read_file()
+    if (not any(str(raw.get(key) or "") for key in SECRET_KEYS) or not uses_keyring(raw)
+            or not keystore.available()):
         return False
     data = read_raw_config()
     if keyring_problem():  # the secrets already in the keyring are unknown

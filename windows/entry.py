@@ -22,6 +22,23 @@ from pathlib import Path
 RUNNER_PROGRAM = "chem-assistent-runner"
 
 
+def keystore_problems(keystore) -> list[str]:
+    """Store, read and delete a secret in the Credential Manager."""
+    key, value = "self-test", "Self-test \u00e4\u20ac"
+    try:
+        keystore.write(key, value, "ChemAssistent: self-test")
+        try:
+            if keystore.read(key) != value:
+                return ["the Credential Manager returned another secret"]
+        finally:
+            keystore.delete(key)
+        if keystore.read(key):
+            return ["the Credential Manager did not delete a secret"]
+    except keystore.KeystoreError as exc:
+        return [f"the Credential Manager does not work: {exc}"]
+    return []
+
+
 def self_test() -> int:
     """Import everything the app needs and load the data files GTK finds at
     run time (typelibs, the SVG loader, GtkSourceView's language specs)."""
@@ -33,6 +50,7 @@ def self_test() -> int:
 
     import app  # noqa: F401  (GTK, agent, history, ipc, ...)
     import chemotion_api  # noqa: F401
+    import keystore
     import mcp_bridge  # noqa: F401
     import settings  # noqa: F401
     import workspace
@@ -48,6 +66,7 @@ def self_test() -> int:
         problems.append(f"{workspace.REFERENCE} is missing in {workspace.WORKSPACE_DIR}")
     if not workspace.skill_lines():
         problems.append("the chemotionapi skills are missing")
+    problems += keystore_problems(keystore)
     for problem in problems:
         print(f"Self-test: {problem}", file=sys.stderr)
     if not problems:

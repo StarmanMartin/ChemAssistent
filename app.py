@@ -90,7 +90,8 @@ from jobs import ACTIVE, FINISHED, REPORT_HEADER, USER_TEXT, Jobs, duration  # n
 from jupyter import JupyterBridge, JupyterError  # noqa: E402
 from config import (  # noqa: E402
     AGENT_SHORT, AUTO_RUN_LABELS, AUTO_RUN_MODES, CLI_AGENTS, CONFIG_FILE, STATE_DIR, WINDOWS,
-    WORKSPACE_DIR, Config, ai_problem, jupyter_problem, load_config, model_name, read_raw_config,
+    WORKSPACE_DIR, Config, ai_problem, jupyter_problem, load_config, migrate_secrets, model_name,
+    read_raw_config,
 )
 
 
@@ -2432,6 +2433,15 @@ class ChemAssistentApp:
         Gtk.main()
 
 
+def _migrate_secrets() -> None:
+    """Older versions kept the passwords and tokens in config.json."""
+    try:
+        if migrate_secrets():
+            LOG.info("Moved the passwords and tokens from %s into the system keyring.", CONFIG_FILE)
+    except OSError as exc:
+        LOG.warning("Could not move the passwords and tokens into the system keyring: %s", exc)
+
+
 def main() -> None:
     log_format = "%(asctime)s %(levelname)s %(name)s: %(message)s"
     if WINDOWS:
@@ -2450,6 +2460,8 @@ def main() -> None:
     GLib.set_prgname(APP_ID)
     if WINDOWS:
         app_control.write_pid()
+    # Not on the main loop: the keyring may ask to be unlocked.
+    threading.Thread(target=_migrate_secrets, name="migrate-secrets", daemon=True).start()
     try:
         ChemAssistentApp(show_prompt).run()
     except Exception:
