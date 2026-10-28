@@ -38,7 +38,7 @@ function Install-ChemAssistent([string]$Package, [bool]$NoAutostart) {
     $Repo = if ($env:CHEM_ASSISTENT_REPO) { $env:CHEM_ASSISTENT_REPO } else { "https://github.com/StarmanMartin/ChemAssistent" }
     # The workflow replaces 'main' in its copy for the tag "windows-<branch>";
     # keep this line exactly as it is.
-    $DefaultRef = 'main'
+    $DefaultRef = '19-tabs-for-code-and-results'
     $Ref = if ($env:CHEM_ASSISTENT_REF) { $env:CHEM_ASSISTENT_REF } else { $DefaultRef }
     $Tag = "windows-" + ($Ref -replace "/", "-")
     $Asset = "ChemAssistent-windows-x64.zip"
