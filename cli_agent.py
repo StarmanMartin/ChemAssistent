@@ -31,7 +31,7 @@ from pathlib import Path
 
 import issues
 import workspace
-from agent import ATTACHMENT_NOTE, AgentError, describe_attachment, tool_summary
+from agent import ATTACHMENT_NOTE, AgentError, base_roots, describe_attachment, tool_summary
 from config import AGENT_LABELS, AUTO_RUN_MODES, CLI_MODELS, STATE_DIR, WINDOWS, WORKSPACE_DIR, Config, write_private_json
 
 
@@ -148,7 +148,9 @@ class CliAgent:
         self.session_token = secrets.token_urlsafe(24)
         # Like Agent.messages (history.py, ChatPanel.replay()): plain user and assistant texts.
         self.messages: list[dict] = [{"role": "system", "content": system_prompt}]
-        self.roots: list[Path] = [WORKSPACE_DIR.resolve()]
+        # The read-only tools of mcp_bridge.py: as Agent.roots and Agent.attachments.
+        self.roots: list[Path] = base_roots(config.history_access)
+        self.attachments: list[Path] = []
         # The CLI's own session id (claude session_id, codex thread_id); resumed by later turns.
         self.session = ""
         self.cancelled = threading.Event()
@@ -173,8 +175,8 @@ class CliAgent:
         self.messages = self.messages[:1] + [m for m in messages if isinstance(m, dict) and m.get("role") != "system"]
         for item in roots:
             path = Path(item)
-            if path.exists() and path not in self.roots:
-                self.roots.append(path)
+            if path.exists():
+                self.attach(path)
         self.session = session
         if not session:
             lines = []
@@ -199,6 +201,12 @@ class CliAgent:
         except OSError:
             pass
 
+    def attach(self, path: Path) -> None:
+        """A file or folder the user attached: readable from now on."""
+        if path not in self.roots:
+            self.roots.append(path)
+            self.attachments.append(path)
+
     def send(self, text: str, attachments: list[str] | tuple[str, ...] = ()) -> None:
         self.busy = True
         self.cancelled.clear()
@@ -206,8 +214,7 @@ class CliAgent:
         for item in attachments:
             path = Path(item).resolve()
             if path.exists():
-                if path not in self.roots:
-                    self.roots.append(path)
+                self.attach(path)
                 lines.append(describe_attachment(path))
         if lines:
             text += ATTACHMENT_NOTE + "\n".join(lines)

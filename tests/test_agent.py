@@ -138,6 +138,65 @@ def test_grep_and_list_files(fake_ai, ai_config, workspace, recorder):
     assert "CHEMOTION_API.md" in results[1] and "chemotionapi/" in results[1]
 
 
+def test_saved_conversations_are_readable_when_allowed(fake_ai, ai_config, workspace, recorder, state_dir):
+    import dataclasses
+    import history
+    import workspace as workspace_module
+
+    history.save("20261020-101500-abcdef", "Samples of Main Test", "test-model",
+                 [{"role": "user", "content": "Which samples are in Main Test?"},
+                  {"role": "assistant", "content": "MS-17 Benzene is the only one."}], [])
+    folder = str(state_dir / "history")
+    turns = (
+        {"tool_calls": [{"name": "grep", "arguments": {"pattern": '^  "title":', "path": folder}},
+                        {"name": "read_file", "arguments": {"path": f"{folder}/20261020-101500-abcdef.json"}}]},
+        {"content": "Last time: MS-17."},
+    )
+    fake_ai.script_next(*turns)
+    agent = make_agent(dataclasses.replace(ai_config, history_access=True), recorder)
+
+    agent.send("What did we find last week?")
+
+    results = [m["content"] for m in agent.messages if m.get("role") == "tool"]
+    assert "Samples of Main Test" in results[0]
+    assert "MS-17 Benzene" in results[1]
+    # The prompt says where they are and that they are read only on request.
+    prompt = workspace_module.system_prompt(history=True)
+    assert folder in prompt and "only when the user asks" in prompt
+
+    # The default: the saved conversations are no root, and the prompt does not mention them.
+    fake_ai.script_next(*turns)
+    agent = make_agent(ai_config, recorder)
+    agent.send("What did we find last week?")
+    results = [m["content"] for m in agent.messages if m.get("role") == "tool"]
+    assert len(results) == 2 and all("outside the workspace" in result for result in results)
+    assert "MS-17 Benzene" not in "".join(results)
+    assert folder not in workspace_module.system_prompt()
+
+
+def test_attachments_are_kept_apart_from_the_agents_own_roots(fake_ai, ai_config, workspace, recorder, tmp_path,
+                                                             skills_dir):
+    """The app saves agent.attachments with the conversation, never the
+    workspace, the exchange folder or the skills."""
+    import dataclasses
+
+    note = tmp_path / "note.txt"
+    note.write_text("see MS-17", encoding="utf-8")
+    fake_ai.script_next({"content": "Noted."})
+    exchange = tmp_path / "exchange"
+    agent = make_agent(dataclasses.replace(ai_config, history_access=True), recorder, exchange=exchange)
+    assert agent.attachments == []
+
+    agent.send("Keep this", attachments=[str(note)])
+
+    assert agent.attachments == [note.resolve()]
+    assert {workspace.resolve(), exchange.resolve(), skills_dir.resolve()} < set(agent.roots)
+    fake_ai.script_next({"content": "Back."})
+    again = make_agent(ai_config, recorder)
+    again.restore(agent.messages[1:], [str(path) for path in agent.attachments] + [str(tmp_path / "gone.txt")])
+    assert again.attachments == [note.resolve()]  # what exists; the rest of the roots are its own
+
+
 def test_paths_outside_the_workspace_are_refused(fake_ai, ai_config, workspace, recorder, tmp_path):
     outside = tmp_path / "secret.txt"
     outside.write_text("password", encoding="utf-8")

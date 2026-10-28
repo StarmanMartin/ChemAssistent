@@ -342,6 +342,13 @@ class SettingsWindow(Gtk.Window):
         row += 1
 
         grid, row = general_grid, general_row
+        self.history_access = Gtk.Switch(halign=Gtk.Align.START)
+        self.history_access.set_active(bool(self.data.get("history_access", False)))
+        self.history_access.set_tooltip_text(
+            "On: when you ask about earlier conversations, the assistant may search and read the saved "
+            "ones (all of them, also those held with another model); what it reads goes to the AI model. "
+            "It never reads them on its own.")
+        row = self._add_row(grid, row, "Assistant may read earlier conversations", self.history_access)
         self.clear_history_button = Gtk.Button(label="Clear history")
         self.clear_history_button.set_tooltip_text(f"Delete the saved conversations in {history.HISTORY_DIR}")
         self.clear_history_button.connect("clicked", self._on_clear_history)
@@ -552,6 +559,7 @@ class SettingsWindow(Gtk.Window):
             "jupyter_verify_tls": self.jupyter_verify_tls.get_active(),
             "developer_mode": self.developer_mode.get_active(),
             "github_token": self.github_token.get_text().strip(),
+            "history_access": self.history_access.get_active(),
             "use_keyring": self.use_keyring.get_active(),
         }
         self._store_agent_fields()

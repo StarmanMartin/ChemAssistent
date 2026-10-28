@@ -107,8 +107,17 @@ DARK_UI_ICON_FILE = HERE / f"{PANEL_ICON}.svg"
 # Keeps the runner (a console program) from opening a console window on
 # Windows. 0 elsewhere (creationflags must be 0 there).
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-GROW_STEPS = 14
-GROW_STEP_MS = 16
+# _grow(then=...): how long to wait for the window's new size at most.
+GROW_WAIT_MS = 1000
+# Continuing a conversation shows only its end: GTK lays out every wrapped
+# label again at each width change, and a long history froze the window for
+# seconds. About REPLAY_CHARS of text (at most REPLAY_ITEMS messages and
+# notes) is shown; "Show earlier messages" adds the same amount per click. A
+# saved answer longer than REPLAY_MESSAGE_CHARS shows its start and a button
+# for the rest.
+REPLAY_CHARS = 10000
+REPLAY_ITEMS = 60
+REPLAY_MESSAGE_CHARS = 2000
 # The chat's share of the window width; the results get the rest.
 CHAT_SHARE = 0.45
 # Header icon for each auto-run mode (config.AUTO_RUN_MODES).
@@ -124,8 +133,10 @@ MAX_TABLE_COLUMNS = 12
 # Figures from JupyterLab are scaled down to this width in the result tab.
 MAX_IMAGE_WIDTH = 720
 MAX_CELL_CHARS = 120
-# Result tabs kept in the panel; older ones are dropped.
+# Tabs (code + result) kept in the panel; older finished ones are dropped.
 MAX_RESULT_TABS = 10
+# The Links tab's sections, in this order.
+LINK_SECTIONS = ("Chemotion", "JupyterLab", "Exchange folder")
 # An ipc request; a CLI agent's execute_python request carries its code.
 MAX_REQUEST_BYTES = 2_000_000
 # Old conversations the prompt offers to continue.
@@ -175,6 +186,18 @@ CSS = b"""
     color: #ffffff;
     font-weight: bold;
     font-size: 14px;
+}
+.tab-state.waiting {
+    color: #d6da1e;
+}
+.tab-state.running {
+    color: #ffffff;
+}
+.tab-state.done {
+    color: #2a9fd8;
+}
+.tab-state.failed {
+    color: #c0505a;
 }
 .request-card {
     background: #2a2c30;
@@ -649,6 +672,26 @@ def result_widget(value) -> Gtk.Widget:
     return text_block(text)
 
 
+def result_links(value, found: list[tuple[str, str]] | None = None) -> list[tuple[str, str]]:
+    """(text, url) of every element in a result: the dicts with a "url"."""
+    found = [] if found is None else found
+    if isinstance(value, dict):
+        if isinstance(value.get("url"), str) and value["url"]:
+            parts = []
+            for key in ("short_label", "name", "label", "element_type"):
+                text = str(value.get(key) or "")
+                if text and text not in parts:
+                    parts.append(text)
+            found.append((" · ".join(parts) or value["url"], value["url"]))
+        for item in value.values():
+            if isinstance(item, (dict, list)):
+                result_links(item, found)
+    elif isinstance(value, list):
+        for item in value:
+            result_links(item, found)
+    return found
+
+
 def image_widget(data: str) -> Gtk.Widget | None:
     """A base64 PNG (a JupyterLab figure), at most MAX_IMAGE_WIDTH wide."""
     from gi.repository import GdkPixbuf  # type: ignore
@@ -675,9 +718,23 @@ def link_row(text: str, tooltip: str, target: str) -> Gtk.Widget:
     button = Gtk.Button(label=text)
     button.set_relief(Gtk.ReliefStyle.NONE)
     button.set_halign(Gtk.Align.START)
+    # A long name must not widen the panel (the tooltip has the whole text).
+    button.get_child().set_ellipsize(Pango.EllipsizeMode.END)
     button.set_tooltip_text(tooltip)
     button.connect("clicked", lambda *_: open_url(target))
     return button
+
+
+def exchanged_files(outcome: dict) -> list[Path]:
+    """The files of one run in the exchange folder (figures, saved, uploaded,
+    downloaded), each once; the result page and the Links tab show them."""
+    folder = outcome.get("exchange")
+    if not folder:
+        return []
+    names: list[str] = []
+    for key in ("figures", "saved", "uploaded", "downloaded"):
+        names += [name for name in outcome.get(key) or [] if name not in names]
+    return [Path(folder) / name for name in names]
 
 
 def exchange_section(box: Gtk.Box, outcome: dict) -> None:
@@ -686,15 +743,11 @@ def exchange_section(box: Gtk.Box, outcome: dict) -> None:
         image = image_widget(data)
         if image is not None:
             box.pack_start(image, False, False, 0)
-    folder = outcome.get("exchange")
-    names = []
-    for key in ("figures", "saved", "uploaded", "downloaded"):
-        names += [name for name in outcome.get(key) or [] if name not in names]
-    if names and folder:
+    paths = exchanged_files(outcome)
+    if paths:
         box.pack_start(label("Files in the exchange folder", "dim"), False, False, 0)
-        for name in names:
-            path = Path(folder) / name
-            box.pack_start(link_row(name, str(path), path.as_uri()), False, False, 0)
+        for path in paths:
+            box.pack_start(link_row(path.name, str(path), path.as_uri()), False, False, 0)
     for note in outcome.get("notes") or []:
         box.pack_start(label(note, "dim", selectable=True), False, False, 0)
     if outcome.get("notebook_url"):
@@ -777,7 +830,7 @@ def code_editor(code: str) -> tuple[Gtk.Widget, Gtk.TextView]:
 
 class RequestCard(Gtk.Box):
     """One snippet: editable until the user runs or rejects it. Its output goes
-    to a result tab through `on_result(card, page)`."""
+    below it in its tab through `on_result(card, page)`."""
 
     def __init__(self, number: int, pending: PendingRequest, on_state_change, on_result) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -786,6 +839,7 @@ class RequestCard(Gtk.Box):
         self.on_state_change = on_state_change
         self.on_result = on_result
         self.execution: Execution | JupyterExecution | None = None
+        self.outcome: dict = {}  # of the run, for the Links tab
         self.state = "waiting"
         pending.on_abandoned = self._on_abandoned
         self.get_style_context().add_class("request-card")
@@ -919,6 +973,7 @@ class RequestCard(Gtk.Box):
         error = str(outcome.get("error") or "")
         result = outcome.get("result")
 
+        self.outcome = outcome
         self.on_result(self, result_page(stdout, error, result if ok else None, outcome))
 
         abandoned = self.pending.done.is_set() and self.pending.reply is None
@@ -1000,12 +1055,23 @@ class BottomFollower:
 
 
 class ResultsPanel(Gtk.Box):
-    """The newest snippet (and older ones still waiting or running) on top, the
-    latest results as tabs below."""
+    """One tab per snippet: its code to confirm on top and, once it ran, its
+    output below. Tabs of waiting or running code stay; at most
+    MAX_RESULT_TABS are kept. The first tab, "Links", collects every link the
+    conversation showed (Chemotion elements, JupyterLab notebooks, exchanged
+    files); it appears with the first link and is never dropped."""
 
     def __init__(self) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.cards: list[RequestCard] = []
+        self.count = 0
+        # Per card: its tab page, the state dot and the close button in its tab.
+        self.pages: dict[RequestCard, Gtk.Paned] = {}
+        self.tab_parts: dict[RequestCard, tuple[Gtk.Label, Gtk.Widget]] = {}
+        self.links_page: Gtk.Widget | None = None  # the Links tab, made with the first link
+        self.links_label: Gtk.Label | None = None
+        self.link_sections: dict[str, Gtk.Box] = {}
+        self.link_urls: set[str] = set()
 
         head = Gtk.Box(spacing=8, border_width=10)
         head.pack_start(label("Results", "results-heading", wrap=False), False, False, 0)
@@ -1013,75 +1079,177 @@ class ResultsPanel(Gtk.Box):
         head.pack_start(self.counter, False, False, 0)
         self.pack_start(head, False, False, 0)
 
-        self.scroller = Gtk.ScrolledWindow()
-        self.scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        self.list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, border_width=10)
         self.empty = label(
             "Code the assistant wants to run against Chemotion appears here.\n"
             "You can read and edit it, then Run or Reject it. Nothing runs without your confirmation.",
             "dim",
         )
         self.empty.set_margin_top(20)
-        self.list.pack_start(self.empty, False, False, 0)
-        self.scroller.add(self.list)
-        self.follower = BottomFollower(self.scroller)
+        self.empty.set_margin_start(10)
+        self.empty.set_margin_end(10)
+        # Hidden with the first tab; a show_all() of the window (when a
+        # conversation is continued, with Links already there) must not bring it back.
+        self.empty.set_no_show_all(True)
+        self.empty.show()
+        self.pack_start(self.empty, False, False, 0)
 
         self.tabs = Gtk.Notebook()
         self.tabs.set_scrollable(True)
-        self.tabs.set_no_show_all(True)  # shown with the first result
-        self.paned = Gtk.Paned(orientation=Gtk.Orientation.VERTICAL)
-        self.paned.pack1(self.scroller, True, False)
-        self.paned.pack2(self.tabs, True, False)
-        self.pack_start(self.paned, True, True, 0)
-
+        self.tabs.set_no_show_all(True)  # shown with the first card
+        self.pack_start(self.tabs, True, True, 0)
 
     def add_request(self, pending: PendingRequest) -> RequestCard:
         self.empty.hide()
-        card = RequestCard(len(self.cards) + 1, pending, self._update_counter, self._add_result)
+        self.count += 1
+        card = RequestCard(self.count, pending, self._update_counter, self._add_result)
+        card.set_margin_start(10)
+        card.set_margin_end(10)
+        card.set_margin_top(10)
+        card.set_margin_bottom(10)
+        card.set_valign(Gtk.Align.START)  # its natural height, not the whole tab
         self.cards.append(card)
+        code = Gtk.ScrolledWindow()
+        code.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        code.add(card)
+        page = Gtk.Paned(orientation=Gtk.Orientation.VERTICAL)
+        page.pack1(code, True, False)
+        self.pages[card] = page
+        page.show_all()
+        self.tabs.show()
+        self.tabs.set_current_page(self.tabs.append_page(page, self._tab_label(card)))
         self._prune()
-        self.list.pack_start(card, False, False, 0)
-        card.show_all()
         self._update_counter()
-        self.follower.active = True
         if pending.auto:
             GLib.idle_add(card.run)  # auto-run: start as soon as the card is on screen
         else:
             card.focus_code()
         return card
 
-    def _prune(self) -> None:
-        """Only the newest code stays visible, plus older code still waiting or running."""
-        for card in self.cards[:-1]:
-            if card.state not in ("waiting", "running") and card.get_parent() is self.list:
-                self.list.remove(card)
+    def add_link(self, section: str, text: str, url: str, source: str = "") -> None:
+        """A link in the Links tab (section one of LINK_SECTIONS), once per URL."""
+        if not url or url in self.link_urls:
+            return
+        if self.links_page is None:
+            self._build_links_tab()
+        self.link_urls.add(url)
+        row = Gtk.Box(spacing=8)
+        row.pack_start(link_row(text, url, url), False, False, 0)
+        if source:
+            hint = label(source, "dim", wrap=False)
+            hint.set_ellipsize(Pango.EllipsizeMode.END)
+            row.pack_start(hint, True, True, 0)
+        box = self.link_sections[section]
+        box.pack_start(row, False, False, 0)
+        box.set_no_show_all(False)
+        box.show_all()
+        self.links_label.set_text(f"Links ({len(self.link_urls)})")
 
-    def _add_result(self, card: RequestCard, page: Gtk.Widget) -> None:
-        title = card.pending.purpose or "Result"
+    def _build_links_tab(self) -> None:
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, border_width=10)
+        for name in LINK_SECTIONS:
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            box.pack_start(label(name, "dim"), False, False, 0)
+            box.set_no_show_all(True)  # shown with its first link
+            content.pack_start(box, False, False, 0)
+            self.link_sections[name] = box
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroller.add(content)
         tab = Gtk.Box(spacing=4)
+        tab.pack_start(Gtk.Image.new_from_icon_name("web-browser-symbolic", Gtk.IconSize.MENU), False, False, 0)
+        self.links_label = label("Links", wrap=False)
+        tab.pack_start(self.links_label, False, False, 0)
+        tab.set_tooltip_text("Every link of this conversation: Chemotion elements, JupyterLab notebooks, files")
+        tab.show_all()
+        scroller.show_all()
+        self.links_page = scroller
+        current = self.tabs.get_nth_page(self.tabs.get_current_page())
+        self.tabs.insert_page(scroller, tab, 0)
+        if current is not None:
+            self.tabs.set_current_page(self.tabs.page_num(current))
+        self.empty.hide()
+        self.tabs.show()
+
+    def _collect_links(self, card: RequestCard) -> None:
+        """The links one run showed, into the Links tab."""
+        outcome = card.outcome
+        source = f"#{card.number} {card.pending.purpose}".strip()
+        if outcome.get("ok") and card.pending.target == "chemotion":
+            for text, url in result_links(outcome.get("result")):
+                self.add_link("Chemotion", text, url, source)
+        if outcome.get("notebook_url"):
+            text = (f"Job notebook: {card.pending.purpose or outcome['job']}" if outcome.get("job")
+                    else "Notebook of this conversation")
+            self.add_link("JupyterLab", text, outcome["notebook_url"], source)
+        for path in exchanged_files(outcome):
+            self.add_link("Exchange folder", path.name, path.as_uri(), source)
+
+    def _tab_label(self, card: RequestCard) -> Gtk.Widget:
+        title = card.pending.purpose or "Code"
+        tab = Gtk.Box(spacing=4)
+        dot = label("●", "tab-state", wrap=False)
+        tab.pack_start(dot, False, False, 0)
         text = label(f"#{card.number} {title}", wrap=False)
         text.set_ellipsize(Pango.EllipsizeMode.END)
         text.set_width_chars(min(len(text.get_text()), 22))
         text.set_max_width_chars(22)
         tab.pack_start(text, True, True, 0)
-        tab.pack_start(icon_button("window-close-symbolic", "Close this result",
-                                   lambda: self.tabs.remove_page(self.tabs.page_num(page))), False, False, 0)
+        close = icon_button("window-close-symbolic", "Close this tab", lambda: self._remove(card))
+        close.set_no_show_all(True)  # only once the code is decided and ran or failed
+        tab.pack_start(close, False, False, 0)
         tab.set_tooltip_text(title)
+        self.tab_parts[card] = (dot, close)
+        self._update_tab(card)
         tab.show_all()
+        return tab
+
+    def _update_tab(self, card: RequestCard) -> None:
+        dot, close = self.tab_parts[card]
+        context = dot.get_style_context()
+        for state in ("waiting", "running", "done", "failed"):
+            context.remove_class(state)
+        context.add_class(card.state)
+        dot.set_tooltip_text({"waiting": "Waiting for your confirmation", "running": "Running",
+                              "done": "Ran", "failed": "Failed or not run"}.get(card.state, card.state))
+        close.set_visible(card.state not in ("waiting", "running"))
+
+    def _remove(self, card: RequestCard) -> None:
+        page = self.pages.pop(card, None)
+        self.tab_parts.pop(card, None)
+        if page is not None:
+            self.tabs.remove_page(self.tabs.page_num(page))
+        if card in self.cards:
+            self.cards.remove(card)
+        if not self.tabs.get_n_pages():  # the Links tab stays once it exists
+            self.tabs.hide()
+            self.empty.show()
+
+    def _prune(self) -> None:
+        """Drop the oldest finished tabs above MAX_RESULT_TABS; waiting or
+        running code stays. Only when a card is added, never on a state
+        change: the tab that just finished must stay for the user to read."""
+        finished = [card for card in self.cards if card.state not in ("waiting", "running")]
+        while len(self.pages) > MAX_RESULT_TABS and finished:
+            self._remove(finished.pop(0))
+
+    def _add_result(self, card: RequestCard, page: Gtk.Widget) -> None:
+        """The output goes below the card's code, in the same tab."""
+        self._collect_links(card)
+        paned = self.pages.get(card)
+        if paned is None:
+            return
         page.show_all()
-        if not self.tabs.get_visible():
-            self.tabs.show()
-            self.paned.set_position(int(self.paned.get_allocated_height() * 0.4))
-        index = self.tabs.append_page(page, tab)
-        self.tabs.set_current_page(index)
-        while self.tabs.get_n_pages() > MAX_RESULT_TABS:
-            self.tabs.remove_page(0)
+        paned.pack2(page, True, False)
+        # The code keeps its natural height, at most half of the tab.
+        code_height = card.get_preferred_height()[1] + 20
+        paned.set_position(min(code_height, int(self.tabs.get_allocated_height() * 0.5)))
 
     def waiting(self) -> int:
         return sum(card.state == "waiting" for card in self.cards)
 
     def _update_counter(self) -> None:
-        self._prune()
+        for card in self.tab_parts:
+            self._update_tab(card)
         count = self.waiting()
         self.counter.set_text(f"· {count} waiting for confirmation" if count else "")
         window = self.get_toplevel()
@@ -1118,6 +1286,80 @@ def table_markup(lines: list[str]) -> str:
               for column in range(max(len(row) for row in rows))]
     text = ["  ".join(cell.ljust(widths[column]) for column, cell in enumerate(row)).rstrip() for row in rows]
     return f"<tt><b>{GLib.markup_escape_text(text[0])}</b>\n{GLib.markup_escape_text(chr(10).join(text[1:]))}</tt>"
+
+
+def set_markdown(widget: Gtk.Label, text: str) -> None:
+    """Show `text` (Markdown) in `widget`; plain text if the markup is invalid."""
+    markup = markdown_markup(text)
+    try:
+        Pango.parse_markup(markup, -1, "\0")
+        widget.set_markup(markup)
+    except GLib.Error:
+        widget.set_text(text.strip())
+
+
+def clip_answer(text: str, limit: int | None = None) -> str | None:
+    """The start of a long answer (cut at a line end when one is near), or
+    None when it is short enough to show whole (REPLAY_MESSAGE_CHARS)."""
+    limit = limit or REPLAY_MESSAGE_CHARS
+    text = text.strip()
+    if len(text) <= limit:
+        return None
+    cut = text.rfind("\n", 0, limit)
+    return text[:cut if cut >= limit // 2 else limit].rstrip()
+
+
+def replay_items(messages: list[dict]) -> list[tuple]:
+    """What ChatPanel.replay() shows for Agent.messages: ("user", text, paths),
+    ("assistant", text) and ("note", text, icon, css), oldest first."""
+    items: list[tuple] = []
+    for message in messages:
+        role, content = message.get("role"), message.get("content")
+        if role == "user" and isinstance(content, str):
+            if content == STOPPED_NOTE:
+                items.append(("note", "Stopped after many tool calls.", "dialog-error-symbolic", "request-error"))
+                continue
+            if content.startswith(REPORT_HEADER):
+                reports, _, content = content[len(REPORT_HEADER):].partition(USER_TEXT)
+                for item in reports.split(REPORT_SEPARATOR):
+                    items.append(("note", item.split("\n", 1)[0], "preferences-system-time-symbolic", "dim"))
+                if not content:
+                    continue
+            text, _, listed = content.partition(ATTACHMENT_NOTE)
+            # "- /path (text file, 1.2 kB)" lines; the paths contain no " (".
+            paths = [line[2:].split(" (", 1)[0].rstrip("/\\") for line in listed.splitlines()
+                     if line.startswith("- ")]
+            items.append(("user", text, paths))
+        elif role == "assistant":
+            if isinstance(content, str) and content.strip():
+                items.append(("assistant", content))
+            for call in message.get("tool_calls") or []:
+                function = call.get("function") or {}
+                try:
+                    arguments = json.loads(function.get("arguments") or "{}")
+                except ValueError:
+                    arguments = {}
+                if not isinstance(arguments, dict):
+                    arguments = {}
+                if function.get("name") in ("execute_python", "execute_jupyter", "start_jupyter_job"):
+                    items.append(("note", arguments.get("purpose") or "Code", "system-run-symbolic", "dim"))
+                else:
+                    items.append(("note", tool_summary(str(function.get("name")), arguments),
+                                  "document-open-symbolic", "dim"))
+    return items
+
+
+def replay_chunk(items: list[tuple]) -> int:
+    """How many items from the end of `items` the next replay step shows:
+    about REPLAY_CHARS of text, at most REPLAY_ITEMS, at least one."""
+    size = count = 0
+    for item in reversed(items):
+        cost = 100 if item[0] == "note" else min(len(item[1]), REPLAY_MESSAGE_CHARS)
+        if count and (size + cost > REPLAY_CHARS or count >= REPLAY_ITEMS):
+            break
+        size += cost
+        count += 1
+    return count
 
 
 def markdown_markup(text: str) -> str:
@@ -1262,6 +1504,9 @@ class ChatPanel(Gtk.Box):
         self.answer_text = ""
         self.render_pending = False
         self.actions: list[Gtk.Button] = []  # add_note(actions=...), until the next message
+        # replay(): the saved messages not shown yet, and the button that shows more.
+        self.earlier: list[tuple] = []
+        self.earlier_button: Gtk.Button | None = None
 
         scroller = Gtk.ScrolledWindow()
         scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
@@ -1345,26 +1590,44 @@ class ChatPanel(Gtk.Box):
         self.list.pack_start(widget, False, False, 0)
         widget.show_all()
 
-    def add_user(self, text: str, attachments: list[str] | tuple[str, ...] = ()) -> None:
-        self.answer = None
-        self.clear_actions()
+    @staticmethod
+    def user_widgets(text: str, attachments: list[str] | tuple[str, ...] = ()) -> list[Gtk.Widget]:
         bubble = label(text, "chat-user", selectable=True)
         bubble.set_halign(Gtk.Align.END)
         bubble.set_margin_start(60)
-        self.follower.active = True
-        self._add(bubble)
+        widgets: list[Gtk.Widget] = [bubble]
         if attachments:
             names = ", ".join(os.path.basename(path.rstrip("/\\")) + ("/" if os.path.isdir(path) else "")
                               for path in attachments)
             note = label(f"Attached: {names}", "dim", selectable=True)
             note.set_halign(Gtk.Align.END)
             note.set_tooltip_text("\n".join(attachments))
-            self._add(note)
+            widgets.append(note)
+        return widgets
+
+    @staticmethod
+    def answer_label() -> Gtk.Label:
+        widget = label("", "chat-assistant", selectable=True)
+        widget.connect("activate-link", lambda _label, uri: open_url(uri) or True)
+        return widget
+
+    @staticmethod
+    def note_widget(text: str, icon: str = "document-open-symbolic", css: str = "dim") -> Gtk.Box:
+        row = Gtk.Box(spacing=6)
+        row.pack_start(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.MENU), False, False, 0)
+        row.pack_start(label(text, css, selectable=True), True, True, 0)
+        return row
+
+    def add_user(self, text: str, attachments: list[str] | tuple[str, ...] = ()) -> None:
+        self.answer = None
+        self.clear_actions()
+        self.follower.active = True
+        for widget in self.user_widgets(text, attachments):
+            self._add(widget)
 
     def append_text(self, delta: str) -> None:
         if self.answer is None:
-            self.answer = label("", "chat-assistant", selectable=True)
-            self.answer.connect("activate-link", lambda _label, uri: open_url(uri) or True)
+            self.answer = self.answer_label()
             self.answer_text = ""
             self._add(self.answer)
         self.answer_text += delta
@@ -1376,52 +1639,65 @@ class ChatPanel(Gtk.Box):
         self.render_pending = False
         if self.answer is None:
             return False
-        markup = markdown_markup(self.answer_text)
-        try:
-            Pango.parse_markup(markup, -1, "\0")
-            self.answer.set_markup(markup)
-        except GLib.Error:
-            self.answer.set_text(self.answer_text.strip())
+        set_markdown(self.answer, self.answer_text)
         return False
 
     def replay(self, messages: list[dict]) -> None:
-        """Show the messages of a saved conversation (Agent.messages)."""
-        for message in messages:
-            role, content = message.get("role"), message.get("content")
-            if role == "user" and isinstance(content, str):
-                if content == STOPPED_NOTE:
-                    self.add_note("Stopped after many tool calls.", "dialog-error-symbolic", "request-error")
-                    continue
-                if content.startswith(REPORT_HEADER):
-                    reports, _, content = content[len(REPORT_HEADER):].partition(USER_TEXT)
-                    for item in reports.split(REPORT_SEPARATOR):
-                        self.add_note(item.split("\n", 1)[0], "preferences-system-time-symbolic")
-                    if not content:
-                        continue
-                text, _, listed = content.partition(ATTACHMENT_NOTE)
-                # "- /path (text file, 1.2 kB)" lines; the paths contain no " (".
-                paths = [line[2:].split(" (", 1)[0].rstrip("/\\") for line in listed.splitlines()
-                         if line.startswith("- ")]
-                self.add_user(text, paths)
-            elif role == "assistant":
-                if isinstance(content, str) and content.strip():
-                    self.append_text(content)
-                    self._render()
-                for call in message.get("tool_calls") or []:
-                    function = call.get("function") or {}
-                    try:
-                        arguments = json.loads(function.get("arguments") or "{}")
-                    except ValueError:
-                        arguments = {}
-                    if not isinstance(arguments, dict):
-                        arguments = {}
-                    if function.get("name") in ("execute_python", "execute_jupyter", "start_jupyter_job"):
-                        self.add_note(arguments.get("purpose") or "Code", "system-run-symbolic")
-                    else:
-                        self.add_note(tool_summary(str(function.get("name")), arguments))
+        """Show the end of a saved conversation (Agent.messages); the rest
+        waits behind "Show earlier messages" (REPLAY_CHARS)."""
         self.answer = None
+        self.earlier = replay_items(messages)
+        self._show_earlier()
         self.add_note("Continued from the history. Earlier results are not shown on the right.",
                       "document-open-recent-symbolic")
+
+    def _show_earlier(self) -> None:
+        """The next chunk of self.earlier, above what is shown (below the button)."""
+        count = replay_chunk(self.earlier)
+        chunk, self.earlier = self.earlier[len(self.earlier) - count:], self.earlier[:len(self.earlier) - count]
+        position = 1 if self.earlier_button is not None else 0
+        for item in chunk:
+            for widget in self._replay_widgets(item):
+                self.list.pack_start(widget, False, False, 0)
+                self.list.reorder_child(widget, position)
+                widget.show_all()
+                position += 1
+        if self.earlier and self.earlier_button is None:
+            self.earlier_button = Gtk.Button()
+            self.earlier_button.set_halign(Gtk.Align.CENTER)
+            self.earlier_button.connect("clicked", lambda *_: self._show_earlier())
+            self.list.pack_start(self.earlier_button, False, False, 0)
+            self.list.reorder_child(self.earlier_button, 0)
+            self.earlier_button.show()
+        if self.earlier_button is not None:
+            if self.earlier:
+                self.earlier_button.set_label(f"Show earlier messages ({len(self.earlier)} more)")
+            else:
+                self.earlier_button.destroy()
+                self.earlier_button = None
+
+    def _replay_widgets(self, item: tuple) -> list[Gtk.Widget]:
+        kind = item[0]
+        if kind == "user":
+            return self.user_widgets(item[1], item[2])
+        if kind == "note":
+            return [self.note_widget(item[1], item[2], item[3])]
+        text = item[1]
+        widget = self.answer_label()
+        start = clip_answer(text)
+        if start is None:
+            set_markdown(widget, text)
+            return [widget]
+        set_markdown(widget, start + "\n\n…")
+        button = Gtk.Button(label="Show the whole answer")
+        button.set_halign(Gtk.Align.START)
+
+        def show_all(_button) -> None:
+            set_markdown(widget, text)
+            button.destroy()
+
+        button.connect("clicked", show_all)
+        return [widget, button]
 
     def add_note(self, text: str, icon: str = "document-open-symbolic", css: str = "dim",
                  actions: tuple[tuple[str, object], ...] = ()) -> None:
@@ -1445,9 +1721,9 @@ class ChatPanel(Gtk.Box):
                 self.actions.append(button)
             column.pack_start(buttons, False, False, 0)
             row.pack_start(column, True, True, 0)
+            self._add(row)
         else:
-            row.pack_start(label(text, css, selectable=True), True, True, 0)
-        self._add(row)
+            self._add(self.note_widget(text, icon, css))
 
     def clear_actions(self) -> None:
         """Disable the buttons of the last note: they belong to that moment."""
@@ -1480,6 +1756,7 @@ class AssistantWindow(Gtk.Window):
         self.saved_messages = 0  # how many messages history has; saves only on change
         self.expanded = False
         self.closed = False
+        self.loading = False  # a saved conversation waits for _grow() to be shown
         self.auto_run = "off"  # the conversation's auto-run mode; set in _start_conversation
         self.run_mode_button: Gtk.MenuButton | None = None
         self.model_button: Gtk.MenuButton | None = None
@@ -1702,6 +1979,7 @@ class AssistantWindow(Gtk.Window):
 
         self.chat = ChatPanel(self._send, self._stop)
         self.results = ResultsPanel()
+        self._add_job_links()
         self.paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         self.paned.set_wide_handle(True)
         self.paned.pack1(self.chat, True, False)
@@ -1798,6 +2076,15 @@ class AssistantWindow(Gtk.Window):
         menu.show_all()
         self.jobs_button.set_popup(menu)
 
+    def _add_job_links(self) -> None:
+        """The notebooks of this conversation's background jobs (also those of
+        earlier sessions) into the Links tab; add_link() takes each URL once."""
+        if self.results is None or self.conversation_id is None:
+            return
+        for job in self.app.jobs.list(self.conversation_id):
+            self.results.add_link("JupyterLab", f"Job notebook: {job.get('purpose') or job['id']}",
+                                  job["notebook_url"])
+
     def _cancel_job(self, job: dict) -> None:
         self.app.jobs.cancel(job["id"])
         if self.chat is not None:
@@ -1807,6 +2094,7 @@ class AssistantWindow(Gtk.Window):
 
     def jobs_changed(self) -> None:
         self._fill_jobs_menu()
+        self._add_job_links()
         self._deliver_jobs()
 
     def _reports(self) -> list[dict]:
@@ -1824,7 +2112,7 @@ class AssistantWindow(Gtk.Window):
 
     def _deliver_jobs(self) -> bool:
         """Jobs ended: their reports go to the agent as a new turn, once it is idle."""
-        if self.closed or self.agent is None or self.agent.busy or self.chat is None:
+        if self.closed or self.loading or self.agent is None or self.agent.busy or self.chat is None:
             return False
         reports = self._reports()
         if not any(job.get("wake", True) for job in reports):
@@ -1898,15 +2186,16 @@ class AssistantWindow(Gtk.Window):
         if config.agent in CLI_AGENTS:
             # A CLI agent reaches only execute_python (mcp_bridge.py), not JupyterLab.
             listener = self.app.server.listener
-            self.agent = CliAgent(config, workspace.system_prompt(developer=config.developer_mode), on_event,
-                                  auto_run=config.auto_run, endpoint=(listener.address, listener.token))
+            self.agent = CliAgent(config, workspace.system_prompt(developer=config.developer_mode,
+                                                                  history=config.history_access),
+                                  on_event, auto_run=config.auto_run, endpoint=(listener.address, listener.token))
         else:
             if config.jupyter:
                 self.exchange = history.exchange_dir(self.conversation_id)
                 self.jupyter = JupyterBridge(config, self.conversation_id, self.exchange)
             self.agent = Agent(
                 config,
-                workspace.system_prompt(self.exchange, config.developer_mode),
+                workspace.system_prompt(self.exchange, config.developer_mode, config.history_access),
                 self._execute,
                 on_event,
                 auto_run=config.auto_run,
@@ -1932,18 +2221,38 @@ class AssistantWindow(Gtk.Window):
                 self.agent.restore(saved["messages"], roots, session)
             else:
                 self.agent.restore(saved["messages"], roots)
-            self.chat.replay(self.agent.messages[1:])
             self.saved_messages = len(self.agent.messages) - 1
+            if self.jupyter is not None and any(
+                    call.get("function", {}).get("name") == "execute_jupyter"
+                    for message in self.agent.messages for call in message.get("tool_calls") or []):
+                self.results.add_link("JupyterLab", "Notebook of this conversation", self.jupyter.notebook_url)
         # Set but unusable: say so, or the agent quietly works without it.
         problem = jupyter_problem(read_raw_config())
+        if text is not None:
+            self._jupyter_note(problem)
+            self._grow()
+            self._send(text, attachments or ())
+            return
+        # The history is laid out once, at the final width (a long chat took seconds per width).
+        self.loading = True
+        self.chat.set_busy(True, "Loading the conversation…")
+        self._grow(lambda: self._show_saved(problem))
+
+    def _jupyter_note(self, problem: str | None) -> None:
         if problem:
             self.chat.add_note(f"JupyterLab is off for this conversation: {problem}", "dialog-warning-symbolic",
                                "request-error")
-        self._grow()
-        if text is not None:
-            self._send(text, attachments or ())
-        else:
-            GLib.idle_add(self._deliver_jobs)  # jobs that ended while it was closed
+
+    def _show_saved(self, problem: str | None) -> None:
+        """A continued conversation, once the window has grown."""
+        self.loading = False
+        if self.closed or self.chat is None or self.agent is None:
+            return
+        self.chat.set_busy(False)
+        self.chat.replay(self.agent.messages[1:])
+        self._jupyter_note(problem)
+        self.chat.focus_input()
+        GLib.idle_add(self._deliver_jobs)  # jobs that ended while it was closed
 
     def _save_history(self) -> None:
         """Store the conversation (after every answer and on close)."""
@@ -1952,8 +2261,7 @@ class AssistantWindow(Gtk.Window):
         messages = list(self.agent.messages[1:])  # without the system prompt
         if len(messages) == self.saved_messages or not any(message.get("role") == "user" for message in messages):
             return
-        own = {WORKSPACE_DIR.resolve(), self.exchange.resolve() if self.exchange else None}
-        roots = [str(root) for root in self.agent.roots if root not in own]
+        roots = [str(path) for path in self.agent.attachments]  # not the agent's own roots
         try:
             history.save(self.conversation_id, self.conversation_title, model_name(self.agent.config.ai_model),
                          messages, roots, self.agent.config.agent, getattr(self.agent, "session", ""))
@@ -2075,32 +2383,40 @@ class AssistantWindow(Gtk.Window):
             self.begin_move_drag(event.button, int(event.x_root), int(event.y_root), event.time)
         return True
 
-    def _grow(self) -> None:
-        """Animate from the prompt to the work area, then maximize (on
-        Wayland, which ignores client positioning, just maximize)."""
+    def _grow(self, then=None) -> None:
+        """Fill the work area at once (an animation re-laid out the chat at
+        every step) and maximize; on Wayland, which ignores client
+        positioning, only maximize. `then` runs once the window has its new
+        size, or after GROW_WAIT_MS."""
         area = work_area()
-        x0, y0 = self.get_position()
-        w0, h0 = self.get_size()
         self.set_resizable(True)
-        animate = "Wayland" not in type(self.get_display()).__name__  # GdkWaylandDisplay
-        step = 0 if animate else GROW_STEPS - 1
+        if "Wayland" not in type(self.get_display()).__name__:  # GdkWaylandDisplay
+            self.move(area.x, area.y)
+            self.resize(area.width, area.height)
+        self.maximize()
+        self.paned.set_position(int(area.width * CHAT_SHARE))
+        self.present_now()
+        self.chat.focus_input()
+        if then is None:
+            return
+        handler = 0
 
-        def tick() -> bool:
-            nonlocal step
-            step += 1
-            if animate:
-                t = 1 - (1 - step / GROW_STEPS) ** 3  # ease out
-                self.move(round(x0 + (area.x - x0) * t), round(y0 + (area.y - y0) * t))
-                self.resize(max(1, round(w0 + (area.width - w0) * t)), max(1, round(h0 + (area.height - h0) * t)))
-            if step < GROW_STEPS:
-                return True
-            self.maximize()
-            self.paned.set_position(int(area.width * CHAT_SHARE))
-            self.present_now()
-            self.chat.focus_input()
+        def finish(*_args) -> bool:
+            nonlocal handler
+            if handler:
+                if not self.closed:  # destroy() already dropped the handler
+                    self.disconnect(handler)
+                handler = 0
+                then()
             return False
 
-        GLib.timeout_add(GROW_STEP_MS, tick)
+        def configured(_window, event) -> bool:
+            if event.width >= area.width * 0.9 and event.height >= area.height * 0.9:
+                finish()
+            return False
+
+        handler = self.connect("configure-event", configured)
+        GLib.timeout_add(GROW_WAIT_MS, finish)
 
     def _on_key(self, _widget, event) -> bool:
         if event.keyval != Gdk.KEY_Escape:

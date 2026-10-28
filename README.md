@@ -25,9 +25,9 @@ ran, and you can stop a run while it executes.
 
 [![Screencast: ChemAssistent lists the samples of a collection and adds a new one, each step after a click on Run](docs/assets/screencast.jpg)](docs/assets/screencast.mp4)
 
-*Screencast (1:40): from the top-bar icon to a question, the code to confirm,
-the result table and a follow-up that adds a sample. Click the picture to
-play it. It is recorded from the real app by `docs/screencast.py`.*
+*Screencast (1:15): from the top-bar icon to a question, the code to confirm,
+the result table, a follow-up that adds a sample and the Links tab. Click the
+picture to play it. It is recorded from the real app by `docs/screencast.py`.*
 
 ## How it works
 
@@ -44,13 +44,17 @@ play it. It is recorded from the real app by `docs/screencast.py`.*
      message: the agent may read them and use them in its code, e.g. to
      upload a measurement file to a sample;
    - **right**: the results. Each time the agent wants to call the Chemotion
-     API, a card appears with its purpose and the Python code. **Run** executes
+     API, a new tab opens with its purpose and the Python code. **Run** executes
      it (Ctrl+Enter in the code also works), **Reject** refuses it; the optional
      reason is sent to the agent. You can edit the code before running it; the
-     agent is told what actually ran. Only the newest code is shown.
-4. The output appears in a tab below the code (the latest ten are kept):
-   tables for lists and dicts, text otherwise, the error traceback when it
-   fails. Chemotion elements (samples, reactions, …) are rows you can click to
+     agent is told what actually ran. The dot in the tab shows whether the code
+     waits for you, runs, ran or failed.
+4. The output appears in the same tab below the code (the latest ten tabs are
+   kept; code that waits or runs is never dropped): tables for lists and dicts,
+   text otherwise, the error traceback when it fails. The first tab, **Links**,
+   collects every link the conversation showed: Chemotion elements, the
+   JupyterLab notebooks (also of background jobs) and files in the exchange
+   folder. Chemotion elements (samples, reactions, …) are rows you can click to
    open the element in the browser. “Copy JSON” copies the result.
 
 The header buttons start a new conversation, open the settings, minimize the
@@ -63,7 +67,12 @@ Conversations are saved after every answer in
 `~/.local/state/chem-assistent/history/` (the newest 200). The prompt lists
 the latest ones: click one to continue it (the chat comes back, the result
 tabs of earlier runs do not), the bin icon deletes it. **Clear history** in
-the settings deletes them all.
+the settings deletes them all. With “Assistant may read earlier conversations”
+switched on in the settings (off by default), you can also ask the assistant
+about them (“which sample did I create yesterday?”): it may then search and
+read these files, but not on its own. What it reads goes to the AI model like
+everything else in the conversation — also to a model other than the one that
+held the earlier conversation.
 
 ## Analyses in JupyterLab
 
