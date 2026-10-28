@@ -150,6 +150,9 @@ class Config:
     # reports chemotion_api bugs as GitHub issues (issues.py).
     developer_mode: bool = False
     github_token: str = ""
+    # The agent may read the saved conversations (history.py) when the user
+    # asks about them; off: they are no root of its read-only tools.
+    history_access: bool = False
 
     @property
     def jupyter(self) -> bool:
@@ -182,6 +185,7 @@ EXAMPLE = {
     "codex_model": "",
     "developer_mode": False,
     "github_token": "",
+    "history_access": False,
     "use_keyring": True,
 }
 
@@ -583,4 +587,5 @@ def load_config() -> Config:
         agent_command=str(data.get(keys.get("command", "")) or "").strip(),
         developer_mode=bool(data.get("developer_mode", False)),
         github_token=str(data.get("github_token") or "").strip(),
+        history_access=bool(data.get("history_access", False)),
     )

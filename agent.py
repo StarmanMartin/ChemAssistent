@@ -361,6 +361,16 @@ def list_models(config: Config) -> list[str]:
 
 # --- tools without the user ----------------------------------------------------
 # They read only below `roots`: the workspace and what the user attached.
+def base_roots(history_access: bool) -> list[Path]:
+    """What every conversation may read before any attachment: the workspace
+    and, with the setting on, the saved conversations (workspace.HISTORY_PROMPT
+    says when). Agent, CliAgent and so mcp_bridge.py start from it."""
+    roots = [WORKSPACE_DIR.resolve()]
+    if history_access:
+        roots.append(history.HISTORY_DIR.resolve())
+    return roots
+
+
 def _allowed(target: Path, roots: list[Path]) -> bool:
     return any(target == root or root in target.parents for root in roots)
 
@@ -597,9 +607,11 @@ class Agent:
         # The tool descriptions depend on the auto-run mode (execute_python).
         self.tools = build_tools(self.auto_run, self.jupyter, self.config.developer_mode)
         self.messages: list[dict] = [{"role": "system", "content": system_prompt}]
-        # What the read-only tools may read: the workspace, the saved conversations
-        # (when the user asks about them, workspace.HISTORY_PROMPT) and every attachment.
-        self.roots: list[Path] = [WORKSPACE_DIR.resolve(), history.HISTORY_DIR.resolve()]
+        # What the read-only tools may read: base_roots() and every attachment.
+        self.roots: list[Path] = base_roots(config.history_access)
+        # The files and folders the user attached (a part of roots); the app
+        # saves them with the conversation and restore() brings them back.
+        self.attachments: list[Path] = []
         if exchange is not None:
             exchange.mkdir(parents=True, exist_ok=True)
             self.roots.append(exchange.resolve())
@@ -633,9 +645,15 @@ class Agent:
         self.messages = self.messages[:1] + [m for m in messages if isinstance(m, dict) and m.get("role") != "system"]
         for item in roots:
             path = Path(item)
-            if path.exists() and path not in self.roots:
-                self.roots.append(path)
+            if path.exists():
+                self.attach(path)
         self._close_open_calls()
+
+    def attach(self, path: Path) -> None:
+        """A file or folder the user attached: readable from now on."""
+        if path not in self.roots:
+            self.roots.append(path)
+            self.attachments.append(path)
 
     def cancel(self) -> None:
         self.cancelled.set()
@@ -655,8 +673,7 @@ class Agent:
         for item in attachments:
             path = Path(item).resolve()
             if path.exists():
-                if path not in self.roots:
-                    self.roots.append(path)
+                self.attach(path)
                 lines.append(describe_attachment(path))
         if lines:
             text += ATTACHMENT_NOTE + "\n".join(lines)

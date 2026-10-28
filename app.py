@@ -709,9 +709,23 @@ def link_row(text: str, tooltip: str, target: str) -> Gtk.Widget:
     button = Gtk.Button(label=text)
     button.set_relief(Gtk.ReliefStyle.NONE)
     button.set_halign(Gtk.Align.START)
+    # A long name must not widen the panel (the tooltip has the whole text).
+    button.get_child().set_ellipsize(Pango.EllipsizeMode.END)
     button.set_tooltip_text(tooltip)
     button.connect("clicked", lambda *_: open_url(target))
     return button
+
+
+def exchanged_files(outcome: dict) -> list[Path]:
+    """The files of one run in the exchange folder (figures, saved, uploaded,
+    downloaded), each once; the result page and the Links tab show them."""
+    folder = outcome.get("exchange")
+    if not folder:
+        return []
+    names: list[str] = []
+    for key in ("figures", "saved", "uploaded", "downloaded"):
+        names += [name for name in outcome.get(key) or [] if name not in names]
+    return [Path(folder) / name for name in names]
 
 
 def exchange_section(box: Gtk.Box, outcome: dict) -> None:
@@ -720,15 +734,11 @@ def exchange_section(box: Gtk.Box, outcome: dict) -> None:
         image = image_widget(data)
         if image is not None:
             box.pack_start(image, False, False, 0)
-    folder = outcome.get("exchange")
-    names = []
-    for key in ("figures", "saved", "uploaded", "downloaded"):
-        names += [name for name in outcome.get(key) or [] if name not in names]
-    if names and folder:
+    paths = exchanged_files(outcome)
+    if paths:
         box.pack_start(label("Files in the exchange folder", "dim"), False, False, 0)
-        for name in names:
-            path = Path(folder) / name
-            box.pack_start(link_row(name, str(path), path.as_uri()), False, False, 0)
+        for path in paths:
+            box.pack_start(link_row(path.name, str(path), path.as_uri()), False, False, 0)
     for note in outcome.get("notes") or []:
         box.pack_start(label(note, "dim", selectable=True), False, False, 0)
     if outcome.get("notebook_url"):
@@ -1068,6 +1078,10 @@ class ResultsPanel(Gtk.Box):
         self.empty.set_margin_top(20)
         self.empty.set_margin_start(10)
         self.empty.set_margin_end(10)
+        # Hidden with the first tab; a show_all() of the window (when a
+        # conversation is continued, with Links already there) must not bring it back.
+        self.empty.set_no_show_all(True)
+        self.empty.show()
         self.pack_start(self.empty, False, False, 0)
 
         self.tabs = Gtk.Notebook()
@@ -1158,12 +1172,8 @@ class ResultsPanel(Gtk.Box):
             text = (f"Job notebook: {card.pending.purpose or outcome['job']}" if outcome.get("job")
                     else "Notebook of this conversation")
             self.add_link("JupyterLab", text, outcome["notebook_url"], source)
-        folder = outcome.get("exchange")
-        if folder:
-            for key in ("figures", "saved", "uploaded", "downloaded"):
-                for name in outcome.get(key) or []:
-                    path = Path(folder) / name
-                    self.add_link("Exchange folder", name, path.as_uri(), source)
+        for path in exchanged_files(outcome):
+            self.add_link("Exchange folder", path.name, path.as_uri(), source)
 
     def _tab_label(self, card: RequestCard) -> Gtk.Widget:
         title = card.pending.purpose or "Code"
@@ -1206,7 +1216,9 @@ class ResultsPanel(Gtk.Box):
             self.empty.show()
 
     def _prune(self) -> None:
-        """Drop the oldest finished tabs above MAX_RESULT_TABS; waiting or running code stays."""
+        """Drop the oldest finished tabs above MAX_RESULT_TABS; waiting or
+        running code stays. Only when a card is added, never on a state
+        change: the tab that just finished must stay for the user to read."""
         finished = [card for card in self.cards if card.state not in ("waiting", "running")]
         while len(self.pages) > MAX_RESULT_TABS and finished:
             self._remove(finished.pop(0))
@@ -1229,7 +1241,6 @@ class ResultsPanel(Gtk.Box):
     def _update_counter(self) -> None:
         for card in self.tab_parts:
             self._update_tab(card)
-        self._prune()
         count = self.waiting()
         self.counter.set_text(f"· {count} waiting for confirmation" if count else "")
         window = self.get_toplevel()
@@ -1850,7 +1861,7 @@ class AssistantWindow(Gtk.Window):
 
         self.chat = ChatPanel(self._send, self._stop)
         self.results = ResultsPanel()
-        self._fill_jobs_menu()  # puts the conversation's job notebooks into the Links tab
+        self._add_job_links()
         self.paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         self.paned.set_wide_handle(True)
         self.paned.pack1(self.chat, True, False)
@@ -1935,9 +1946,6 @@ class AssistantWindow(Gtk.Window):
                 problem = Gtk.MenuItem(label=f"Cannot check it: {job['problem'][:MAX_MODEL_ERROR_CHARS]}")
                 problem.set_sensitive(False)
                 submenu.append(problem)
-            if self.results is not None:
-                self.results.add_link("JupyterLab", f"Job notebook: {job.get('purpose') or job['id']}",
-                                      job["notebook_url"])
             notebook = Gtk.MenuItem(label="Open its notebook in JupyterLab")
             notebook.connect("activate", lambda _item, url=job["notebook_url"]: open_url(url))
             submenu.append(notebook)
@@ -1950,6 +1958,15 @@ class AssistantWindow(Gtk.Window):
         menu.show_all()
         self.jobs_button.set_popup(menu)
 
+    def _add_job_links(self) -> None:
+        """The notebooks of this conversation's background jobs (also those of
+        earlier sessions) into the Links tab; add_link() takes each URL once."""
+        if self.results is None or self.conversation_id is None:
+            return
+        for job in self.app.jobs.list(self.conversation_id):
+            self.results.add_link("JupyterLab", f"Job notebook: {job.get('purpose') or job['id']}",
+                                  job["notebook_url"])
+
     def _cancel_job(self, job: dict) -> None:
         self.app.jobs.cancel(job["id"])
         if self.chat is not None:
@@ -1959,6 +1976,7 @@ class AssistantWindow(Gtk.Window):
 
     def jobs_changed(self) -> None:
         self._fill_jobs_menu()
+        self._add_job_links()
         self._deliver_jobs()
 
     def _reports(self) -> list[dict]:
@@ -2050,15 +2068,16 @@ class AssistantWindow(Gtk.Window):
         if config.agent in CLI_AGENTS:
             # A CLI agent reaches only execute_python (mcp_bridge.py), not JupyterLab.
             listener = self.app.server.listener
-            self.agent = CliAgent(config, workspace.system_prompt(developer=config.developer_mode), on_event,
-                                  auto_run=config.auto_run, endpoint=(listener.address, listener.token))
+            self.agent = CliAgent(config, workspace.system_prompt(developer=config.developer_mode,
+                                                                  history=config.history_access),
+                                  on_event, auto_run=config.auto_run, endpoint=(listener.address, listener.token))
         else:
             if config.jupyter:
                 self.exchange = history.exchange_dir(self.conversation_id)
                 self.jupyter = JupyterBridge(config, self.conversation_id, self.exchange)
             self.agent = Agent(
                 config,
-                workspace.system_prompt(self.exchange, config.developer_mode),
+                workspace.system_prompt(self.exchange, config.developer_mode, config.history_access),
                 self._execute,
                 on_event,
                 auto_run=config.auto_run,
@@ -2108,8 +2127,7 @@ class AssistantWindow(Gtk.Window):
         messages = list(self.agent.messages[1:])  # without the system prompt
         if len(messages) == self.saved_messages or not any(message.get("role") == "user" for message in messages):
             return
-        own = {WORKSPACE_DIR.resolve(), history.HISTORY_DIR.resolve(), self.exchange.resolve() if self.exchange else None}
-        roots = [str(root) for root in self.agent.roots if root not in own]
+        roots = [str(path) for path in self.agent.attachments]  # not the agent's own roots
         try:
             history.save(self.conversation_id, self.conversation_title, model_name(self.agent.config.ai_model),
                          messages, roots, self.agent.config.agent, getattr(self.agent, "session", ""))

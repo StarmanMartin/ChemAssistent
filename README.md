@@ -67,10 +67,12 @@ Conversations are saved after every answer in
 `~/.local/state/chem-assistent/history/` (the newest 200). The prompt lists
 the latest ones: click one to continue it (the chat comes back, the result
 tabs of earlier runs do not), the bin icon deletes it. **Clear history** in
-the settings deletes them all. You can also ask the assistant about earlier
-conversations (“which sample did I create yesterday?”): it may then search
-and read these files, but not on its own. What it reads goes to the AI
-model like everything else in the conversation.
+the settings deletes them all. With “Assistant may read earlier conversations”
+switched on in the settings (off by default), you can also ask the assistant
+about them (“which sample did I create yesterday?”): it may then search and
+read these files, but not on its own. What it reads goes to the AI model like
+everything else in the conversation — also to a model other than the one that
+held the earlier conversation.
 
 ## Analyses in JupyterLab
 

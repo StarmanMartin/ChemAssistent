@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 import api_versions
-import history
+import history as history_module  # system_prompt() has a parameter `history`
 import lessons
 from config import FROZEN, SKILLS_DIR, WINDOWS, WORKSPACE_DIR
 
@@ -163,7 +163,8 @@ Developer mode (the user develops chemotion_api; installed: {api_version}):
 """
 
 
-# Always appended; {history} is history.HISTORY_DIR, which the read-only tools may read.
+# Appended with the setting history_access on (then {history} = history.HISTORY_DIR
+# is a root of the read-only tools, agent.base_roots()).
 HISTORY_PROMPT = """
 Earlier conversations (only when the user asks):
 - Every conversation of this app is saved as one JSON file in `{history}`
@@ -207,7 +208,7 @@ or outdated, e.g. after a chemotion_api update: verify before relying on them):
 """
 
 
-def system_prompt(exchange: Path | None = None, developer: bool = False) -> str:
+def system_prompt(exchange: Path | None = None, developer: bool = False, history: bool = False) -> str:
     """`exchange`: the conversation's exchange folder when JupyterLab is on;
     `developer`: developer mode (config.developer_mode)."""
     tag, branch = api_versions.installed_tag(), api_versions.installed_branch()
@@ -216,7 +217,8 @@ def system_prompt(exchange: Path | None = None, developer: bool = False) -> str:
     prompt += JUPYTER_PROMPT.format(exchange=exchange) if exchange is not None else NO_JUPYTER_PROMPT
     if developer:
         prompt += DEVELOPER_PROMPT.format(api_version=api_versions.installed_label() or "unknown")
-    prompt += HISTORY_PROMPT.format(history=history.HISTORY_DIR)
+    if history:
+        prompt += HISTORY_PROMPT.format(history=history_module.HISTORY_DIR)
     learned = lessons.prompt_section()  # not formatted: lessons may contain braces
     return prompt + LESSONS_PROMPT + (LESSONS_HEADER + learned + "\n" if learned else "")
 
