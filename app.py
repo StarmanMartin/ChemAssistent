@@ -88,6 +88,7 @@ from agent import (  # noqa: E402
 from cli_agent import CliAgent, cli_models, command_problem  # noqa: E402
 from jobs import ACTIVE, FINISHED, REPORT_HEADER, USER_TEXT, Jobs, duration  # noqa: E402
 from jupyter import JupyterBridge, JupyterError  # noqa: E402
+from model_picker import ModelList  # noqa: E402
 from config import (  # noqa: E402
     AGENT_SHORT, AUTO_RUN_LABELS, AUTO_RUN_MODES, CLI_AGENTS, CONFIG_FILE, MAIN_THREAD_KEYRING_WAIT_S, STATE_DIR,
     WINDOWS, WORKSPACE_DIR, Config, ai_problem, jupyter_problem, limit_main_thread_wait, load_config,
@@ -1484,6 +1485,9 @@ class AssistantWindow(Gtk.Window):
         self.run_mode_button: Gtk.MenuButton | None = None
         self.model_button: Gtk.MenuButton | None = None
         self.model_label: Gtk.Label | None = None
+        self.model_list: ModelList | None = None
+        self.model_status: Gtk.Label | None = None
+        self.model_reload: Gtk.Button | None = None
         # JupyterLab (config.jupyter_url): the conversation's notebook/kernel and exchange folder.
         self.jupyter: JupyterBridge | None = None
         self.exchange: Path | None = None
@@ -1847,6 +1851,22 @@ class AssistantWindow(Gtk.Window):
         box.pack_start(self.model_label, False, False, 0)
         box.pack_start(Gtk.Image.new_from_icon_name("pan-down-symbolic", Gtk.IconSize.MENU), False, False, 0)
         button.add(box)
+        # Not menu_popover(): the Gemini API lists hundreds of models, so a
+        # search field over a scrolled list (model_picker.py).
+        popover = Gtk.Popover(relative_to=button)
+        self.model_list = ModelList(lambda model: _chosen(popover, lambda: self._set_model(model)), model_name)
+        self.model_status = label("", "dim")
+        self.model_status.set_max_width_chars(40)
+        self.model_reload = Gtk.Button(label="Load again", halign=Gtk.Align.START)
+        self.model_reload.connect("clicked", lambda *_: self.agent and self.app.load_models(self.agent.config, True))
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, border_width=6)
+        content.pack_start(self.model_list, True, True, 0)
+        content.pack_start(self.model_status, False, False, 0)
+        content.pack_start(self.model_reload, False, False, 0)
+        content.show_all()
+        popover.add(content)
+        popover.connect("show", lambda *_: self.model_list and self.model_list.prepare(button))
+        button.set_popover(popover)
         self.model_button = button
         self.models_changed()
         return button
@@ -1856,23 +1876,20 @@ class AssistantWindow(Gtk.Window):
         return f"· {model_name(model)}" if agent == "api" else f"· {AGENT_SHORT[agent]} · {model_name(model)}"
 
     def models_changed(self) -> None:
-        """(Re)fill the model menu: the app's model list, or why it is missing."""
-        if self.model_button is None or self.agent is None:
+        """(Re)fill the model list: the app's models, or why they are missing."""
+        if self.model_list is None or self.agent is None:
             return
-        current = self.agent.config.ai_model
         models, error = self.app.models, self.app.models_error
-        rows = [(model_name(model), lambda model=model: self._set_model(model), model == current)
-                for model in sorted(set(models or ()) | {current})]
-        if models is None:
-            rows.append(None)
-            if error:
-                if len(error) > MAX_MODEL_ERROR_CHARS:
-                    error = error[: MAX_MODEL_ERROR_CHARS - 1] + "…"
-                rows.append((f"Could not load the models: {error}", None, None))
-                rows.append(("Load again", lambda: self.agent and self.app.load_models(self.agent.config, True), None))
-            else:
-                rows.append(("Loading models…", None, None))
-        menu_popover(self.model_button, rows)
+        self.model_list.set_models(models or (), self.agent.config.ai_model)
+        if error:
+            if len(error) > MAX_MODEL_ERROR_CHARS:
+                error = error[: MAX_MODEL_ERROR_CHARS - 1] + "…"
+            status = f"Could not load the models: {error}"
+        else:
+            status = "Loading models…" if models is None else ""
+        self.model_status.set_text(status)
+        self.model_status.set_visible(bool(status))
+        self.model_reload.set_visible(models is None and bool(error))
 
     def _set_model(self, model: str) -> None:
         """Switch the model for this conversation from the next request on;

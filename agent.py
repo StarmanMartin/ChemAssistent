@@ -344,7 +344,8 @@ def _request(config: Config, path: str, body: dict | None = None):
 
 def list_models(config: Config) -> list[str]:
     """The chat model ids the endpoint offers (GET /models), sorted. Models an
-    Open WebUI (KI-Toolbox) marks as hidden, e.g. embeddings, are left out."""
+    Open WebUI (KI-Toolbox) marks as hidden, e.g. embeddings, are left out;
+    the Gemini API's "models/" prefix too (its chat endpoint takes bare ids)."""
     with _request(config, "/models") as response:
         try:
             data = json.loads(response.read().decode("utf-8"))
@@ -354,7 +355,7 @@ def list_models(config: Config) -> list[str]:
     for item in data.get("data", []) if isinstance(data, dict) else []:
         meta = ((item.get("info") or {}).get("meta") or {}) if isinstance(item, dict) else {}
         if isinstance(item, dict) and item.get("id") and not meta.get("hidden"):
-            models.append(str(item["id"]))
+            models.append(str(item["id"]).removeprefix("models/"))
     return sorted(models)
 
 
@@ -814,6 +815,10 @@ class Agent:
         if function.get("arguments"):
             arguments = function["arguments"]
             call["function"]["arguments"] += arguments if isinstance(arguments, str) else json.dumps(arguments)
+        if delta.get("extra_content"):
+            # Gemini's thought signature ({"google": {"thought_signature": ...}}):
+            # Gemini 3 refuses the next request if the call comes back without it.
+            call["extra_content"] = delta["extra_content"]
 
     def _run_tool(self, call: dict) -> None:
         name = call["function"]["name"]

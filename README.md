@@ -6,7 +6,8 @@ the top bar (the tray on Windows) and
 lets you talk to your [Chemotion ELN](https://chemotion.net) through an AI
 agent. The agent is part of the app (`agent.py`) and talks to any
 OpenAI-compatible API, by default the
-[KIT KI-Toolbox](https://ki-toolbox.scc.kit.edu), or to a local
+[KIT KI-Toolbox](https://ki-toolbox.scc.kit.edu), to Google's
+[Gemini API](https://ai.google.dev) or to a local
 [Ollama](https://ollama.com). Instead, the settings can hand the conversation
 to [Claude Code](https://claude.com/claude-code) or
 [Codex](https://github.com/openai/codex), with the same tools and the same
@@ -169,6 +170,8 @@ shows it for editing and has *Clear lessons*.
 - Your prompts, the code and its results are sent to the AI model's
   provider. Choose a local model for sensitive data. With JupyterLab, the
   files in a conversation's exchange folder are copied to that server.
+  Google may use what goes through a free Gemini API key to train its models
+  (see [Agents](#agents)).
 - Claude Code and Codex get the same four tools and none of their own; see
   [Agents](#agents).
 
@@ -179,6 +182,20 @@ Settings → *AI agent* chooses who answers:
 - **Built-in agent · OpenAI-compatible API** (default): `agent.py` against
   `ai_url` with `ai_token` and `ai_model` (the KI-Toolbox, OpenAI, vLLM,
   LiteLLM, ...).
+- **Built-in agent · Google Gemini API**: the same agent against the Gemini
+  API's OpenAI-compatible endpoint (`gemini_url`, default
+  `https://generativelanguage.googleapis.com/v1beta/openai`) with an API key
+  from [Google AI Studio](https://aistudio.google.com/apikey) (`gemini_token`;
+  if empty, `GEMINI_API_KEY` from the environment) and `gemini_model`;
+  *Load models* lists the models the key may use. **Keys without billing are
+  free of charge, but according to
+  [Google's terms](https://ai.google.dev/gemini-api/terms) Google may use the
+  prompts and answers of the free tier (including the ELN data the assistant
+  reads) to improve and train its models, and human reviewers may read
+  them.** The terms make an exception for the EEA, Switzerland and the UK,
+  where the paid-service data terms apply to the free tier too. The settings
+  show this warning while Gemini is chosen. Gemini 3's thought signatures
+  (`extra_content` of a tool call) are sent back as the API requires.
 - **Built-in agent · Ollama (local)**: the same agent against a local
   Ollama's OpenAI-compatible endpoint (`ollama_url`, default
   `http://localhost:11434/v1`); *Load models* lists the models you pulled.
@@ -421,6 +438,9 @@ fill it in before distributing builds.
   "jupyter_folder": "ChemAssistent",
   "jupyter_verify_tls": true,
   "agent": "api",
+  "gemini_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+  "gemini_token": "",
+  "gemini_model": "",
   "ollama_url": "http://localhost:11434/v1",
   "ollama_model": "",
   "claude_command": "claude",
@@ -431,7 +451,7 @@ fill it in before distributing builds.
 }
 ```
 
-Passwords and tokens (`password`, `ai_token`, `jupyter_token`,
+Passwords and tokens (`password`, `ai_token`, `gemini_token`, `jupyter_token`,
 `jupyter_password`, `github_token`) are kept in the system keyring when there is one: the
 GNOME Keyring (or another Secret Service, e.g. KWallet) on Linux, the
 Credential Manager on Windows. The file then has them empty and says
@@ -456,8 +476,9 @@ keyring.
 - `ai_model`: the model id, e.g. `alias.complex-local` (the KI-Toolbox's
   local GLM), `alias.complex-gpt` or `alias.complex-claude`. The model must
   support tool calls.
-- `agent`: `api` (the three keys above), `ollama`, `claude` or `codex`; see
-  [Agents](#agents). Each keeps its own keys: `ollama_url`/`ollama_model`,
+- `agent`: `api` (the three keys above), `gemini`, `ollama`, `claude` or `codex`; see
+  [Agents](#agents). Each keeps its own keys: `gemini_url`/`gemini_token`/`gemini_model`
+  (empty token: `GEMINI_API_KEY`), `ollama_url`/`ollama_model`,
   `claude_command`/`claude_model`, `codex_command`/`codex_model` (an empty
   model is the CLI's default).
 - `execution_timeout`: maximum run time of one confirmed snippet, in seconds.

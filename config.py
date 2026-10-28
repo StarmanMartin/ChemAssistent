@@ -60,23 +60,28 @@ DEFAULT_JUPYTER_FOLDER = "ChemAssistent"
 # one subfolder per conversation.
 EXCHANGE_DIR = STATE_DIR / "exchange"
 # Which agent answers (config key `agent`): the built-in one (agent.py) against
-# an OpenAI-compatible API or a local Ollama, or a CLI agent (cli_agent.py).
-AGENTS = ("api", "ollama", "claude", "codex")
+# an OpenAI-compatible API, Google's Gemini API or a local Ollama, or a CLI
+# agent (cli_agent.py).
+AGENTS = ("api", "gemini", "ollama", "claude", "codex")
 AGENT_LABELS = {
     "api": "Built-in agent · OpenAI-compatible API",
+    "gemini": "Built-in agent · Google Gemini API",
     "ollama": "Built-in agent · Ollama (local)",
     "claude": "Claude Code CLI",
     "codex": "Codex CLI",
 }
 # How the prompt and the conversation header name them.
-AGENT_SHORT = {"api": "Model", "ollama": "Ollama", "claude": "Claude Code", "codex": "Codex"}
+AGENT_SHORT = {"api": "Model", "gemini": "Gemini", "ollama": "Ollama", "claude": "Claude Code", "codex": "Codex"}
 CLI_AGENTS = ("claude", "codex")
 # Ollama's OpenAI-compatible endpoint.
 OLLAMA_URL = "http://localhost:11434/v1"
+# The Gemini API's OpenAI-compatible endpoint (key from Google AI Studio).
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
 # Per agent: the config keys that hold its url, token, model and command.
 # load_config() puts the chosen agent's values into Config.ai_url etc.
 AGENT_KEYS = {
     "api": {"url": "ai_url", "token": "ai_token", "model": "ai_model"},
+    "gemini": {"url": "gemini_url", "token": "gemini_token", "model": "gemini_model"},
     "ollama": {"url": "ollama_url", "model": "ollama_model"},
     "claude": {"command": "claude_command", "model": "claude_model"},
     "codex": {"command": "codex_command", "model": "codex_model"},
@@ -87,6 +92,10 @@ AGENT_KEYS = {
 CLI_MODELS = {"claude": ["", "opus", "sonnet", "haiku"], "codex": [""]}
 # Used when ai_token is empty (older installs put the key there).
 AI_TOKEN_ENV = "KI_TOOLBOX_API_KEY"
+# Used when gemini_token is empty (the variable Google's SDKs read).
+GEMINI_TOKEN_ENV = "GEMINI_API_KEY"
+# Per agent with a token: the environment variable used when it is empty.
+TOKEN_ENVS = {"api": AI_TOKEN_ENV, "gemini": GEMINI_TOKEN_ENV}
 # The settings that are secrets. With a system keyring (keystore.py) they live
 # there, and config.json has them empty plus "secret_store": "keyring";
 # without one, or with "use_keyring": false, they stay in config.json (0600).
@@ -94,6 +103,7 @@ AI_TOKEN_ENV = "KI_TOOLBOX_API_KEY"
 SECRET_KEYS = {
     "password": "Chemotion password",
     "ai_token": "AI API token",
+    "gemini_token": "Gemini API key",
     "jupyter_token": "JupyterLab token",
     "jupyter_password": "JupyterLab password",
     "github_token": "GitHub token",
@@ -174,6 +184,9 @@ EXAMPLE = {
     "jupyter_folder": DEFAULT_JUPYTER_FOLDER,
     "jupyter_verify_tls": True,
     "agent": "api",
+    "gemini_url": GEMINI_URL,
+    "gemini_token": "",
+    "gemini_model": "",
     "ollama_url": OLLAMA_URL,
     "ollama_model": "",
     "claude_command": "claude",
@@ -230,7 +243,16 @@ def read_raw_config(secrets: bool = True, retry: bool = False) -> RawConfig:
 
 
 def ai_token(data: dict) -> str:
-    return str(data.get("ai_token") or "").strip() or os.environ.get(AI_TOKEN_ENV, "").strip()
+    return agent_token(data, "api")
+
+
+def agent_token(data: dict, agent: str) -> str:
+    """The token of `agent` (config.AGENT_KEYS), else its TOKEN_ENVS variable;
+    "" for agents without one."""
+    key = AGENT_KEYS[agent].get("token")
+    if not key:
+        return ""
+    return str(data.get(key) or "").strip() or os.environ.get(TOKEN_ENVS.get(agent, ""), "").strip()
 
 
 def agent_of(data: dict) -> str:
@@ -255,6 +277,14 @@ def ai_problem(data: dict) -> str | None:
             return "Set the Ollama URL in the settings."
         if not str(data.get("ollama_model") or "").strip():
             return "Choose an Ollama model in the settings."
+        return None
+    if agent == "gemini":
+        if not str(data.get("gemini_url") or "").strip():
+            return "Set the Gemini API URL in the settings."
+        if not agent_token(data, agent):
+            return f"Set the Gemini API key in the settings (or {GEMINI_TOKEN_ENV})."
+        if not str(data.get("gemini_model") or "").strip():
+            return "Choose a Gemini model in the settings."
         return None
     if not str(data.get("ai_url", "")).strip():
         return "Set the AI URL in the settings."
@@ -567,7 +597,7 @@ def load_config() -> Config:
         password=os.environ.get("CHEMOTION_PASSWORD") or str(data["password"]),
         verify_tls=bool(data.get("verify_tls", True)),
         ai_url=str(data.get(keys.get("url", "")) or "").strip().rstrip("/"),
-        ai_token=ai_token(data) if agent == "api" else "",
+        ai_token=agent_token(data, agent),
         ai_model=str(data.get(keys["model"]) or "").strip(),
         execution_timeout=max(10, timeout),
         prompt_width=max(360, width),
