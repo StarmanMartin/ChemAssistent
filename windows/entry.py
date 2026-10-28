@@ -22,6 +22,42 @@ from pathlib import Path
 RUNNER_PROGRAM = "chem-assistent-runner"
 
 
+def keystore_problems(keystore) -> list[str]:
+    """Store, read and delete a secret in the Credential Manager."""
+    key, value = "self-test", "Self-test \u00e4\u20ac"
+    try:
+        keystore.write(key, value, "ChemAssistent: self-test")
+        try:
+            if keystore.read(key) != value:
+                return ["the Credential Manager returned another secret"]
+        finally:
+            keystore.delete(key)
+        if keystore.read(key):
+            return ["the Credential Manager did not delete a secret"]
+    except keystore.KeystoreError as exc:
+        return [f"the Credential Manager does not work: {exc}"]
+    return []
+
+
+def save_lock_problems(config) -> list[str]:
+    """The lock around save_raw_config() (msvcrt.locking) keeps a second save out."""
+    wait, config.SAVE_LOCK_WAIT_S = config.SAVE_LOCK_WAIT_S, 0
+    try:
+        with config._save_lock():
+            try:
+                with config._save_lock():
+                    return ["the config lock lets a second save in"]
+            except OSError:
+                pass
+        with config._save_lock():  # released again
+            pass
+    except OSError as exc:
+        return [f"the config lock does not work: {exc}"]
+    finally:
+        config.SAVE_LOCK_WAIT_S = wait
+    return []
+
+
 def self_test() -> int:
     """Import everything the app needs and load the data files GTK finds at
     run time (typelibs, the SVG loader, GtkSourceView's language specs)."""
@@ -33,6 +69,8 @@ def self_test() -> int:
 
     import app  # noqa: F401  (GTK, agent, history, ipc, ...)
     import chemotion_api  # noqa: F401
+    import config
+    import keystore
     import mcp_bridge  # noqa: F401
     import settings  # noqa: F401
     import workspace
@@ -48,6 +86,8 @@ def self_test() -> int:
         problems.append(f"{workspace.REFERENCE} is missing in {workspace.WORKSPACE_DIR}")
     if not workspace.skill_lines():
         problems.append("the chemotionapi skills are missing")
+    problems += keystore_problems(keystore)
+    problems += save_lock_problems(config)
     for problem in problems:
         print(f"Self-test: {problem}", file=sys.stderr)
     if not problems:

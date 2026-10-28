@@ -4,8 +4,9 @@ Fills a missing ai_url/ai_model with the KIT KI-Toolbox defaults (and turns
 an opencode-era model id like ki-toolbox/complex-local into alias.complex-local).
 If the config has no ai_token yet, it takes KI_TOOLBOX_API_KEY from the
 environment (where older installs put it) or asks for the key. Other agents
-(Ollama, Claude Code, Codex; config key `agent`) need no token.
-Standard library only.
+(Ollama, Claude Code, Codex; config key `agent`) need no token. Saving moves
+the passwords and tokens into the system keyring when there is one.
+Standard library (and PyGObject's Secret typelib on Linux) only.
 """
 from __future__ import annotations
 
@@ -13,14 +14,30 @@ import getpass
 import os
 import sys
 
-from config import AGENT_LABELS, AI_TOKEN_ENV, CONFIG_FILE, KI_TOOLBOX_URL, agent_of, read_raw_config, save_raw_config
+from config import (AGENT_LABELS, AI_TOKEN_ENV, KI_TOOLBOX_URL, agent_of, read_raw_config, save_raw_config,
+                    storage_location)
+
+
+def save(data: dict) -> bool:
+    """save_raw_config(); a warning instead of a traceback (the installer goes on)."""
+    try:
+        save_raw_config(data)
+    except OSError as exc:
+        print(f"Warning: could not save the config: {exc}")
+        return False
+    return True
 
 
 def main() -> None:
     data = read_raw_config()  # fills defaults and migrates the model id
+    if data.keyring_problem:
+        # Saving the secrets it could not read would delete them.
+        print("Warning: could not read the system keyring (is it locked?); left the config as it is.")
+        return
     if agent_of(data) != "api":
-        save_raw_config(data)
-        print(f"Agent: {AGENT_LABELS[agent_of(data)]}; no API token needed.")
+        if save(data):
+            print(f"Agent: {AGENT_LABELS[agent_of(data)]}; no API token needed.")
+            print(f"Passwords and tokens are saved in: {storage_location()}")
         return
     if str(data.get("ai_token") or "").strip():
         print("AI token already set.")
@@ -33,8 +50,9 @@ def main() -> None:
         ).strip()
         if key:
             data["ai_token"] = key
-            print(f"Saved the key in {CONFIG_FILE}.")
-    save_raw_config(data)
+    if not save(data):
+        return
+    print(f"Passwords and tokens are saved in: {storage_location()}")
     if not str(data.get("ai_token") or "").strip():
         print("Warning: no AI token set. Enter it in ChemAssistent Settings (API token).")
 

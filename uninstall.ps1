@@ -41,5 +41,6 @@ Remove-Item $AppDir -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host "Application removed."
 Write-Host "Configuration was kept at:"
 Write-Host "  $ConfigDir"
+Write-Host "  and its passwords and tokens in the Credential Manager (Windows Credentials, ChemAssistent/...)"
 Write-Host "The log and the conversation history (may be deleted):"
 Write-Host "  $StateDir"

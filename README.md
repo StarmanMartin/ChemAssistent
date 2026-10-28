@@ -221,14 +221,15 @@ installs another branch, `CHEMOTION_API_TAG=<tag>` another chemotionapi
 version without asking.
 
 Run it as your normal user (it calls `sudo` only when Ubuntu packages are
-missing: GTK 3, the AppIndicator library, GtkSourceView, libmagic, git).
+missing: GTK 3, the AppIndicator library, GtkSourceView, libsecret, libmagic,
+git).
 It copies the app to `~/.local/share/chem-assistent/` with its own virtual
 environment, lists the released **chemotionapi** versions (tags starting
 with `v` and three digits, e.g. `v312.0.1`) and asks which one to install
 (default: the installed one, on a first install the newest), clones it with
 its skills into the app's workspace, installs it, generates the API reference for the
-agent, asks once for your KI-Toolbox API key (saved as `ai_token` in the
-config) and installs and starts the systemd user service, so the icon appears
+agent, asks once for your KI-Toolbox API key (saved as `ai_token`, in the
+system keyring) and installs and starts the systemd user service, so the icon appears
 in the top bar now and at every login.
 
 Run it again to update the app and chemotionapi; the configuration is
@@ -267,7 +268,8 @@ The script
 2. unpacks it to `%LOCALAPPDATA%\Programs\chem-assistent`, replacing an
    older version (a running app is stopped first),
 3. asks once for your KI-Toolbox API key (saved as `ai_token` in the
-   config; `KI_TOOLBOX_API_KEY` from your user environment is taken over),
+   Credential Manager; `KI_TOOLBOX_API_KEY` from your user environment is
+   taken over),
 4. creates the Start-menu shortcuts “ChemAssistent” and “ChemAssistent
    Settings” plus a Startup shortcut, and starts the app.
 
@@ -330,7 +332,8 @@ On Windows the files live in other places:
 - the app: `%LOCALAPPDATA%\Programs\chem-assistent` (`build.json` there
   says which commit of the app and of chemotionapi it was built from,
   `License.md` lists the licenses of all bundled third-party software)
-- configuration: `%APPDATA%\chem-assistent\config.json`
+- configuration: `%APPDATA%\chem-assistent\config.json`, its passwords and
+  tokens in the Credential Manager (Windows Credentials, `ChemAssistent/…`)
 - log: `%LOCALAPPDATA%\chem-assistent\app.log`
 - conversation history: `%LOCALAPPDATA%\chem-assistent\history\`
 
@@ -423,9 +426,21 @@ fill it in before distributing builds.
   "claude_command": "claude",
   "claude_model": "",
   "codex_command": "codex",
-  "codex_model": ""
+  "codex_model": "",
+  "use_keyring": true
 }
 ```
+
+Passwords and tokens (`password`, `ai_token`, `jupyter_token`,
+`jupyter_password`, `github_token`) are kept in the system keyring when there is one: the
+GNOME Keyring (or another Secret Service, e.g. KWallet) on Linux, the
+Credential Manager on Windows. The file then has them empty and says
+`"secret_store": "keyring"`. Secrets of older versions in the file move into
+the keyring at the next start; a value typed into the file wins and moves
+too. Without a keyring (e.g. under WSL or over SSH) they stay in the file.
+The settings say where they are. `use_keyring: false` (the settings' switch
+“Use the system keyring”) keeps them in the file and removes them from the
+keyring.
 
 - `url`, `user`, `password`: your Chemotion server and login (abbreviation
   or e-mail). `CHEMOTION_PASSWORD` in the environment overrides the password.

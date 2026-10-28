@@ -89,8 +89,9 @@ from cli_agent import CliAgent, cli_models, command_problem  # noqa: E402
 from jobs import ACTIVE, FINISHED, REPORT_HEADER, USER_TEXT, Jobs, duration  # noqa: E402
 from jupyter import JupyterBridge, JupyterError  # noqa: E402
 from config import (  # noqa: E402
-    AGENT_SHORT, AUTO_RUN_LABELS, AUTO_RUN_MODES, CLI_AGENTS, CONFIG_FILE, STATE_DIR, WINDOWS,
-    WORKSPACE_DIR, Config, ai_problem, jupyter_problem, load_config, model_name, read_raw_config,
+    AGENT_SHORT, AUTO_RUN_LABELS, AUTO_RUN_MODES, CLI_AGENTS, CONFIG_FILE, MAIN_THREAD_KEYRING_WAIT_S, STATE_DIR,
+    WINDOWS, WORKSPACE_DIR, Config, ai_problem, jupyter_problem, limit_main_thread_wait, load_config,
+    migrate_secrets, model_name, read_raw_config,
 )
 
 
@@ -2386,7 +2387,7 @@ class ChemAssistentApp:
     def _register_hotkey(self) -> None:
         """GNOME: (re)write the custom shortcut, so it runs this copy's hotkey.py.
         Windows: RegisterHotKey (a change in the settings needs a restart)."""
-        accelerator = str(read_raw_config().get("hotkey") or "").strip()
+        accelerator = str(read_raw_config(secrets=False).get("hotkey") or "").strip()
         if not WINDOWS:
             try:
                 problem = hotkey.register_gnome(accelerator)
@@ -2432,6 +2433,15 @@ class ChemAssistentApp:
         Gtk.main()
 
 
+def _migrate_secrets() -> None:
+    """Older versions kept the passwords and tokens in config.json."""
+    try:
+        if migrate_secrets():
+            LOG.info("Moved the passwords and tokens from %s into the system keyring.", CONFIG_FILE)
+    except OSError as exc:
+        LOG.warning("Could not move the passwords and tokens into the system keyring: %s", exc)
+
+
 def main() -> None:
     log_format = "%(asctime)s %(levelname)s %(name)s: %(message)s"
     if WINDOWS:
@@ -2450,6 +2460,11 @@ def main() -> None:
     GLib.set_prgname(APP_ID)
     if WINDOWS:
         app_control.write_pid()
+    # The keyring may ask to be unlocked: the main loop waits for it at most
+    # MAIN_THREAD_KEYRING_WAIT_S (then a conversation says it is not readable
+    # yet), the migration in a thread as long as it takes.
+    limit_main_thread_wait(MAIN_THREAD_KEYRING_WAIT_S)
+    threading.Thread(target=_migrate_secrets, name="migrate-secrets", daemon=True).start()
     try:
         ChemAssistentApp(show_prompt).run()
     except Exception:

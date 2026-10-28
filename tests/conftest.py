@@ -122,6 +122,85 @@ def lessons_file(tmp_path, monkeypatch) -> Path:
     return path
 
 
+class FakeKeyring:
+    """keystore's backend interface, in memory."""
+
+    def __init__(self) -> None:
+        self.secrets: dict[str, str] = {}
+        self.fail = False  # every call raises KeystoreError
+        self.on_read = None  # called by read_all() first (e.g. waits like an unlock prompt)
+        self.reads = 0
+        self.writes = 0  # write() and delete() calls
+
+    def _check(self) -> None:
+        import keystore
+
+        if self.fail:
+            raise keystore.KeystoreError("the keyring is locked")
+
+    def read(self, key: str) -> str:
+        self._check()
+        return self.secrets.get(key, "")
+
+    def read_all(self, keys) -> dict[str, str]:
+        self.reads += 1
+        if self.on_read is not None:
+            self.on_read()
+        self._check()
+        return {key: value for key, value in self.secrets.items() if key in keys}
+
+    def write(self, key: str, value: str, label: str) -> None:
+        self.writes += 1
+        self._check()
+        self.secrets[key] = value
+
+    def delete(self, key: str) -> None:
+        self.writes += 1
+        self._check()
+        self.secrets.pop(key, None)
+
+
+class NoRealKeyring:
+    """Stands in for keystore's real backends: whatever makes backend() probe
+    again (a reset _store, an expired failure), a test never reaches the
+    user's keyring."""
+
+    def __init__(self) -> None:
+        import keystore
+
+        raise keystore.KeystoreError("tests never use the real keyring")
+
+
+@pytest.fixture(autouse=True)
+def keyring(monkeypatch) -> FakeKeyring:
+    """Every test gets an empty in-memory keyring, never the user's."""
+    import keystore
+
+    store = FakeKeyring()
+    monkeypatch.setattr(keystore, "SecretService", NoRealKeyring)
+    monkeypatch.setattr(keystore, "CredentialManager", NoRealKeyring)
+    monkeypatch.setattr(keystore, "_store", store)
+    # Restored afterwards: a probe in one test must not carry over to the next.
+    monkeypatch.setattr(keystore, "_problem", "")
+    monkeypatch.setattr(keystore, "_failed_at", 0.0)
+    monkeypatch.setattr(app_config, "_secrets_cache", None)
+    monkeypatch.setattr(app_config, "_reader", None)
+    monkeypatch.setattr(app_config, "_main_thread_wait", None)
+    return store
+
+
+@pytest.fixture
+def no_keyring(monkeypatch) -> None:
+    """A system without a keyring."""
+    import keystore
+
+    monkeypatch.setattr(keystore, "_store", False)
+    monkeypatch.setattr(keystore, "_problem", "no Secret Service")
+    # Never probed again: with _failed_at 0.0 the failure would count as
+    # expired at once.
+    monkeypatch.setattr(keystore, "PROBE_RETRY_S", float("inf"))
+
+
 @pytest.fixture
 def fake_ai():
     """A scripted AI endpoint; add turns with `script_next()`."""

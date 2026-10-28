@@ -31,7 +31,7 @@ DESKTOP_FILES=("${APP_NAME}.desktop" "${APP_NAME}-settings.desktop")
 ICON_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps"
 
 APP_FILES=(agent.py api_versions.py app.py app_control.py chemotion_runner.py cli_agent.py config.py gen_api_reference.py history.py hotkey.py ipc.py
-  issues.py jobs.py jupyter.py lessons.py mcp_bridge.py
+  issues.py jobs.py jupyter.py keystore.py lessons.py mcp_bridge.py
   settings.py workspace.py setup_workspace.sh uninstall.sh requirements.txt
   chem-assistent.svg chem-assistent-panel.svg)
 # Folders copied as a whole (the app's agent skills).
@@ -74,9 +74,9 @@ fi
 
 # --- System packages --------------------------------------------------------
 # PyGObject, GTK and the AppIndicator come from apt; pip installs
-# requests and chemotion_api.
+# requests and chemotion_api. libsecret keeps the passwords in the keyring.
 packages=(python3 python3-gi gir1.2-gtk-3.0 gir1.2-ayatanaappindicator3-0.1
-  gir1.2-gtksource-4 git)
+  gir1.2-gtksource-4 gir1.2-secret-1 git)
 
 # venv needs ensurepip, which may come from python3-venv or python3.X-venv.
 if ! "$PYTHON" -c 'import ensurepip' 2>/dev/null; then
