@@ -18,6 +18,16 @@ from config import (AGENT_LABELS, AI_TOKEN_ENV, KI_TOOLBOX_URL, agent_of, keyrin
                     save_raw_config, storage_location)
 
 
+def save(data: dict) -> bool:
+    """save_raw_config(); a warning instead of a traceback (the installer goes on)."""
+    try:
+        save_raw_config(data)
+    except OSError as exc:
+        print(f"Warning: could not save the config: {exc}")
+        return False
+    return True
+
+
 def main() -> None:
     data = read_raw_config()  # fills defaults and migrates the model id
     if keyring_problem():
@@ -25,9 +35,9 @@ def main() -> None:
         print("Warning: could not read the system keyring (is it locked?); left the config as it is.")
         return
     if agent_of(data) != "api":
-        save_raw_config(data)
-        print(f"Agent: {AGENT_LABELS[agent_of(data)]}; no API token needed.")
-        print(f"Passwords and tokens are saved in: {storage_location()}")
+        if save(data):
+            print(f"Agent: {AGENT_LABELS[agent_of(data)]}; no API token needed.")
+            print(f"Passwords and tokens are saved in: {storage_location()}")
         return
     if str(data.get("ai_token") or "").strip():
         print("AI token already set.")
@@ -40,7 +50,8 @@ def main() -> None:
         ).strip()
         if key:
             data["ai_token"] = key
-    save_raw_config(data)
+    if not save(data):
+        return
     print(f"Passwords and tokens are saved in: {storage_location()}")
     if not str(data.get("ai_token") or "").strip():
         print("Warning: no AI token set. Enter it in ChemAssistent Settings (API token).")

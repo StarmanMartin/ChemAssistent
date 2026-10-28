@@ -348,6 +348,36 @@ def test_the_migration_does_not_overwrite_a_save_meanwhile(tmp_path, monkeypatch
     assert keyring.secrets["ai_token"] == "plain"
 
 
+def test_the_migration_waits_for_a_save_in_another_program(tmp_path, monkeypatch, keyring):
+    path = use_config_file(tmp_path, monkeypatch)
+    write_private_json(path, SETTINGS)  # plain text, to be migrated
+    stamp, data = app_config._file_stamp(), read_raw_config()
+    result = []
+    migration = threading.Thread(target=lambda: result.append(save_raw_config(data, if_stamp=stamp)))
+    with app_config._save_lock():  # the settings save: keyring first, then the file
+        migration.start()
+        time.sleep(0.2)
+        assert migration.is_alive() and keyring.secrets == {}  # waits, writes nothing meanwhile
+        keyring.secrets["ai_token"] = "saved meanwhile"
+        write_private_json(path, {**SETTINGS, **dict.fromkeys(app_config.SECRET_KEYS, ""),
+                                  "secret_store": "keyring", "user": "saved meanwhile"})
+    migration.join(5)
+    assert result == [False]
+    assert keyring.secrets == {"ai_token": "saved meanwhile"}
+    assert json.loads(path.read_text(encoding="utf-8"))["user"] == "saved meanwhile"
+
+
+def test_a_save_gives_up_on_a_save_that_hangs(tmp_path, monkeypatch, keyring):
+    path = use_config_file(tmp_path, monkeypatch)
+    monkeypatch.setattr(app_config, "SAVE_LOCK_WAIT_S", 0.2)
+    with app_config._save_lock():
+        with pytest.raises(OSError, match="another program is saving the settings"):
+            save_raw_config(SETTINGS)
+    assert keyring.secrets == {} and not path.exists()
+    assert save_raw_config(SETTINGS) is True  # free again
+    assert keyring.secrets["password"] == "p"
+
+
 def test_a_failed_save_forgets_the_cache(tmp_path, monkeypatch, keyring):
     use_config_file(tmp_path, monkeypatch)
     save_raw_config(SETTINGS)

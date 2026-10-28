@@ -39,6 +39,25 @@ def keystore_problems(keystore) -> list[str]:
     return []
 
 
+def save_lock_problems(config) -> list[str]:
+    """The lock around save_raw_config() (msvcrt.locking) keeps a second save out."""
+    wait, config.SAVE_LOCK_WAIT_S = config.SAVE_LOCK_WAIT_S, 0
+    try:
+        with config._save_lock():
+            try:
+                with config._save_lock():
+                    return ["the config lock lets a second save in"]
+            except OSError:
+                pass
+        with config._save_lock():  # released again
+            pass
+    except OSError as exc:
+        return [f"the config lock does not work: {exc}"]
+    finally:
+        config.SAVE_LOCK_WAIT_S = wait
+    return []
+
+
 def self_test() -> int:
     """Import everything the app needs and load the data files GTK finds at
     run time (typelibs, the SVG loader, GtkSourceView's language specs)."""
@@ -50,6 +69,7 @@ def self_test() -> int:
 
     import app  # noqa: F401  (GTK, agent, history, ipc, ...)
     import chemotion_api  # noqa: F401
+    import config
     import keystore
     import mcp_bridge  # noqa: F401
     import settings  # noqa: F401
@@ -67,6 +87,7 @@ def self_test() -> int:
     if not workspace.skill_lines():
         problems.append("the chemotionapi skills are missing")
     problems += keystore_problems(keystore)
+    problems += save_lock_problems(config)
     for problem in problems:
         print(f"Self-test: {problem}", file=sys.stderr)
     if not problems:

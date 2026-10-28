@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sys
@@ -104,6 +105,9 @@ KEYRING = "keyring"
 SECRET_TTL_S = 300
 # ... and after it failed to answer, at most this often.
 SECRET_RETRY_S = 30
+# How long save_raw_config() waits for another program's save (they take
+# milliseconds unless the keyring asks to be unlocked); then OSError.
+SAVE_LOCK_WAIT_S = 10
 # ai_model ids of the opencode era ("<provider>/<model>") -> KI-Toolbox ids.
 LEGACY_MODELS = {
     "complex-local": "alias.complex-local",
@@ -374,45 +378,83 @@ def storage_location(use_keyring: bool | None = None) -> str:
     return f"{CONFIG_FILE} (no system keyring: {keystore.problem()})"
 
 
+def _lock_file(fd: int, lock: bool = True) -> None:
+    """Lock (or unlock) the open file `fd`; OSError while another open file
+    holds the lock (also one of this process)."""
+    if WINDOWS:
+        import msvcrt
+
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_NBLCK if lock else msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(fd, (fcntl.LOCK_EX | fcntl.LOCK_NB) if lock else fcntl.LOCK_UN)
+
+
+@contextlib.contextmanager
+def _save_lock():
+    """Held by every save_raw_config(), across processes (the app's migration,
+    the settings, setup_ai.py), so that one save writes the keyring and the
+    file before another starts. The system drops it when a process dies; the
+    lock file stays. OSError after SAVE_LOCK_WAIT_S."""
+    path = CONFIG_FILE.with_name(CONFIG_FILE.name + ".lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        deadline = time.monotonic() + SAVE_LOCK_WAIT_S
+        while True:
+            try:
+                _lock_file(fd)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise OSError(f"another program is saving the settings ({path} is locked)") from None
+                time.sleep(0.05)
+        try:
+            yield
+        finally:
+            _lock_file(fd, lock=False)
+    finally:
+        os.close(fd)
+
+
 def save_raw_config(data: dict, if_stamp: tuple | None | bool = False) -> bool:
     """Write config.json; with a system keyring the secrets go there instead
     (if storing one fails, all of them stay in the file). With use_keyring
     off they go into the file and leave the keyring. With `if_stamp` (a
     _file_stamp()) it writes nothing, and returns False, if config.json changed
-    meanwhile."""
+    meanwhile. Raises OSError, also when another save holds _save_lock() too
+    long."""
     global _secrets_cache
-    if if_stamp is not False and _file_stamp() != if_stamp:
-        return False
-    data = dict(data)
-    data.pop(SECRET_STORE_KEY, None)
-    secrets = {key: str(data.get(key) or "") for key in SECRET_KEYS}
-    in_keyring = False
-    if not uses_keyring(data):
-        if _read_file().get(SECRET_STORE_KEY) == KEYRING:
-            _forget_keyring_secrets()
-    elif keystore.available():
-        try:
-            for key, value in secrets.items():
-                keystore.write(key, value, f"ChemAssistent: {SECRET_KEYS[key]}")
-        except keystore.KeystoreError as exc:
-            keystore.LOG.warning("Could not store the secrets in the keyring, keeping them in %s: %s",
-                                 CONFIG_FILE, exc)
-        else:
-            data.update(dict.fromkeys(SECRET_KEYS, ""))
-            data[SECRET_STORE_KEY] = KEYRING
-            in_keyring = True
-    with _secrets_lock:
+    with _save_lock():
         if if_stamp is not False and _file_stamp() != if_stamp:
-            # Changed while the keyring was written: the file keeps the newer
-            # settings; the keyring is read again.
-            _secrets_cache = None
             return False
-        try:
-            write_private_json(CONFIG_FILE, data)
-        except OSError:
-            _secrets_cache = None  # the keyring may have changed already
-            raise
-        _secrets_cache = (_file_stamp(), time.monotonic(), "", secrets) if in_keyring else None
+        data = dict(data)
+        data.pop(SECRET_STORE_KEY, None)
+        secrets = {key: str(data.get(key) or "") for key in SECRET_KEYS}
+        in_keyring = False
+        if not uses_keyring(data):
+            if _read_file().get(SECRET_STORE_KEY) == KEYRING:
+                _forget_keyring_secrets()
+        elif keystore.available():
+            try:
+                for key, value in secrets.items():
+                    keystore.write(key, value, f"ChemAssistent: {SECRET_KEYS[key]}")
+            except keystore.KeystoreError as exc:
+                keystore.LOG.warning("Could not store the secrets in the keyring, keeping them in %s: %s",
+                                     CONFIG_FILE, exc)
+            else:
+                data.update(dict.fromkeys(SECRET_KEYS, ""))
+                data[SECRET_STORE_KEY] = KEYRING
+                in_keyring = True
+        with _secrets_lock:
+            try:
+                write_private_json(CONFIG_FILE, data)
+            except OSError:
+                _secrets_cache = None  # the keyring may have changed already
+                raise
+            _secrets_cache = (_file_stamp(), time.monotonic(), "", secrets) if in_keyring else None
     return True
 
 
