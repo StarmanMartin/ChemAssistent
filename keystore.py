@@ -76,11 +76,22 @@ class SecretService:
         # One D-Bus search for every item of the schema (and one unlock prompt).
         flags = self.Secret.SearchFlags.ALL | self.Secret.SearchFlags.UNLOCK | self.Secret.SearchFlags.LOAD_SECRETS
         items = self._call(self.service.search_sync, self.schema, {}, flags)
-        found = {}
+        found, locked = {}, set()
         for item in items or []:
-            key, secret = item.get_attributes().get("key"), item.get_secret()
-            if key in keys and secret is not None:
+            key = item.get_attributes().get("key")
+            if key not in keys:
+                continue
+            secret = None if item.get_locked() else item.get_secret()
+            if secret is None:
+                locked.add(key)
+            else:
                 found[key] = secret.get_text() or ""
+        # A dismissed unlock prompt is no error for libsecret: the items come
+        # back locked and without their secrets. Reading that as "no secrets"
+        # would let a save delete them. (A locked copy in another keyring does
+        # not count once the key was read.)
+        if locked - found.keys():
+            raise KeystoreError("the keyring is still locked")
         return found
 
     def write(self, key: str, value: str, label: str) -> None:

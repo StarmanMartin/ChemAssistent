@@ -4,10 +4,13 @@ from __future__ import annotations
 import json
 import threading
 import time
+import types
 
 import pytest
 
 import config as app_config
+# The real class: imported before the autouse keyring fixture replaces it.
+from keystore import SecretService
 from config import (ai_problem, config_problem, jupyter_folder, jupyter_problem, load_config,
                     read_raw_config, save_raw_config, write_private_json)
 
@@ -376,3 +379,52 @@ def test_a_failed_keyring_probe_is_tried_again(monkeypatch):
     assert keystore.available() is False and len(attempts) == 1  # not before PROBE_RETRY_S
     monkeypatch.setattr(keystore, "PROBE_RETRY_S", 0)
     assert keystore.available() is True and len(attempts) == 2
+
+
+class FakeItem:
+    """A libsecret item as Secret.Service.search_sync() returns it."""
+
+    def __init__(self, key, secret, locked=False):
+        self.key, self.secret, self.locked = key, secret, locked
+
+    def get_attributes(self):
+        return {"key": self.key}
+
+    def get_locked(self):
+        return self.locked
+
+    def get_secret(self):
+        if self.locked:  # LOAD_SECRETS loads nothing for a locked item
+            return None
+        return types.SimpleNamespace(get_text=lambda: self.secret)
+
+
+def secret_service(items):
+    """keystore.SecretService without D-Bus: its search returns `items`."""
+    service = object.__new__(SecretService)
+    service.Secret = types.SimpleNamespace(SearchFlags=types.SimpleNamespace(ALL=1, UNLOCK=2, LOAD_SECRETS=4))
+    service.schema = None
+    service.service = types.SimpleNamespace(search_sync=lambda schema, attributes, flags, cancellable: items)
+    service._call = lambda function, *args, timeout=None: function(*args, None)
+    return service
+
+
+def test_a_dismissed_unlock_prompt_is_an_error(tmp_path, monkeypatch):
+    import keystore
+
+    keys = app_config.SECRET_KEYS
+    assert secret_service([FakeItem("password", "p")]).read_all(keys) == {"password": "p"}
+    assert secret_service([]).read_all(keys) == {}
+    # The user cancelled the prompt: the items stay locked, libsecret raises nothing.
+    locked = [FakeItem("password", None, locked=True), FakeItem("ai_token", None, locked=True)]
+    with pytest.raises(keystore.KeystoreError, match="still locked"):
+        secret_service(locked).read_all(keys)
+    # A locked copy in another keyring does not hide one that was read.
+    assert secret_service([FakeItem("password", "p"), *locked[:1]]).read_all(keys) == {"password": "p"}
+
+    # load_config() names the keyring instead of asking for the password.
+    path = use_config_file(tmp_path, monkeypatch)
+    write_private_json(path, {**SETTINGS, **dict.fromkeys(keys, ""), "secret_store": "keyring"})
+    monkeypatch.setattr(keystore, "_store", secret_service(locked))
+    with pytest.raises(ValueError, match="system keyring: the keyring is still locked"):
+        load_config()
