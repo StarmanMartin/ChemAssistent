@@ -4,7 +4,8 @@ Fills a missing ai_url/ai_model with the KIT KI-Toolbox defaults (and turns
 an opencode-era model id like ki-toolbox/complex-local into alias.complex-local).
 If the config has no ai_token yet, it takes KI_TOOLBOX_API_KEY from the
 environment (where older installs put it) or asks for the key. Other agents
-(Ollama, Claude Code, Codex; config key `agent`) need no token. Saving moves
+(config key `agent`) keep their settings: Gemini has its key from the
+settings or GEMINI_API_KEY, Ollama, Claude Code and Codex need none. Saving moves
 the passwords and tokens into the system keyring when there is one.
 Standard library (and PyGObject's Secret typelib on Linux) only.
 """
@@ -14,8 +15,8 @@ import getpass
 import os
 import sys
 
-from config import (AGENT_LABELS, AI_TOKEN_ENV, KI_TOOLBOX_URL, agent_of, read_raw_config, save_raw_config,
-                    storage_location)
+from config import (AGENT_KEYS, AGENT_LABELS, AI_TOKEN_ENV, KI_TOOLBOX_URL, agent_of, agent_token, read_raw_config,
+                    save_raw_config, storage_location)
 
 
 def save(data: dict) -> bool:
@@ -34,9 +35,13 @@ def main() -> None:
         # Saving the secrets it could not read would delete them.
         print("Warning: could not read the system keyring (is it locked?); left the config as it is.")
         return
-    if agent_of(data) != "api":
+    agent = agent_of(data)
+    if agent != "api":
         if save(data):
-            print(f"Agent: {AGENT_LABELS[agent_of(data)]}; no API token needed.")
+            if "token" not in AGENT_KEYS[agent]:
+                print(f"Agent: {AGENT_LABELS[agent]}; no API token needed.")
+            elif not agent_token(data, agent):
+                print(f"Warning: Agent {AGENT_LABELS[agent]} has no API key. Enter it in ChemAssistent Settings.")
             print(f"Passwords and tokens are saved in: {storage_location()}")
         return
     if str(data.get("ai_token") or "").strip():
