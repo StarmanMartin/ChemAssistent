@@ -107,8 +107,17 @@ DARK_UI_ICON_FILE = HERE / f"{PANEL_ICON}.svg"
 # Keeps the runner (a console program) from opening a console window on
 # Windows. 0 elsewhere (creationflags must be 0 there).
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-GROW_STEPS = 14
-GROW_STEP_MS = 16
+# _grow(then=...): how long to wait for the window's new size at most.
+GROW_WAIT_MS = 1000
+# Continuing a conversation shows only its end: GTK lays out every wrapped
+# label again at each width change, and a long history froze the window for
+# seconds. About REPLAY_CHARS of text (at most REPLAY_ITEMS messages and
+# notes) is shown; "Show earlier messages" adds the same amount per click. A
+# saved answer longer than REPLAY_MESSAGE_CHARS shows its start and a button
+# for the rest.
+REPLAY_CHARS = 10000
+REPLAY_ITEMS = 60
+REPLAY_MESSAGE_CHARS = 2000
 # The chat's share of the window width; the results get the rest.
 CHAT_SHARE = 0.45
 # Header icon for each auto-run mode (config.AUTO_RUN_MODES).
@@ -1279,6 +1288,80 @@ def table_markup(lines: list[str]) -> str:
     return f"<tt><b>{GLib.markup_escape_text(text[0])}</b>\n{GLib.markup_escape_text(chr(10).join(text[1:]))}</tt>"
 
 
+def set_markdown(widget: Gtk.Label, text: str) -> None:
+    """Show `text` (Markdown) in `widget`; plain text if the markup is invalid."""
+    markup = markdown_markup(text)
+    try:
+        Pango.parse_markup(markup, -1, "\0")
+        widget.set_markup(markup)
+    except GLib.Error:
+        widget.set_text(text.strip())
+
+
+def clip_answer(text: str, limit: int | None = None) -> str | None:
+    """The start of a long answer (cut at a line end when one is near), or
+    None when it is short enough to show whole (REPLAY_MESSAGE_CHARS)."""
+    limit = limit or REPLAY_MESSAGE_CHARS
+    text = text.strip()
+    if len(text) <= limit:
+        return None
+    cut = text.rfind("\n", 0, limit)
+    return text[:cut if cut >= limit // 2 else limit].rstrip()
+
+
+def replay_items(messages: list[dict]) -> list[tuple]:
+    """What ChatPanel.replay() shows for Agent.messages: ("user", text, paths),
+    ("assistant", text) and ("note", text, icon, css), oldest first."""
+    items: list[tuple] = []
+    for message in messages:
+        role, content = message.get("role"), message.get("content")
+        if role == "user" and isinstance(content, str):
+            if content == STOPPED_NOTE:
+                items.append(("note", "Stopped after many tool calls.", "dialog-error-symbolic", "request-error"))
+                continue
+            if content.startswith(REPORT_HEADER):
+                reports, _, content = content[len(REPORT_HEADER):].partition(USER_TEXT)
+                for item in reports.split(REPORT_SEPARATOR):
+                    items.append(("note", item.split("\n", 1)[0], "preferences-system-time-symbolic", "dim"))
+                if not content:
+                    continue
+            text, _, listed = content.partition(ATTACHMENT_NOTE)
+            # "- /path (text file, 1.2 kB)" lines; the paths contain no " (".
+            paths = [line[2:].split(" (", 1)[0].rstrip("/\\") for line in listed.splitlines()
+                     if line.startswith("- ")]
+            items.append(("user", text, paths))
+        elif role == "assistant":
+            if isinstance(content, str) and content.strip():
+                items.append(("assistant", content))
+            for call in message.get("tool_calls") or []:
+                function = call.get("function") or {}
+                try:
+                    arguments = json.loads(function.get("arguments") or "{}")
+                except ValueError:
+                    arguments = {}
+                if not isinstance(arguments, dict):
+                    arguments = {}
+                if function.get("name") in ("execute_python", "execute_jupyter", "start_jupyter_job"):
+                    items.append(("note", arguments.get("purpose") or "Code", "system-run-symbolic", "dim"))
+                else:
+                    items.append(("note", tool_summary(str(function.get("name")), arguments),
+                                  "document-open-symbolic", "dim"))
+    return items
+
+
+def replay_chunk(items: list[tuple]) -> int:
+    """How many items from the end of `items` the next replay step shows:
+    about REPLAY_CHARS of text, at most REPLAY_ITEMS, at least one."""
+    size = count = 0
+    for item in reversed(items):
+        cost = 100 if item[0] == "note" else min(len(item[1]), REPLAY_MESSAGE_CHARS)
+        if count and (size + cost > REPLAY_CHARS or count >= REPLAY_ITEMS):
+            break
+        size += cost
+        count += 1
+    return count
+
+
 def markdown_markup(text: str) -> str:
     """The Markdown models write (code blocks, tables, headings, lists, inline
     code, bold, links) as Pango markup. Unclosed blocks (while the answer
@@ -1421,6 +1504,9 @@ class ChatPanel(Gtk.Box):
         self.answer_text = ""
         self.render_pending = False
         self.actions: list[Gtk.Button] = []  # add_note(actions=...), until the next message
+        # replay(): the saved messages not shown yet, and the button that shows more.
+        self.earlier: list[tuple] = []
+        self.earlier_button: Gtk.Button | None = None
 
         scroller = Gtk.ScrolledWindow()
         scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
@@ -1504,26 +1590,44 @@ class ChatPanel(Gtk.Box):
         self.list.pack_start(widget, False, False, 0)
         widget.show_all()
 
-    def add_user(self, text: str, attachments: list[str] | tuple[str, ...] = ()) -> None:
-        self.answer = None
-        self.clear_actions()
+    @staticmethod
+    def user_widgets(text: str, attachments: list[str] | tuple[str, ...] = ()) -> list[Gtk.Widget]:
         bubble = label(text, "chat-user", selectable=True)
         bubble.set_halign(Gtk.Align.END)
         bubble.set_margin_start(60)
-        self.follower.active = True
-        self._add(bubble)
+        widgets: list[Gtk.Widget] = [bubble]
         if attachments:
             names = ", ".join(os.path.basename(path.rstrip("/\\")) + ("/" if os.path.isdir(path) else "")
                               for path in attachments)
             note = label(f"Attached: {names}", "dim", selectable=True)
             note.set_halign(Gtk.Align.END)
             note.set_tooltip_text("\n".join(attachments))
-            self._add(note)
+            widgets.append(note)
+        return widgets
+
+    @staticmethod
+    def answer_label() -> Gtk.Label:
+        widget = label("", "chat-assistant", selectable=True)
+        widget.connect("activate-link", lambda _label, uri: open_url(uri) or True)
+        return widget
+
+    @staticmethod
+    def note_widget(text: str, icon: str = "document-open-symbolic", css: str = "dim") -> Gtk.Box:
+        row = Gtk.Box(spacing=6)
+        row.pack_start(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.MENU), False, False, 0)
+        row.pack_start(label(text, css, selectable=True), True, True, 0)
+        return row
+
+    def add_user(self, text: str, attachments: list[str] | tuple[str, ...] = ()) -> None:
+        self.answer = None
+        self.clear_actions()
+        self.follower.active = True
+        for widget in self.user_widgets(text, attachments):
+            self._add(widget)
 
     def append_text(self, delta: str) -> None:
         if self.answer is None:
-            self.answer = label("", "chat-assistant", selectable=True)
-            self.answer.connect("activate-link", lambda _label, uri: open_url(uri) or True)
+            self.answer = self.answer_label()
             self.answer_text = ""
             self._add(self.answer)
         self.answer_text += delta
@@ -1535,52 +1639,65 @@ class ChatPanel(Gtk.Box):
         self.render_pending = False
         if self.answer is None:
             return False
-        markup = markdown_markup(self.answer_text)
-        try:
-            Pango.parse_markup(markup, -1, "\0")
-            self.answer.set_markup(markup)
-        except GLib.Error:
-            self.answer.set_text(self.answer_text.strip())
+        set_markdown(self.answer, self.answer_text)
         return False
 
     def replay(self, messages: list[dict]) -> None:
-        """Show the messages of a saved conversation (Agent.messages)."""
-        for message in messages:
-            role, content = message.get("role"), message.get("content")
-            if role == "user" and isinstance(content, str):
-                if content == STOPPED_NOTE:
-                    self.add_note("Stopped after many tool calls.", "dialog-error-symbolic", "request-error")
-                    continue
-                if content.startswith(REPORT_HEADER):
-                    reports, _, content = content[len(REPORT_HEADER):].partition(USER_TEXT)
-                    for item in reports.split(REPORT_SEPARATOR):
-                        self.add_note(item.split("\n", 1)[0], "preferences-system-time-symbolic")
-                    if not content:
-                        continue
-                text, _, listed = content.partition(ATTACHMENT_NOTE)
-                # "- /path (text file, 1.2 kB)" lines; the paths contain no " (".
-                paths = [line[2:].split(" (", 1)[0].rstrip("/\\") for line in listed.splitlines()
-                         if line.startswith("- ")]
-                self.add_user(text, paths)
-            elif role == "assistant":
-                if isinstance(content, str) and content.strip():
-                    self.append_text(content)
-                    self._render()
-                for call in message.get("tool_calls") or []:
-                    function = call.get("function") or {}
-                    try:
-                        arguments = json.loads(function.get("arguments") or "{}")
-                    except ValueError:
-                        arguments = {}
-                    if not isinstance(arguments, dict):
-                        arguments = {}
-                    if function.get("name") in ("execute_python", "execute_jupyter", "start_jupyter_job"):
-                        self.add_note(arguments.get("purpose") or "Code", "system-run-symbolic")
-                    else:
-                        self.add_note(tool_summary(str(function.get("name")), arguments))
+        """Show the end of a saved conversation (Agent.messages); the rest
+        waits behind "Show earlier messages" (REPLAY_CHARS)."""
         self.answer = None
+        self.earlier = replay_items(messages)
+        self._show_earlier()
         self.add_note("Continued from the history. Earlier results are not shown on the right.",
                       "document-open-recent-symbolic")
+
+    def _show_earlier(self) -> None:
+        """The next chunk of self.earlier, above what is shown (below the button)."""
+        count = replay_chunk(self.earlier)
+        chunk, self.earlier = self.earlier[len(self.earlier) - count:], self.earlier[:len(self.earlier) - count]
+        position = 1 if self.earlier_button is not None else 0
+        for item in chunk:
+            for widget in self._replay_widgets(item):
+                self.list.pack_start(widget, False, False, 0)
+                self.list.reorder_child(widget, position)
+                widget.show_all()
+                position += 1
+        if self.earlier and self.earlier_button is None:
+            self.earlier_button = Gtk.Button()
+            self.earlier_button.set_halign(Gtk.Align.CENTER)
+            self.earlier_button.connect("clicked", lambda *_: self._show_earlier())
+            self.list.pack_start(self.earlier_button, False, False, 0)
+            self.list.reorder_child(self.earlier_button, 0)
+            self.earlier_button.show()
+        if self.earlier_button is not None:
+            if self.earlier:
+                self.earlier_button.set_label(f"Show earlier messages ({len(self.earlier)} more)")
+            else:
+                self.earlier_button.destroy()
+                self.earlier_button = None
+
+    def _replay_widgets(self, item: tuple) -> list[Gtk.Widget]:
+        kind = item[0]
+        if kind == "user":
+            return self.user_widgets(item[1], item[2])
+        if kind == "note":
+            return [self.note_widget(item[1], item[2], item[3])]
+        text = item[1]
+        widget = self.answer_label()
+        start = clip_answer(text)
+        if start is None:
+            set_markdown(widget, text)
+            return [widget]
+        set_markdown(widget, start + "\n\n…")
+        button = Gtk.Button(label="Show the whole answer")
+        button.set_halign(Gtk.Align.START)
+
+        def show_all(_button) -> None:
+            set_markdown(widget, text)
+            button.destroy()
+
+        button.connect("clicked", show_all)
+        return [widget, button]
 
     def add_note(self, text: str, icon: str = "document-open-symbolic", css: str = "dim",
                  actions: tuple[tuple[str, object], ...] = ()) -> None:
@@ -1604,9 +1721,9 @@ class ChatPanel(Gtk.Box):
                 self.actions.append(button)
             column.pack_start(buttons, False, False, 0)
             row.pack_start(column, True, True, 0)
+            self._add(row)
         else:
-            row.pack_start(label(text, css, selectable=True), True, True, 0)
-        self._add(row)
+            self._add(self.note_widget(text, icon, css))
 
     def clear_actions(self) -> None:
         """Disable the buttons of the last note: they belong to that moment."""
@@ -1639,6 +1756,7 @@ class AssistantWindow(Gtk.Window):
         self.saved_messages = 0  # how many messages history has; saves only on change
         self.expanded = False
         self.closed = False
+        self.loading = False  # a saved conversation waits for _grow() to be shown
         self.auto_run = "off"  # the conversation's auto-run mode; set in _start_conversation
         self.run_mode_button: Gtk.MenuButton | None = None
         self.model_button: Gtk.MenuButton | None = None
@@ -1994,7 +2112,7 @@ class AssistantWindow(Gtk.Window):
 
     def _deliver_jobs(self) -> bool:
         """Jobs ended: their reports go to the agent as a new turn, once it is idle."""
-        if self.closed or self.agent is None or self.agent.busy or self.chat is None:
+        if self.closed or self.loading or self.agent is None or self.agent.busy or self.chat is None:
             return False
         reports = self._reports()
         if not any(job.get("wake", True) for job in reports):
@@ -2103,7 +2221,6 @@ class AssistantWindow(Gtk.Window):
                 self.agent.restore(saved["messages"], roots, session)
             else:
                 self.agent.restore(saved["messages"], roots)
-            self.chat.replay(self.agent.messages[1:])
             self.saved_messages = len(self.agent.messages) - 1
             if self.jupyter is not None and any(
                     call.get("function", {}).get("name") == "execute_jupyter"
@@ -2111,14 +2228,31 @@ class AssistantWindow(Gtk.Window):
                 self.results.add_link("JupyterLab", "Notebook of this conversation", self.jupyter.notebook_url)
         # Set but unusable: say so, or the agent quietly works without it.
         problem = jupyter_problem(read_raw_config())
+        if text is not None:
+            self._jupyter_note(problem)
+            self._grow()
+            self._send(text, attachments or ())
+            return
+        # The history is laid out once, at the final width (a long chat took seconds per width).
+        self.loading = True
+        self.chat.set_busy(True, "Loading the conversation…")
+        self._grow(lambda: self._show_saved(problem))
+
+    def _jupyter_note(self, problem: str | None) -> None:
         if problem:
             self.chat.add_note(f"JupyterLab is off for this conversation: {problem}", "dialog-warning-symbolic",
                                "request-error")
-        self._grow()
-        if text is not None:
-            self._send(text, attachments or ())
-        else:
-            GLib.idle_add(self._deliver_jobs)  # jobs that ended while it was closed
+
+    def _show_saved(self, problem: str | None) -> None:
+        """A continued conversation, once the window has grown."""
+        self.loading = False
+        if self.closed or self.chat is None or self.agent is None:
+            return
+        self.chat.set_busy(False)
+        self.chat.replay(self.agent.messages[1:])
+        self._jupyter_note(problem)
+        self.chat.focus_input()
+        GLib.idle_add(self._deliver_jobs)  # jobs that ended while it was closed
 
     def _save_history(self) -> None:
         """Store the conversation (after every answer and on close)."""
@@ -2249,32 +2383,40 @@ class AssistantWindow(Gtk.Window):
             self.begin_move_drag(event.button, int(event.x_root), int(event.y_root), event.time)
         return True
 
-    def _grow(self) -> None:
-        """Animate from the prompt to the work area, then maximize (on
-        Wayland, which ignores client positioning, just maximize)."""
+    def _grow(self, then=None) -> None:
+        """Fill the work area at once (an animation re-laid out the chat at
+        every step) and maximize; on Wayland, which ignores client
+        positioning, only maximize. `then` runs once the window has its new
+        size, or after GROW_WAIT_MS."""
         area = work_area()
-        x0, y0 = self.get_position()
-        w0, h0 = self.get_size()
         self.set_resizable(True)
-        animate = "Wayland" not in type(self.get_display()).__name__  # GdkWaylandDisplay
-        step = 0 if animate else GROW_STEPS - 1
+        if "Wayland" not in type(self.get_display()).__name__:  # GdkWaylandDisplay
+            self.move(area.x, area.y)
+            self.resize(area.width, area.height)
+        self.maximize()
+        self.paned.set_position(int(area.width * CHAT_SHARE))
+        self.present_now()
+        self.chat.focus_input()
+        if then is None:
+            return
+        handler = 0
 
-        def tick() -> bool:
-            nonlocal step
-            step += 1
-            if animate:
-                t = 1 - (1 - step / GROW_STEPS) ** 3  # ease out
-                self.move(round(x0 + (area.x - x0) * t), round(y0 + (area.y - y0) * t))
-                self.resize(max(1, round(w0 + (area.width - w0) * t)), max(1, round(h0 + (area.height - h0) * t)))
-            if step < GROW_STEPS:
-                return True
-            self.maximize()
-            self.paned.set_position(int(area.width * CHAT_SHARE))
-            self.present_now()
-            self.chat.focus_input()
+        def finish(*_args) -> bool:
+            nonlocal handler
+            if handler:
+                if not self.closed:  # destroy() already dropped the handler
+                    self.disconnect(handler)
+                handler = 0
+                then()
             return False
 
-        GLib.timeout_add(GROW_STEP_MS, tick)
+        def configured(_window, event) -> bool:
+            if event.width >= area.width * 0.9 and event.height >= area.height * 0.9:
+                finish()
+            return False
+
+        handler = self.connect("configure-event", configured)
+        GLib.timeout_add(GROW_WAIT_MS, finish)
 
     def _on_key(self, _widget, event) -> bool:
         if event.keyval != Gdk.KEY_Escape:
