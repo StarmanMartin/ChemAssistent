@@ -10,7 +10,9 @@ A turn is a dict:
     {"content": ..., "reasoning": "..."}     with reasoning_content (DeepSeek)
     {"tool_calls": [call, ...]}              call: {"name", "arguments", "id"}
                                              ("arguments" may be a dict or a
-                                             string, e.g. broken JSON)
+                                             string, e.g. broken JSON; optional
+                                             "extra_content" like Gemini's
+                                             thought signature)
     {"content": ..., "plain": True}          one JSON answer, not SSE
     {"status": 500, "message": "..."}        an HTTP error
     {"error": {"message": "..."}}            an error inside the stream
@@ -55,9 +57,11 @@ def turn_chunks(turn: dict) -> list[dict]:
             arguments = json.dumps(arguments)
         name_start, name_rest = call["name"][:3], call["name"][3:]
         # id and the start of the name first, then the arguments in pieces.
-        chunks.append(_chunk({"tool_calls": [{"index": index, "id": call.get("id") or f"call_{index + 1}",
-                                              "type": "function",
-                                              "function": {"name": name_start, "arguments": ""}}]}))
+        first = {"index": index, "id": call.get("id") or f"call_{index + 1}", "type": "function",
+                 "function": {"name": name_start, "arguments": ""}}
+        if call.get("extra_content"):
+            first["extra_content"] = call["extra_content"]
+        chunks.append(_chunk({"tool_calls": [first]}))
         chunks.append(_chunk({"tool_calls": [{"index": index,
                                               "function": {"name": name_rest, "arguments": ""}}]}))
         for piece in _pieces(arguments, 3):

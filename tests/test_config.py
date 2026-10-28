@@ -31,6 +31,18 @@ def test_ai_problems(monkeypatch):
     assert "AI model" in ai_problem({**ki, "ai_model": ""})
 
 
+def test_gemini_problems(monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    gemini = {"agent": "gemini", "gemini_url": app_config.GEMINI_URL, "gemini_model": "gemini-flash"}
+    assert "Gemini API key" in ai_problem(gemini)
+    # Not the KI-Toolbox token: each agent has its own.
+    assert "Gemini API key" in ai_problem({**gemini, "ai_token": "t"})
+    assert ai_problem({**gemini, "gemini_token": "g"}) is None
+    assert "Gemini model" in ai_problem({**gemini, "gemini_token": "g", "gemini_model": ""})
+    monkeypatch.setenv("GEMINI_API_KEY", "from the environment")
+    assert ai_problem(gemini) is None
+
+
 def test_config_problems(tmp_path, monkeypatch):
     monkeypatch.delenv("CHEMOTION_PASSWORD", raising=False)
     base = {"url": "https://chemotion.real.example", "user": "u", "password": "p"}
@@ -70,6 +82,25 @@ def test_load_config_validates_and_clamps(tmp_path, monkeypatch):
     assert loaded.jupyter_url == "http://j.test" and loaded.jupyter_folder == "Lab"
     assert loaded.jupyter is True
     assert loaded.ai_token == "t"
+
+
+def test_load_config_takes_the_chosen_agents_values(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_config, "CONFIG_FILE", config_file(tmp_path))
+    monkeypatch.setattr(app_config, "CONFIG_DIR", tmp_path)
+    monkeypatch.delenv("CHEMOTION_PASSWORD", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    settings = {"url": "http://chemotion.test", "user": "u", "password": "p",
+                "ai_url": "http://ai.test/v1", "ai_model": "m", "ai_token": "t",
+                "agent": "gemini", "gemini_model": "gemini-flash", "gemini_token": "g"}
+    save_raw_config(settings)
+
+    loaded = load_config()
+    assert (loaded.agent, loaded.ai_url, loaded.ai_token, loaded.ai_model) == (
+        "gemini", app_config.GEMINI_URL, "g", "gemini-flash")
+    # Ollama has no token: not the KI-Toolbox's either.
+    save_raw_config({**settings, "agent": "ollama", "ollama_model": "llama"})
+    loaded = load_config()
+    assert (loaded.ai_url, loaded.ai_token, loaded.ai_model) == (app_config.OLLAMA_URL, "", "llama")
 
 
 def test_load_config_raises_while_incomplete(tmp_path, monkeypatch):

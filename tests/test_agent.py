@@ -105,6 +105,26 @@ def test_set_model_switches_and_drops_reasoning(fake_ai, ai_config, workspace, r
     assert all("reasoning_content" not in message for message in fake_ai.requests[1]["messages"])
 
 
+def test_thought_signature_is_sent_back(fake_ai, ai_config, workspace, recorder):
+    """Gemini 3 refuses a tool call that comes back without its thought signature."""
+    signature = {"google": {"thought_signature": "c2lnbmF0dXJl"}}
+    fake_ai.script_next(
+        {"tool_calls": [{"name": "list_files", "arguments": {}, "extra_content": signature}]},
+        {"content": "Done."},
+    )
+    agent = make_agent(ai_config, recorder)
+
+    agent.send("What is there?")
+
+    sent = next(m for m in fake_ai.requests[1]["messages"] if m.get("tool_calls"))
+    assert sent["tool_calls"][0]["extra_content"] == signature
+    # Calls without one get no extra_content (other servers may refuse unknown fields).
+    fake_ai.script_next({"tool_calls": [{"name": "list_files", "arguments": {}}]}, {"content": "Again."})
+    agent.send("And now?")
+    sent = [m for m in fake_ai.requests[3]["messages"] if m.get("tool_calls")]
+    assert "extra_content" not in sent[-1]["tool_calls"][0]
+
+
 # --- the read-only tools ------------------------------------------------------
 def test_read_file_round_trip(fake_ai, ai_config, workspace, recorder):
     fake_ai.script_next(
@@ -407,6 +427,12 @@ def test_list_models_sorts_and_drops_hidden(fake_ai, ai_config):
     ]
 
     assert list_models(ai_config) == ["alpha", "zeta"]
+
+
+def test_list_models_drops_geminis_prefix(fake_ai, ai_config):
+    fake_ai.models = [{"id": "models/gemini-flash"}, {"id": "models/gemini-pro"}]
+
+    assert list_models(ai_config) == ["gemini-flash", "gemini-pro"]
 
 
 def test_list_models_reports_errors(ai_config):

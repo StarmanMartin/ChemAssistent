@@ -23,12 +23,14 @@ import lessons  # noqa: E402
 from agent import AgentError, list_models  # noqa: E402
 from cli_agent import check_command, cli_models  # noqa: E402
 from config import (  # noqa: E402
-    AGENT_KEYS, AGENT_LABELS, AGENTS, AI_TOKEN_ENV, AUTO_RUN_LABELS, AUTO_RUN_MODES, CLI_AGENTS,
-    CONFIG_FILE, DEFAULT_JUPYTER_FOLDER, EXAMPLE, KI_TOOLBOX_URL, OLLAMA_URL, Config, agent_of, ai_problem,
-    MAIN_THREAD_KEYRING_WAIT_S, SECRET_KEYS, ai_token, config_problem, jupyter_folder, jupyter_problem,
+    AGENT_KEYS, AGENT_LABELS, AGENTS, AUTO_RUN_LABELS, AUTO_RUN_MODES, CLI_AGENTS, CONFIG_FILE,
+    DEFAULT_JUPYTER_FOLDER, EXAMPLE, GEMINI_URL, KI_TOOLBOX_URL, OLLAMA_URL, TOKEN_ENVS, Config, agent_of,
+    agent_token, ai_problem, MAIN_THREAD_KEYRING_WAIT_S, SECRET_KEYS, config_problem, jupyter_folder,
+    jupyter_problem,
     limit_main_thread_wait, WINDOWS, read_raw_config, save_raw_config, storage_location, uses_keyring,
 )
 from jupyter import JupyterClient, JupyterError, split_url  # noqa: E402
+from model_picker import ModelEntry  # noqa: E402
 
 
 PRGNAME = "chem-assistent-settings"
@@ -37,9 +39,13 @@ SETUP_WORKSPACE = Path(__file__).with_name("setup_workspace.sh")
 # Fetch, pip install and the API reference of another chemotion_api version.
 SETUP_TIMEOUT_S = 900
 
+# The URL offered in the agents' URL field.
+AGENT_URLS = {"api": KI_TOOLBOX_URL, "gemini": GEMINI_URL, "ollama": OLLAMA_URL}
 # What the settings say below the agent's fields.
 AGENT_NOTES = {
     "api": f"Any OpenAI-compatible API. KIT KI-Toolbox: create an API key at {KI_TOOLBOX_URL.split('/api')[0]}.",
+    "gemini": "Google's Gemini API. Create an API key at https://aistudio.google.com/apikey; "
+              "“Load models” lists the models it may use.",
     "ollama": "A local Ollama (ollama serve); “Load models” lists the models you pulled. "
               "Pick one that supports tool calls.",
     "claude": "Uses your Claude Code login (run claude once in a terminal to sign in). Its own tools "
@@ -48,6 +54,16 @@ AGENT_NOTES = {
     "codex": "Uses your Codex login (codex login). Its shell and web tools are switched off: like the "
              "built-in agent it reads the workspace and the attachments, and its code runs only "
              "through the result panel. Empty model: Codex's default.",
+}
+# Shown (and kept, unlike AGENT_NOTES) while the agent is chosen; Pango markup.
+AGENT_WARNINGS = {
+    "gemini": "<b>⚠ Gemini API keys can be free of charge (without billing).</b> According to "
+              "<a href=\"https://ai.google.dev/gemini-api/terms\">Google's terms</a>, Google may use "
+              "what you send to the free Gemini API, and the answers, to improve and train its models, "
+              "and human reviewers may read them: that includes the ELN data the assistant reads. "
+              "Do not use a free key for confidential or unpublished data. (The terms make an exception "
+              "for the EEA, Switzerland and the UK, where the paid-service data terms apply to the free "
+              "tier too.)",
 }
 
 # key, label, lower bound, upper bound (the same lower bounds load_config() clamps to)
@@ -152,8 +168,8 @@ class SettingsWindow(Gtk.Window):
             self.api_note.set_text(f"Installed: {installed or 'unknown'}. Loading the released versions...")
             threading.Thread(target=self._api_tags_worker, daemon=True).start()
 
-        grid, row = self._page("AI agent", "The built-in agent against an OpenAI-compatible API or Ollama, "
-                                           "or a CLI agent."), 1
+        grid, row = self._page("AI agent", "The built-in agent against an OpenAI-compatible API, Google "
+                                           "Gemini or Ollama, or a CLI agent."), 1
 
         # Every agent keeps its own url/token/model/command (config.AGENT_KEYS);
         # the fields below show the chosen one's.
@@ -174,9 +190,6 @@ class SettingsWindow(Gtk.Window):
         row = self._add_agent_row(grid, row, "url", "API URL", self.ai_url)
 
         self.ai_token = self._secret_entry("")
-        self.ai_token.set_placeholder_text(
-            f"From {AI_TOKEN_ENV}" if os.environ.get(AI_TOKEN_ENV) else "API key (Bearer token)"
-        )
         row = self._add_agent_row(grid, row, "token", "API token", self.ai_token)
 
         self.command = Gtk.Entry(hexpand=True)
@@ -189,9 +202,9 @@ class SettingsWindow(Gtk.Window):
         command_row.pack_start(self.check_button, False, False, 0)
         row = self._add_agent_row(grid, row, "command", "Command", command_row)
 
-        # The entry keeps any model id usable, also before the list is loaded.
-        self.ai_model = Gtk.ComboBoxText.new_with_entry()
-        self.ai_model.set_hexpand(True)
+        # The entry keeps any model id usable, also before the list is loaded;
+        # its button opens the known models with a search field.
+        self.ai_model = ModelEntry()
         self.models_button = Gtk.Button(label="Load models")
         self.models_button.set_tooltip_text("Ask the API for its models (also tests URL and token)")
         self.models_button.connect("clicked", lambda *_: self._load_models())
@@ -204,6 +217,10 @@ class SettingsWindow(Gtk.Window):
         self.ai_note = Gtk.Label(xalign=0, wrap=True, max_width_chars=60)
         self.ai_note.get_style_context().add_class("dim-label")
         grid.attach(self.ai_note, 1, row, 1, 1)
+        row += 1
+        self.ai_warning = Gtk.Label(xalign=0, wrap=True, max_width_chars=60)
+        self.ai_warning.set_no_show_all(True)  # only _show_agent() shows it
+        grid.attach(self.ai_warning, 1, row, 1, 1)
         row += 1
         self.loading_models = False
         self.checking = False
@@ -369,11 +386,12 @@ class SettingsWindow(Gtk.Window):
         self.clear_lessons_button.connect("clicked", self._on_clear_lessons)
         grid.attach(self.clear_lessons_button, 0, 2, 1, 1)
 
-        # The secret fields by config key; ai_token is in agent_values (it
-        # belongs to one agent). _recover_secrets() must fill every one.
+        # The secret fields by config key; the agents' tokens are in
+        # agent_values (each belongs to one agent). _recover_secrets() must fill every one.
         self.secret_entries = {"password": self.password, "jupyter_token": self.jupyter_token,
                                "jupyter_password": self.jupyter_password, "github_token": self.github_token}
-        assert set(self.secret_entries) | {"ai_token"} == set(SECRET_KEYS)
+        self.token_keys = {keys["token"]: agent for agent, keys in AGENT_KEYS.items() if "token" in keys}
+        assert set(self.secret_entries) | set(self.token_keys) == set(SECRET_KEYS)
 
         # max_width_chars keeps a long message from widening the window.
         self.status = Gtk.Label(xalign=0, wrap=True, selectable=True, max_width_chars=60)
@@ -409,7 +427,7 @@ class SettingsWindow(Gtk.Window):
         self._update_service_button()
         if self.current_agent in CLI_AGENTS:
             self._check_command()
-        elif self.current_agent == "ollama" or ai_token(self.data):
+        elif "token" not in AGENT_KEYS[self.current_agent] or agent_token(self.data, self.current_agent):
             self._load_models()
 
     def _page(self, title: str, intro: str = "") -> Gtk.Grid:
@@ -446,7 +464,7 @@ class SettingsWindow(Gtk.Window):
             "url": self.ai_url.get_child().get_text().strip().rstrip("/"),
             "token": self.ai_token.get_text().strip(),
             "command": self.command.get_text().strip(),
-            "model": self.ai_model.get_child().get_text().strip(),
+            "model": self.ai_model.get_text(),
         }
 
     def _store_agent_fields(self) -> None:
@@ -473,19 +491,22 @@ class SettingsWindow(Gtk.Window):
             for item in (label, widget):
                 item.set_visible(field in keys)
         self.ai_url.remove_all()
-        self.ai_url.append_text(OLLAMA_URL if agent == "ollama" else KI_TOOLBOX_URL)
-        self.ai_url.get_child().set_placeholder_text(OLLAMA_URL if agent == "ollama" else KI_TOOLBOX_URL)
+        url = AGENT_URLS.get(agent, "")
+        if url:
+            self.ai_url.append_text(url)
+        self.ai_url.get_child().set_placeholder_text(url)
         self.ai_url.get_child().set_text(self.agent_values.get(keys.get("url", ""), ""))
         self.ai_token.set_text(self.agent_values.get(keys.get("token", ""), ""))
+        env = TOKEN_ENVS.get(agent, "")
+        self.ai_token.set_placeholder_text(f"From {env}" if env and os.environ.get(env) else "API key (Bearer token)")
         self.command.set_text(self.agent_values.get(keys.get("command", ""), ""))
-        self.ai_model.remove_all()
-        for model in cli_models(agent) if agent in CLI_AGENTS else []:
-            if model:
-                self.ai_model.append_text(model)
-        self.ai_model.get_child().set_text(self.agent_values.get(keys["model"], ""))
-        self.ai_model.get_child().set_placeholder_text("Default model of the CLI" if agent in CLI_AGENTS else "")
+        self.ai_model.set_text(self.agent_values.get(keys["model"], ""))
+        self.ai_model.set_models([model for model in cli_models(agent) if model] if agent in CLI_AGENTS else [])
+        self.ai_model.set_placeholder_text("Default model of the CLI" if agent in CLI_AGENTS else "")
         self.models_button.set_visible(agent not in CLI_AGENTS)
         self.ai_note.set_text(AGENT_NOTES[agent])
+        self.ai_warning.set_markup(AGENT_WARNINGS.get(agent, ""))
+        self.ai_warning.set_visible(agent in AGENT_WARNINGS)
 
     def _check_command(self) -> None:
         if self.checking:
@@ -578,7 +599,7 @@ class SettingsWindow(Gtk.Window):
         if not fields["url"]:
             self.ai_note.set_text("Set the API URL first.")
             return
-        token = ai_token({"ai_token": fields["token"]}) if agent == "api" else ""
+        token = agent_token({AGENT_KEYS[agent].get("token", ""): fields["token"]}, agent)
         config = dataclasses.replace(Config("", "", ""), ai_url=fields["url"], ai_token=token)
         self.loading_models = True
         self.models_button.set_sensitive(False)
@@ -598,15 +619,13 @@ class SettingsWindow(Gtk.Window):
         self.models_button.set_sensitive(True)
         if agent != self.current_agent:
             return False  # switched to another agent meanwhile
-        self.ai_model.remove_all()
-        for model in models:
-            self.ai_model.append_text(model)
+        self.ai_model.set_models(models)
         if error:
             self.ai_note.set_text(f"{error}\nYou can still type a model id.")
         elif not models:
             self.ai_note.set_text("The API lists no models. You can still type a model id.")
         else:
-            current = self.ai_model.get_child().get_text().strip()
+            current = self.ai_model.get_text()
             known = "" if not current or current in models else f" “{current}” is not among them."
             self.ai_note.set_text(f"Connection OK: {len(models)} models.{known}")
         return False
@@ -792,10 +811,11 @@ class SettingsWindow(Gtk.Window):
             if not entry.get_text():
                 entry.set_text(str(data.get(key) or ""))
         self._store_agent_fields()
-        if not self.agent_values.get("ai_token"):
-            self.agent_values["ai_token"] = str(data.get("ai_token") or "")
-            if self.current_agent == "api":
-                self.ai_token.set_text(self.agent_values["ai_token"])
+        for key, agent in self.token_keys.items():
+            if not self.agent_values.get(key):
+                self.agent_values[key] = str(data.get(key) or "")
+                if agent == self.current_agent:
+                    self.ai_token.set_text(self.agent_values[key])
         self.keyring_failed = False
         return True
 
