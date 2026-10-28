@@ -162,6 +162,21 @@ def test_secrets_stay_in_the_file_without_a_keyring(tmp_path, monkeypatch, no_ke
     assert app_config.migrate_secrets() is False
 
 
+def test_tests_never_probe_the_real_keyring(monkeypatch, no_keyring):
+    import keystore
+
+    probes = []
+
+    class Probe:
+        def __init__(self):
+            probes.append(1)
+
+    monkeypatch.setattr(keystore, "SecretService", Probe)
+    monkeypatch.setattr(keystore, "CredentialManager", Probe)
+    assert keystore.available() is False and keystore.problem() == "no Secret Service"
+    assert probes == []
+
+
 def test_secrets_stay_in_the_file_when_the_keyring_fails(tmp_path, monkeypatch, keyring):
     path = use_config_file(tmp_path, monkeypatch)
     keyring.fail = True
