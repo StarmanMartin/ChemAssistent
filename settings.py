@@ -25,7 +25,7 @@ from cli_agent import check_command, cli_models  # noqa: E402
 from config import (  # noqa: E402
     AGENT_KEYS, AGENT_LABELS, AGENTS, AI_TOKEN_ENV, AUTO_RUN_LABELS, AUTO_RUN_MODES, CLI_AGENTS,
     CONFIG_FILE, DEFAULT_JUPYTER_FOLDER, EXAMPLE, KI_TOOLBOX_URL, OLLAMA_URL, Config, agent_of, ai_problem,
-    SECRET_KEYS, ai_token, config_problem, jupyter_folder, jupyter_problem, keyring_problem, keyring_secrets,
+    MAIN_THREAD_KEYRING_WAIT_S, SECRET_KEYS, ai_token, config_problem, jupyter_folder, jupyter_problem,
     limit_main_thread_wait, WINDOWS, read_raw_config, save_raw_config, storage_location, uses_keyring,
 )
 from jupyter import JupyterClient, JupyterError, split_url  # noqa: E402
@@ -50,9 +50,6 @@ AGENT_NOTES = {
              "through the result panel. Empty model: Codex's default.",
 }
 
-# How long the main thread waits for the system keyring (it may ask to be unlocked).
-MAIN_THREAD_KEYRING_WAIT_S = 3
-
 # key, label, lower bound, upper bound (the same lower bounds load_config() clamps to)
 NUMBER_FIELDS = (
     ("execution_timeout", "Max. run time per snippet (seconds)", 10, 86400),
@@ -73,8 +70,10 @@ class SettingsWindow(Gtk.Window):
 
         self.data = read_raw_config()
         # The secret fields are empty then; _recover_secrets() must read them before a save.
-        self.keyring_failed = bool(keyring_problem())
+        self.keyring_failed = bool(self.data.keyring_problem)
         self.testing = False
+        self.saving = False
+        self.note_request = 0  # _update_secret_note(): the toggle its worker answers
 
         # One tab per topic: the whole form does not fit on small screens.
         self.notebook = Gtk.Notebook()
@@ -382,11 +381,11 @@ class SettingsWindow(Gtk.Window):
         self.status.get_style_context().add_class("dim-label")
         if self.keyring_failed:
             self.status.set_text(f"Could not read the passwords and tokens from the system keyring "
-                                 f"({keyring_problem()}). Unlock it: Save reads it again first.")
+                                 f"({self.data.keyring_problem}). Unlock it: Save reads it again first.")
 
         close_button = Gtk.Button(label="Close")
         close_button.connect("clicked", lambda *_: self.destroy())
-        save_button = Gtk.Button(label="Save")
+        self.save_button = save_button = Gtk.Button(label="Save")
         save_button.get_style_context().add_class("suggested-action")
         save_button.connect("clicked", self._on_save)
 
@@ -764,31 +763,45 @@ class SettingsWindow(Gtk.Window):
         return False
 
     def _update_secret_note(self) -> None:
-        storage = storage_location(self.use_keyring.get_active())
-        self.secret_note.set_text(f"Passwords and tokens are saved in: {storage}")
+        # storage_location() may look for the keyring first (D-Bus, up to
+        # keystore.PROBE_TIMEOUT_S): not on the main loop.
+        self.note_request += 1
+        request, use_keyring = self.note_request, self.use_keyring.get_active()
+        self.secret_note.set_text("Passwords and tokens are saved in: …")
+
+        def worker() -> None:
+            GLib.idle_add(self._show_secret_note, request, storage_location(use_keyring))
+
+        threading.Thread(target=worker, name="storage-location", daemon=True).start()
+
+    def _show_secret_note(self, request: int, storage: str) -> bool:
+        if request == self.note_request:  # not the answer to an earlier toggle
+            self.secret_note.set_text(f"Passwords and tokens are saved in: {storage}")
+        return False
 
     def _recover_secrets(self) -> bool:
         """Read the keyring again after it failed when the window opened: the
         secret fields were empty then, and saving them would delete the
         secrets. Fills the fields that are still empty; False if it fails again."""
-        secrets = keyring_secrets(fresh=True)
-        problem = keyring_problem()
-        if problem:
+        data = read_raw_config(retry=True)
+        if data.keyring_problem:
             self._set_status(f"Not saved: the passwords and tokens in the system keyring cannot be read "
-                             f"({problem}), and saving would delete them.")
+                             f"({data.keyring_problem}), and saving would delete them.")
             return False
         for key, entry in self.secret_entries.items():
             if not entry.get_text():
-                entry.set_text(secrets[key])
+                entry.set_text(str(data.get(key) or ""))
         self._store_agent_fields()
         if not self.agent_values.get("ai_token"):
-            self.agent_values["ai_token"] = secrets["ai_token"]
+            self.agent_values["ai_token"] = str(data.get("ai_token") or "")
             if self.current_agent == "api":
-                self.ai_token.set_text(secrets["ai_token"])
+                self.ai_token.set_text(self.agent_values["ai_token"])
         self.keyring_failed = False
         return True
 
     def _on_save(self, _button: Gtk.Button) -> None:
+        if self.saving:
+            return
         if self.keyring_failed and not self._recover_secrets():
             return
         values = self._form_values()
@@ -799,11 +812,30 @@ class SettingsWindow(Gtk.Window):
         self.data.update(values)
         self.jupyter_url.set_text(values["jupyter_url"])
         self.jupyter_token.set_text(values["jupyter_token"])
+        # Storing in the keyring may wait for an unlock prompt, or for another
+        # program's save: not on the main loop. Not a daemon thread: a save
+        # finishes after the window was closed.
+        self.saving = True
+        self.save_button.set_sensitive(False)
+        self._set_status("Saving...")
+        threading.Thread(target=self._save_worker, args=(dict(self.data), values), name="save").start()
+
+    def _save_worker(self, data: dict, values: dict) -> None:
+        # Runs in a thread: no GTK calls here.
         try:
-            save_raw_config(self.data)
+            save_raw_config(data)
         except OSError as exc:
-            self._set_status(f"Could not save: {exc}")
-            return
+            error = f"Could not save: {exc}"
+        else:
+            error = None
+        GLib.idle_add(self._save_done, values, error)
+
+    def _save_done(self, values: dict, error: str | None) -> bool:
+        self.saving = False
+        self.save_button.set_sensitive(True)
+        if error:
+            self._set_status(error)
+            return False
         problem = (self._save_lessons() or config_problem(values) or ai_problem(values)
                    or jupyter_problem(values))
         if not WINDOWS:
@@ -814,6 +846,7 @@ class SettingsWindow(Gtk.Window):
                 problem = f"Could not set the GNOME shortcut: {exc}"
         # The app reads the config at the start of every conversation.
         self._set_status(f"Saved. {problem or 'Applies to the next conversation.'}")
+        return False
 
     # --- History ------------------------------------------------------------
     def _update_history_note(self) -> None:

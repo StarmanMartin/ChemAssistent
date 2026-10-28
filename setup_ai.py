@@ -14,8 +14,8 @@ import getpass
 import os
 import sys
 
-from config import (AGENT_LABELS, AI_TOKEN_ENV, KI_TOOLBOX_URL, agent_of, keyring_problem, read_raw_config,
-                    save_raw_config, storage_location)
+from config import (AGENT_LABELS, AI_TOKEN_ENV, KI_TOOLBOX_URL, agent_of, read_raw_config, save_raw_config,
+                    storage_location)
 
 
 def save(data: dict) -> bool:
@@ -30,7 +30,7 @@ def save(data: dict) -> bool:
 
 def main() -> None:
     data = read_raw_config()  # fills defaults and migrates the model id
-    if keyring_problem():
+    if data.keyring_problem:
         # Saving the secrets it could not read would delete them.
         print("Warning: could not read the system keyring (is it locked?); left the config as it is.")
         return

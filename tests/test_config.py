@@ -146,13 +146,41 @@ def test_a_failing_keyring_is_asked_again_later(tmp_path, monkeypatch, keyring):
     save_raw_config(SETTINGS)
     monkeypatch.setattr(app_config, "_secrets_cache", None)
     keyring.fail = True
-    assert read_raw_config()["password"] == ""
-    assert "locked" in app_config.keyring_problem()
+    data = read_raw_config()
+    assert data["password"] == "" and "locked" in data.keyring_problem
     keyring.fail = False
-    assert read_raw_config()["password"] == ""  # not before SECRET_RETRY_S
-    monkeypatch.setattr(app_config, "SECRET_RETRY_S", 0)
-    assert read_raw_config()["password"] == "p"
-    assert app_config.keyring_problem() == ""
+    data = read_raw_config()
+    assert data["password"] == "" and "locked" in data.keyring_problem  # not before SECRET_RETRY_S
+    data = read_raw_config(retry=True)  # the settings' Save: at once
+    assert data["password"] == "p" and data.keyring_problem == ""
+    assert keyring.reads == 2
+    assert read_raw_config(retry=True)["password"] == "p"
+    assert keyring.reads == 2  # retry does not read again what was read fine
+
+
+def test_a_bug_while_reading_the_keyring_is_a_problem_too(tmp_path, monkeypatch, keyring):
+    """Unrecorded, it would read as "no secrets", and a save would delete them."""
+    use_config_file(tmp_path, monkeypatch)
+    save_raw_config(SETTINGS)
+    monkeypatch.setattr(app_config, "_secrets_cache", None)
+
+    def broken(keys):
+        raise TypeError("a GI binding changed")
+
+    monkeypatch.setattr(keyring, "read_all", broken)
+    data = read_raw_config()
+    assert data["password"] == "" and "a GI binding changed" in data.keyring_problem
+    with pytest.raises(ValueError, match="system keyring: a GI binding changed"):
+        load_config()
+    assert app_config.migrate_secrets() is False
+
+
+def test_use_keyring_edited_by_hand():
+    assert app_config.uses_keyring({}) is True
+    assert app_config.uses_keyring({"use_keyring": True}) is True
+    assert app_config.uses_keyring({"use_keyring": "yes"}) is True
+    for value in (False, 0, "false", "False", "no", "off", "0"):
+        assert app_config.uses_keyring({"use_keyring": value}) is False, value
 
 
 def test_secrets_stay_in_the_file_without_a_keyring(tmp_path, monkeypatch, no_keyring):
@@ -295,9 +323,9 @@ def test_the_main_thread_does_not_wait_for_a_locked_keyring(tmp_path, monkeypatc
     monkeypatch.setattr(app_config, "_main_thread_wait", 0.2)
 
     started = time.monotonic()
-    assert read_raw_config()["password"] == ""
+    data = read_raw_config()
     assert time.monotonic() - started < 2
-    assert "not answered yet" in app_config.keyring_problem()
+    assert data["password"] == "" and "not answered yet" in data.keyring_problem
     # load_config() says why instead of asking for a password that is stored.
     with pytest.raises(ValueError, match="Could not read the passwords and tokens from the system keyring"):
         load_config()
@@ -306,7 +334,90 @@ def test_the_main_thread_does_not_wait_for_a_locked_keyring(tmp_path, monkeypatc
     unlocked.set()
     app_config._reader.join(5)
     assert load_config().password == "p"
-    assert app_config.keyring_problem() == ""
+    assert read_raw_config().keyring_problem == ""
+
+
+def test_the_last_secrets_serve_on_while_the_keyring_is_read_again(tmp_path, monkeypatch, keyring):
+    """A read after SECRET_TTL_S is only a refresh: until it answers, the
+    main thread gets the secrets it had, not an error."""
+    use_config_file(tmp_path, monkeypatch)
+    save_raw_config(SETTINGS)
+    keyring.secrets["password"] = "changed in Seahorse"
+    unlocked = threading.Event()
+    keyring.on_read = unlocked.wait
+    monkeypatch.setattr(app_config, "_main_thread_wait", 0.2)
+    monkeypatch.setattr(app_config, "SECRET_TTL_S", 0)
+
+    data = read_raw_config()  # starts the refresh and waits 0.2 s for it
+    assert data["password"] == "p" and data.keyring_problem == ""
+    assert load_config().password == "p"  # a read it did not start: no wait
+    assert keyring.reads == 1
+    unlocked.set()
+    app_config._reader.join(5)
+    monkeypatch.setattr(app_config, "SECRET_TTL_S", 300)
+    assert read_raw_config()["password"] == "changed in Seahorse"
+
+    # After another program's save the old secrets may be wrong: none until the read is done.
+    keyring.on_read = unlocked.wait
+    unlocked.clear()
+    time.sleep(0.01)  # a new mtime
+    write_private_json(app_config.CONFIG_FILE, {**json.loads(app_config.CONFIG_FILE.read_text()), "user": "v"})
+    data = read_raw_config()
+    assert data["password"] == "" and "not answered yet" in data.keyring_problem
+    unlocked.set()
+    app_config._reader.join(5)
+    assert read_raw_config()["password"] == "changed in Seahorse"
+
+
+def test_a_read_that_began_before_a_save_does_not_bring_the_old_secrets_back(tmp_path, monkeypatch, keyring):
+    use_config_file(tmp_path, monkeypatch)
+    save_raw_config(SETTINGS)
+    monkeypatch.setattr(app_config, "_secrets_cache", None)
+    unlocked = threading.Event()
+    keyring.on_read = unlocked.wait
+    results = []
+    # A snippet's load_config() in a worker thread: it waits for the keyring ...
+    worker = threading.Thread(target=lambda: results.append(load_config().password))
+    worker.start()
+    time.sleep(0.2)
+    assert worker.is_alive() and keyring.reads == 1
+    # ... while the settings save a new password.
+    keyring.on_read = None
+    save_raw_config({**SETTINGS, "password": "new"})
+    unlocked.set()
+    worker.join(5)
+    assert results == ["new"]  # the save's, not what the old read found
+    assert read_raw_config()["password"] == "new"
+    assert keyring.reads == 1  # the cache is the save's, no read after it
+
+
+def test_unchanged_secrets_are_not_written_again(tmp_path, monkeypatch, keyring):
+    """Each write is a D-Bus call, and an unlock prompt while the keyring is locked."""
+    use_config_file(tmp_path, monkeypatch)
+    save_raw_config(SETTINGS)
+    assert keyring.writes == len(app_config.SECRET_KEYS)
+    save_raw_config({**read_raw_config(), "hotkey": "<Super>c"})
+    assert keyring.writes == len(app_config.SECRET_KEYS)  # none
+    save_raw_config({**read_raw_config(), "password": "new", "github_token": ""})
+    assert keyring.writes == len(app_config.SECRET_KEYS) + 2
+    assert keyring.secrets == {"password": "new", "ai_token": "t", "jupyter_password": "jp"}
+    # What the keyring holds is unknown after a failed read: everything is written.
+    monkeypatch.setattr(app_config, "_secrets_cache", None)
+    keyring.fail = True
+    assert read_raw_config()["password"] == ""
+    keyring.fail = False
+    save_raw_config({**SETTINGS, "password": "new"})
+    assert keyring.writes == 2 * len(app_config.SECRET_KEYS) + 2
+
+
+def test_switching_the_keyring_off_removes_what_a_failed_save_left(tmp_path, monkeypatch, keyring):
+    path = use_config_file(tmp_path, monkeypatch)
+    # A save that failed at the second key: the first is in the keyring, config.json has no marker.
+    write_private_json(path, SETTINGS)
+    keyring.secrets["password"] = "p"
+    save_raw_config({**SETTINGS, "use_keyring": False})
+    assert keyring.secrets == {}
+    assert json.loads(path.read_text(encoding="utf-8"))["password"] == "p"
 
 
 def test_keyring_failures_name_the_keyring(tmp_path, monkeypatch, keyring):
@@ -411,11 +522,15 @@ def test_a_failed_keyring_probe_is_tried_again(monkeypatch):
     assert keystore.available() is True and len(attempts) == 2
 
 
+DEFAULT_KEYRING = "/org/freedesktop/secrets/collection/login"
+
+
 class FakeItem:
     """A libsecret item as Secret.Service.search_sync() returns it."""
 
-    def __init__(self, key, secret, locked=False):
+    def __init__(self, key, secret, locked=False, keyring=DEFAULT_KEYRING, modified=0):
         self.key, self.secret, self.locked = key, secret, locked
+        self.path, self.modified = f"{keyring}/{id(self)}", modified
 
     def get_attributes(self):
         return {"key": self.key}
@@ -428,6 +543,12 @@ class FakeItem:
             return None
         return types.SimpleNamespace(get_text=lambda: self.secret)
 
+    def get_object_path(self):
+        return self.path
+
+    def get_modified(self):
+        return self.modified
+
 
 def secret_service(items):
     """keystore.SecretService without D-Bus: its search returns `items`."""
@@ -435,8 +556,21 @@ def secret_service(items):
     service.Secret = types.SimpleNamespace(SearchFlags=types.SimpleNamespace(ALL=1, UNLOCK=2, LOAD_SECRETS=4))
     service.schema = None
     service.service = types.SimpleNamespace(search_sync=lambda schema, attributes, flags, cancellable: items)
+    service.default_path = DEFAULT_KEYRING + "/"
     service._call = lambda function, *args, timeout=None: function(*args, None)
     return service
+
+
+def test_the_copy_in_the_default_keyring_wins():
+    """The search covers every keyring; write() updates only the default one."""
+    keys = app_config.SECRET_KEYS
+    old = FakeItem("password", "old", keyring="/org/freedesktop/secrets/collection/Old", modified=2)
+    assert secret_service([old, FakeItem("password", "p", modified=1)]).read_all(keys) == {"password": "p"}
+    assert secret_service([FakeItem("password", "p", modified=1), old]).read_all(keys) == {"password": "p"}
+    # Without a copy in the default keyring, the newest.
+    older = FakeItem("password", "older", keyring="/org/freedesktop/secrets/collection/Older", modified=1)
+    assert secret_service([older, old]).read_all(keys) == {"password": "old"}
+    assert secret_service([old, older]).read_all(keys) == {"password": "old"}
 
 
 def test_a_dismissed_unlock_prompt_is_an_error(tmp_path, monkeypatch):

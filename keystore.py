@@ -50,9 +50,13 @@ class SecretService:
         # A Secret Service without a default keyring (a bare gnome-keyring-daemon,
         # e.g. under WSL) answers lookups with nothing, and every store fails
         # only after ~15 s.
-        if self._call(Secret.Collection.for_alias_sync, self.service, "default", Secret.CollectionFlags.NONE,
-                      timeout=PROBE_TIMEOUT_S) is None:
+        collection = self._call(Secret.Collection.for_alias_sync, self.service, "default",
+                                Secret.CollectionFlags.NONE, timeout=PROBE_TIMEOUT_S)
+        if collection is None:
             raise KeystoreError("the Secret Service has no default keyring")
+        # write() stores into this keyring; read_all() prefers its items over
+        # copies in another one (an earlier default).
+        self.default_path = collection.get_object_path() + "/"
 
     def _call(self, function, *args, timeout: float = TIMEOUT_S):
         """`function(*args, cancellable)`, cancelled after `timeout` seconds."""
@@ -84,15 +88,19 @@ class SecretService:
             secret = None if item.get_locked() else item.get_secret()
             if secret is None:
                 locked.add(key)
-            else:
-                found[key] = secret.get_text() or ""
+                continue
+            # Several copies of a key (one left in an earlier default keyring):
+            # the one in the default keyring counts, else the newest.
+            rank = (item.get_object_path().startswith(self.default_path), item.get_modified())
+            if key not in found or rank > found[key][0]:
+                found[key] = (rank, secret.get_text() or "")
         # A dismissed unlock prompt is no error for libsecret: the items come
         # back locked and without their secrets. Reading that as "no secrets"
         # would let a save delete them. (A locked copy in another keyring does
         # not count once the key was read.)
         if locked - found.keys():
             raise KeystoreError("the keyring is still locked")
-        return found
+        return {key: value for key, (_rank, value) in found.items()}
 
     def write(self, key: str, value: str, label: str) -> None:
         if not self._call(self.Secret.password_store_sync, self.schema, {"key": key},

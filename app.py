@@ -89,9 +89,9 @@ from cli_agent import CliAgent, cli_models, command_problem  # noqa: E402
 from jobs import ACTIVE, FINISHED, REPORT_HEADER, USER_TEXT, Jobs, duration  # noqa: E402
 from jupyter import JupyterBridge, JupyterError  # noqa: E402
 from config import (  # noqa: E402
-    AGENT_SHORT, AUTO_RUN_LABELS, AUTO_RUN_MODES, CLI_AGENTS, CONFIG_FILE, STATE_DIR, WINDOWS,
-    WORKSPACE_DIR, Config, ai_problem, jupyter_problem, limit_main_thread_wait, load_config, migrate_secrets,
-    model_name, read_raw_config,
+    AGENT_SHORT, AUTO_RUN_LABELS, AUTO_RUN_MODES, CLI_AGENTS, CONFIG_FILE, MAIN_THREAD_KEYRING_WAIT_S, STATE_DIR,
+    WINDOWS, WORKSPACE_DIR, Config, ai_problem, jupyter_problem, limit_main_thread_wait, load_config,
+    migrate_secrets, model_name, read_raw_config,
 )
 
 
@@ -118,8 +118,6 @@ RUN_MODE_ICONS = {"off": "dialog-question-symbolic", "readonly": "emblem-readonl
 MAX_MODEL_ERROR_CHARS = 120
 # Two presses of the global hotkey within this time open the prompt.
 HOTKEY_DOUBLE_S = 0.6
-# How long the main loop waits for the system keyring (it may ask to be unlocked).
-MAIN_THREAD_KEYRING_WAIT_S = 3
 # What the agent gets back from one snippet; the panel shows everything.
 MAX_ANSWER_CHARS = 20000
 MAX_TABLE_COLUMNS = 12

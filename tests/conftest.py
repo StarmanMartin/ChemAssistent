@@ -130,6 +130,7 @@ class FakeKeyring:
         self.fail = False  # every call raises KeystoreError
         self.on_read = None  # called by read_all() first (e.g. waits like an unlock prompt)
         self.reads = 0
+        self.writes = 0  # write() and delete() calls
 
     def _check(self) -> None:
         import keystore
@@ -149,10 +150,12 @@ class FakeKeyring:
         return {key: value for key, value in self.secrets.items() if key in keys}
 
     def write(self, key: str, value: str, label: str) -> None:
+        self.writes += 1
         self._check()
         self.secrets[key] = value
 
     def delete(self, key: str) -> None:
+        self.writes += 1
         self._check()
         self.secrets.pop(key, None)
 
