@@ -502,8 +502,9 @@ def model_infos(config: Config) -> dict[str, dict]:
     """The chat models the endpoint offers (GET /models) by id, sorted, each
     {"vision": True/False/None}: whether it takes images, from Open WebUI's
     info.meta.capabilities.vision (the KI-Toolbox); None where the server
-    does not say (OpenAI, Ollama, vLLM). Models an Open WebUI marks as
-    hidden, e.g. embeddings, are left out."""
+    does not say (OpenAI, Ollama, vLLM, Gemini). Models an Open WebUI marks
+    as hidden, e.g. embeddings, are left out; the Gemini API's "models/"
+    prefix too (its chat endpoint takes bare ids)."""
     with _request(config, "/models") as response:
         try:
             data = json.loads(response.read().decode("utf-8"))
@@ -518,7 +519,7 @@ def model_infos(config: Config) -> dict[str, dict]:
         if meta.get("hidden"):
             continue
         vision = (meta.get("capabilities") or {}).get("vision") if isinstance(meta.get("capabilities"), dict) else None
-        models[str(item["id"])] = {"vision": vision if isinstance(vision, bool) else None}
+        models[str(item["id"]).removeprefix("models/")] = {"vision": vision if isinstance(vision, bool) else None}
     return dict(sorted(models.items()))
 
 
@@ -1285,6 +1286,10 @@ class Agent:
         if function.get("arguments"):
             arguments = function["arguments"]
             call["function"]["arguments"] += arguments if isinstance(arguments, str) else json.dumps(arguments)
+        if delta.get("extra_content"):
+            # Gemini's thought signature ({"google": {"thought_signature": ...}}):
+            # Gemini 3 refuses the next request if the call comes back without it.
+            call["extra_content"] = delta["extra_content"]
 
     def _run_tool(self, call: dict) -> None:
         name = call["function"]["name"]
