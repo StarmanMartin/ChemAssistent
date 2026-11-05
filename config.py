@@ -9,7 +9,10 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-import keystore
+if __package__:
+    from . import keystore
+else:
+    import keystore
 
 
 APP_NAME = "chem-assistent"
@@ -33,6 +36,36 @@ ENDPOINT_FILE = STATE_DIR / "endpoint.json"
 # What the agent may read: CHEMOTION_API.md and the chemotionapi checkout.
 # install.sh fills it; from the source tree setup_workspace.sh does.
 WORKSPACE_DIR = Path(__file__).resolve().with_name("workspace")
+
+
+def _package_workspace(source: Path) -> Path:
+    """The workspace of the pip package (headless.py): CHEMASSISTENT_WORKSPACE,
+    else a generated workspace (the source tree's, then on Linux the desktop
+    install's) whose chemotionapi tag has the installed chemotion_api's major
+    version (else its docs describe another API), else the bundled reference."""
+    if os.environ.get("CHEMASSISTENT_WORKSPACE"):
+        return Path(os.environ["CHEMASSISTENT_WORKSPACE"]).expanduser()
+    from importlib import metadata
+
+    try:
+        major = metadata.version("chemotion-api").split(".")[0]
+    except metadata.PackageNotFoundError:
+        major = ""
+    candidates = [source]
+    if not WINDOWS:
+        candidates.append(Path.home() / ".local" / "share" / APP_NAME / "workspace")
+    for path in candidates:
+        try:
+            tag = (path / "chemotionapi.tag").read_text(encoding="utf-8").strip()
+        except OSError:
+            continue  # none, or a branch (chemotionapi.branch): unknown API
+        if major and tag.lstrip("v").split(".")[0] == major and (path / "CHEMOTION_API.md").is_file():
+            return path
+    return Path(__file__).resolve().with_name("reference")
+
+
+if __package__:
+    WORKSPACE_DIR = _package_workspace(WORKSPACE_DIR)
 # The app's own agent skills (skills/<name>/SKILL.md); with JupyterLab on,
 # the agent may read them (jupyter-calculations).
 SKILLS_DIR = Path(__file__).resolve().with_name("skills")
@@ -546,10 +579,13 @@ def config_problem(data: dict) -> str | None:
     return None
 
 
-def load_config() -> Config:
-    """The validated config. Raises ValueError when it is incomplete."""
+def load_config(keyring_required: bool = True) -> Config:
+    """The validated config. Raises ValueError when it is incomplete.
+    `keyring_required` off (headless.py, which checks what is missing): an
+    unreadable keyring leaves its secrets empty, CHEMOTION_PASSWORD and
+    KI_TOOLBOX_API_KEY may stand in."""
     data = read_raw_config()
-    if data.keyring_problem:
+    if data.keyring_problem and keyring_required:
         # Not "set the password": it is stored, only not readable now.
         raise ValueError(f"Could not read the passwords and tokens from the system keyring: {data.keyring_problem}.")
     problem = config_problem(data)

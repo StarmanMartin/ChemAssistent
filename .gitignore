@@ -7,3 +7,4 @@ workspace/
 # Windows build (windows/build.py)
 build/
 dist/
+*.egg-info/

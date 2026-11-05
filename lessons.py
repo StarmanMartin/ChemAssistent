@@ -24,7 +24,10 @@ import re
 import threading
 from datetime import date
 
-from config import STATE_DIR, WORKSPACE_DIR
+if __package__:
+    from .config import STATE_DIR, WORKSPACE_DIR
+else:
+    from config import STATE_DIR, WORKSPACE_DIR
 
 
 LESSONS_FILE = STATE_DIR / "lessons.md"

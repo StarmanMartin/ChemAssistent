@@ -82,8 +82,8 @@ import hotkey  # noqa: E402
 import ipc  # noqa: E402
 import workspace  # noqa: E402
 from agent import (  # noqa: E402
-    ATTACHMENT_NOTE, FAILED_TEXT, RAN_TEXT, STOPPED_NOTE, Agent, AgentError, list_models, looks_read_only,
-    tool_summary,
+    ATTACHMENT_NOTE, FAILED_TEXT, MAX_ANSWER_CHARS, RAN_TEXT, STOPPED_NOTE, Agent, AgentError, clip, list_models,
+    looks_read_only, tool_summary,
 )
 from cli_agent import CliAgent, cli_models, command_problem  # noqa: E402
 from jobs import ACTIVE, FINISHED, REPORT_HEADER, USER_TEXT, Jobs, duration  # noqa: E402
@@ -127,8 +127,6 @@ RUN_MODE_ICONS = {"off": "dialog-question-symbolic", "readonly": "emblem-readonl
 MAX_MODEL_ERROR_CHARS = 120
 # Two presses of the global hotkey within this time open the prompt.
 HOTKEY_DOUBLE_S = 0.6
-# What the agent gets back from one snippet; the panel shows everything.
-MAX_ANSWER_CHARS = 20000
 MAX_TABLE_COLUMNS = 12
 # Figures from JupyterLab are scaled down to this width in the result tab.
 MAX_IMAGE_WIDTH = 720
@@ -283,12 +281,6 @@ def server_time(window: Gtk.Window) -> int:
     if GdkX11 is not None and gdk_window is not None and isinstance(gdk_window, GdkX11.X11Window):
         return GdkX11.x11_get_server_time(gdk_window)
     return Gtk.get_current_event_time()
-
-
-def clip(text: str, limit: int = MAX_ANSWER_CHARS) -> str:
-    if len(text) <= limit:
-        return text
-    return text[:limit] + f"\n... ({len(text) - limit} more characters not shown)"
 
 
 def cell_text(value) -> str:

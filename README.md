@@ -556,6 +556,60 @@ journalctl --user -u chem-assistent.service -f
 
 (or `./uninstall.sh` in a checkout). Keeps `~/.config/chem-assistent/`.
 
+## Headless Python package
+
+Install the Python interface (no GTK required) from a checkout:
+
+```sh
+python -m pip install .
+```
+
+`ChemAssistent("")` uses the desktop app's settings. Its passwords and tokens
+are usually in the system keyring, and reading the keyring on Linux needs the
+system's PyGObject. Create the virtual environment with access to it:
+
+```sh
+/usr/bin/python3 -m venv --system-site-packages .venv  # needs python3-gi, gir1.2-secret-1
+.venv/bin/pip install .
+```
+
+Without it, set `CHEMOTION_PASSWORD` and `KI_TOOLBOX_API_KEY` (the AI token) in
+the environment, or pass a `chemassistent.Config` (see below). The error from
+`ChemAssistent("")` names what is missing. On Windows the keyring works in
+any venv.
+
+```python
+from chemassistent import ChemAssistent
+
+a = ChemAssistent("")  # use saved ChemAssistent settings
+c = a.conversations.new_conversation()
+p = c.prompt("What collections do I have?")
+print(p)
+```
+
+`prompt` blocks until the model finishes and returns its final answer as a
+string; further prompts on `c` share the conversation history. Separate
+conversations are independent and in-memory. For a standalone configuration,
+pass `chemassistent.Config(url=..., user=..., password=..., ai_url=...,
+ai_model=..., ai_token=...)` instead of `""`. The headless interface supports
+OpenAI-compatible API and Ollama agents; it does not run Jupyter jobs or CLI
+agents. AI errors raise `chemassistent.AgentError`.
+
+Generated Python is **not executed by default**. To permit specific snippets,
+pass an approval function: `ChemAssistent(config, approve=lambda purpose, code:
+...)`. It must return `True` to execute a snippet. Approved code runs with your
+Chemotion credentials and Python's permissions; this is not a security sandbox.
+Do not approve untrusted code. Each snippet's output goes to the model clipped
+to 20,000 characters. Headless conversations read the desktop app's lessons
+but cannot save new ones, cannot read its saved conversations and never report
+issues.
+
+The package includes a short API reference. To use a full generated workspace,
+set `CHEMASSISTENT_WORKSPACE` to its path before importing the package.
+Otherwise, a source checkout's or a Linux desktop install's workspace is used
+when its chemotionapi tag has the same major version as the installed
+`chemotion_api`.
+
 ## License
 
 ChemAssistent is free software under the
