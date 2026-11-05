@@ -34,7 +34,7 @@ KEEP_S = 30 * 86400
 # Printed output of a running job that jupyter_jobs shows the agent.
 PROGRESS_CHARS = 1500
 # Printed output in a report: its end, so the report fits into one answer
-# (app.MAX_ANSWER_CHARS) without losing its last lines.
+# (agent.MAX_ANSWER_CHARS) without losing its last lines.
 REPORT_OUTPUT_CHARS = 8000
 FINISHED = ("done", "failed", "lost", "cancelled")
 # Jobs the watcher still looks after.

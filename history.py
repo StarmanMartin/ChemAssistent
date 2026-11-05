@@ -12,7 +12,10 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from config import EXCHANGE_DIR, STATE_DIR, write_private_json
+if __package__:
+    from .config import EXCHANGE_DIR, STATE_DIR, write_private_json
+else:
+    from config import EXCHANGE_DIR, STATE_DIR, write_private_json
 
 
 HISTORY_DIR = STATE_DIR / "history"

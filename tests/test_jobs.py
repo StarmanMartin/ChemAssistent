@@ -134,7 +134,7 @@ def test_report_keeps_the_end_of_long_output():
                   status(output=output, output_chars=50000), finish())
     assert "the last line" in text and "early" not in text
     assert f"(the last {jobs_module.REPORT_OUTPUT_CHARS} of 50000 characters)" in text
-    assert text.endswith("tell the user what came out.") and len(text) < 20000  # app.MAX_ANSWER_CHARS
+    assert text.endswith("tell the user what came out.") and len(text) < 20000  # agent.MAX_ANSWER_CHARS
 
 
 # --- the jupyter_jobs tool --------------------------------------------------------

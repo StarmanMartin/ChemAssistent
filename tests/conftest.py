@@ -23,6 +23,29 @@ import config as app_config  # noqa: E402  ("config" is pytest's hook argument
 from fake_ai import FakeAI  # noqa: E402
 
 
+def _package_from_source_tree() -> None:
+    """`chemassistent` (the pip package, pyproject.toml) is this source tree,
+    never an installed copy, and its modules are the top-level ones the
+    fixtures below patch (lessons file, keyring, history, workspace); only
+    headless.py exists in the package alone. test_headless.py checks the
+    package's own imports in a subprocess."""
+    import importlib.util
+
+    root = HERE.parent
+    spec = importlib.util.spec_from_file_location("chemassistent", root / "__init__.py",
+                                                  submodule_search_locations=[str(root)])
+    package = importlib.util.module_from_spec(spec)
+    sys.modules["chemassistent"] = package
+    for name in ("keystore", "config", "api_versions", "lessons", "history", "issues", "workspace", "agent"):
+        module = __import__(name)
+        sys.modules[f"chemassistent.{name}"] = module
+        setattr(package, name, module)
+    spec.loader.exec_module(package)
+
+
+_package_from_source_tree()
+
+
 # The login of the local test instance; chemotionapi's tests/config.json.
 # CHEMOTION_TEST_CONFIG overrides the path, so the tests also run where the
 # checkout lives elsewhere (CI).

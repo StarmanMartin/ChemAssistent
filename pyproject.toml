@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chemassistent"
+version = "0.1.0"
+description = "Headless Python interface for ChemAssistent"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["chemotion-api>=312,<313"]
+
+[tool.setuptools]
+packages = ["chemassistent"]
+package-dir = {chemassistent = "."}
+
+[tool.setuptools.package-data]
+chemassistent = ["reference/*.md"]

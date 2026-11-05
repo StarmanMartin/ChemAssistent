@@ -10,10 +10,14 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import api_versions
-import history as history_module  # system_prompt() has a parameter `history`
-import lessons
-from config import FROZEN, SKILLS_DIR, WINDOWS, WORKSPACE_DIR
+if __package__:
+    from . import api_versions, history as history_module, lessons
+    from .config import FROZEN, SKILLS_DIR, WINDOWS, WORKSPACE_DIR
+else:
+    import api_versions
+    import history as history_module  # system_prompt() has a parameter `history`
+    import lessons
+    from config import FROZEN, SKILLS_DIR, WINDOWS, WORKSPACE_DIR
 
 
 HERE = Path(__file__).resolve().parent
@@ -208,9 +212,11 @@ or outdated, e.g. after a chemotion_api update: verify before relying on them):
 """
 
 
-def system_prompt(exchange: Path | None = None, developer: bool = False, history: bool = False) -> str:
+def system_prompt(exchange: Path | None = None, developer: bool = False, history: bool = False,
+                  save_lessons: bool = True) -> str:
     """`exchange`: the conversation's exchange folder when JupyterLab is on;
-    `developer`: developer mode (config.developer_mode)."""
+    `developer`: developer mode (config.developer_mode); `save_lessons` off
+    leaves out how to save lessons (no save_lesson tool, headless.py)."""
     tag, branch = api_versions.installed_tag(), api_versions.installed_branch()
     version = f" (branch {branch})" if branch else f" (tag {tag})" if tag else ""
     prompt = SYSTEM_PROMPT.format(skills=skill_lines(jupyter=exchange is not None), api_version=version)
@@ -220,7 +226,7 @@ def system_prompt(exchange: Path | None = None, developer: bool = False, history
     if history:
         prompt += HISTORY_PROMPT.format(history=history_module.HISTORY_DIR)
     learned = lessons.prompt_section()  # not formatted: lessons may contain braces
-    return prompt + LESSONS_PROMPT + (LESSONS_HEADER + learned + "\n" if learned else "")
+    return prompt + (LESSONS_PROMPT if save_lessons else "") + (LESSONS_HEADER + learned + "\n" if learned else "")
 
 
 # The programs of the Windows build (windows/chem-assistent.spec) that run

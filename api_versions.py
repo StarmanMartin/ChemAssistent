@@ -24,7 +24,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-from config import WORKSPACE_DIR
+if __package__:
+    from .config import WORKSPACE_DIR
+else:
+    from config import WORKSPACE_DIR
 
 
 REPO_URL = "https://github.com/Chemotion/chemotionapi.git"

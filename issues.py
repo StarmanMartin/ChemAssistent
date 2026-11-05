@@ -22,9 +22,13 @@ import urllib.request
 from datetime import datetime
 from importlib import metadata
 
-import api_versions
-import lessons
-from config import AGENT_LABELS, CLI_AGENTS, STATE_DIR, Config, model_name
+if __package__:
+    from . import api_versions, lessons
+    from .config import AGENT_LABELS, CLI_AGENTS, STATE_DIR, Config, model_name
+else:
+    import api_versions
+    import lessons
+    from config import AGENT_LABELS, CLI_AGENTS, STATE_DIR, Config, model_name
 
 
 ISSUES_DIR = STATE_DIR / "issues"
@@ -182,4 +186,3 @@ def report(config: Config, model: str, title: str, description: str) -> str:
     link, clipped = new_issue_link(title, body)
     return (f"{problem}The report was saved as {draft}. Give the user this link to submit it on GitHub "
             f"(title and body are filled in{'; the body is clipped there' if clipped else ''}): {link}")
-

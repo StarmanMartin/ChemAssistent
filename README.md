@@ -556,6 +556,46 @@ journalctl --user -u chem-assistent.service -f
 
 (or `./uninstall.sh` in a checkout). Keeps `~/.config/chem-assistent/`.
 
+## Headless Python package
+
+Install the Python interface (no GTK required) from a checkout:
+
+```sh
+python -m pip install .
+```
+
+```python
+from chemassistent import ChemAssistent
+
+a = ChemAssistent("")  # use saved ChemAssistent settings
+c = a.conversations.new_conversation()
+p = c.prompt("What collections do I have?")
+print(p)
+```
+
+`prompt` blocks until the model finishes and returns its final answer as a
+string; further prompts on `c` share the conversation history. Separate
+conversations are independent and in-memory. For a standalone configuration,
+pass `chemassistent.Config(url=..., user=..., password=..., ai_url=...,
+ai_model=..., ai_token=...)` instead of `""`. The headless interface supports
+OpenAI-compatible API and Ollama agents; it does not run Jupyter jobs or CLI
+agents. AI errors raise `chemassistent.AgentError`.
+
+Generated Python is **not executed by default**. To permit specific snippets,
+pass an approval function: `ChemAssistent(config, approve=lambda purpose, code:
+...)`. It must return `True` to execute a snippet. Approved code runs with your
+Chemotion credentials and Python's permissions; this is not a security sandbox.
+Do not approve untrusted code. Each snippet's output goes to the model clipped
+to 20,000 characters. Headless conversations read the desktop app's lessons
+but cannot save new ones, cannot read its saved conversations and never report
+issues.
+
+The package includes a short API reference. To use a full generated workspace,
+set `CHEMASSISTENT_WORKSPACE` to its path before importing the package.
+Otherwise, a source checkout's or a Linux desktop install's workspace is used
+when its chemotionapi tag has the same major version as the installed
+`chemotion_api`.
+
 ## License
 
 ChemAssistent is free software under the

@@ -31,13 +31,20 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-import issues
-import lessons
-import history
-from config import AUTO_RUN_MODES, SKILLS_DIR, WORKSPACE_DIR, Config
+if __package__:
+    from . import issues, lessons, history
+    from .config import AUTO_RUN_MODES, SKILLS_DIR, WORKSPACE_DIR, Config
+else:
+    import issues
+    import lessons
+    import history
+    from config import AUTO_RUN_MODES, SKILLS_DIR, WORKSPACE_DIR, Config
 
 
 REQUEST_TIMEOUT_S = 300
+# What the agent gets back from one snippet (app.py, headless.py); the panel
+# shows everything.
+MAX_ANSWER_CHARS = 20000
 # Tool rounds per user message before the agent stops and asks the user.
 MAX_ROUNDS = 40
 MAX_READ_LINES = 400
@@ -249,14 +256,24 @@ REPORT_API_BUG_TOOL = {
 }
 
 
-def build_tools(mode: str, jupyter: bool = False, developer: bool = False) -> list[dict]:
+def clip(text: str, limit: int = MAX_ANSWER_CHARS) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"\n... ({len(text) - limit} more characters not shown)"
+
+
+def build_tools(mode: str, jupyter: bool = False, developer: bool = False,
+                save_lessons: bool = True) -> list[dict]:
     """The tools with the execute_* descriptions for `mode`; the JupyterLab
-    tools only with JupyterLab configured, report_api_bug in developer mode."""
+    tools only with JupyterLab configured, report_api_bug in developer mode,
+    save_lesson unless `save_lessons` is off (headless.py)."""
     if not jupyter:
-        tools = [execute_python_tool(mode)] + READ_ONLY_TOOLS + [SAVE_LESSON_TOOL]
+        tools = [execute_python_tool(mode)] + READ_ONLY_TOOLS
     else:
         tools = ([execute_python_tool(mode), execute_jupyter_tool(mode), start_jupyter_job_tool(mode),
-                  JUPYTER_JOBS_TOOL] + READ_ONLY_TOOLS + [SAVE_LESSON_TOOL])
+                  JUPYTER_JOBS_TOOL] + READ_ONLY_TOOLS)
+    if save_lessons:
+        tools.append(SAVE_LESSON_TOOL)
     return tools + [REPORT_API_BUG_TOOL] if developer else tools
 
 # The read-only tools; build_tools() prepends execute_python with the
@@ -597,15 +614,19 @@ class Agent:
     """
 
     def __init__(self, config: Config, system_prompt: str, execute, on_event,
-                 auto_run: str = "off", exchange: Path | None = None, jobs=None) -> None:
+                 auto_run: str = "off", exchange: Path | None = None, jobs=None,
+                 save_lessons: bool = True) -> None:
         self.config = config
+        # Off: no save_lesson tool (headless.py: no prompt may change the
+        # lessons every other conversation reads).
+        self.save_lessons = save_lessons
         self.jupyter = exchange is not None
         self.execute = execute
         self.jobs = jobs
         self.on_event = on_event
         self.auto_run = auto_run if auto_run in AUTO_RUN_MODES else "off"
         # The tool descriptions depend on the auto-run mode (execute_python).
-        self.tools = build_tools(self.auto_run, self.jupyter, self.config.developer_mode)
+        self.tools = build_tools(self.auto_run, self.jupyter, self.config.developer_mode, self.save_lessons)
         self.messages: list[dict] = [{"role": "system", "content": system_prompt}]
         # What the read-only tools may read: base_roots() and every attachment.
         self.roots: list[Path] = base_roots(config.history_access)
@@ -629,7 +650,7 @@ class Agent:
         """Switch the auto-run mode mid-conversation (the header menu); the
         changed tool description goes out with the next request."""
         self.auto_run = mode if mode in AUTO_RUN_MODES else "off"
-        self.tools = build_tools(self.auto_run, self.jupyter, self.config.developer_mode)
+        self.tools = build_tools(self.auto_run, self.jupyter, self.config.developer_mode, self.save_lessons)
 
     def set_model(self, model: str) -> None:
         """Switch the model mid-conversation (the header menu); the next
@@ -860,13 +881,14 @@ class Agent:
                     self.failed_run = True
                 elif RAN_TEXT in answer and self.failed_run:
                     self.failed_run = False  # one reminder per fixed failure
-                    answer += "\n\n" + LESSON_REMINDER
+                    if self.save_lessons:
+                        answer += "\n\n" + LESSON_REMINDER
                 return answer
             if name == "jupyter_jobs" and self.jupyter and self.jobs is not None:
                 text = self.jobs()
                 self.on_event("tool", tool_summary(name, arguments))
                 return text
-            if name == "save_lesson":
+            if name == "save_lesson" and self.save_lessons:
                 key = str(arguments.get("key") or "")
                 if arguments.get("remove"):
                     text = lessons.remove_lesson(key)
