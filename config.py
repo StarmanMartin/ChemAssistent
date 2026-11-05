@@ -579,10 +579,13 @@ def config_problem(data: dict) -> str | None:
     return None
 
 
-def load_config() -> Config:
-    """The validated config. Raises ValueError when it is incomplete."""
+def load_config(keyring_required: bool = True) -> Config:
+    """The validated config. Raises ValueError when it is incomplete.
+    `keyring_required` off (headless.py, which checks what is missing): an
+    unreadable keyring leaves its secrets empty, CHEMOTION_PASSWORD and
+    KI_TOOLBOX_API_KEY may stand in."""
     data = read_raw_config()
-    if data.keyring_problem:
+    if data.keyring_problem and keyring_required:
         # Not "set the password": it is stored, only not readable now.
         raise ValueError(f"Could not read the passwords and tokens from the system keyring: {data.keyring_problem}.")
     problem = config_problem(data)

@@ -564,6 +564,20 @@ Install the Python interface (no GTK required) from a checkout:
 python -m pip install .
 ```
 
+`ChemAssistent("")` uses the desktop app's settings. Its passwords and tokens
+are usually in the system keyring, and reading the keyring on Linux needs the
+system's PyGObject. Create the virtual environment with access to it:
+
+```sh
+/usr/bin/python3 -m venv --system-site-packages .venv  # needs python3-gi, gir1.2-secret-1
+.venv/bin/pip install .
+```
+
+Without it, set `CHEMOTION_PASSWORD` and `KI_TOOLBOX_API_KEY` (the AI token) in
+the environment, or pass a `chemassistent.Config` (see below). The error from
+`ChemAssistent("")` names what is missing. On Windows the keyring works in
+any venv.
+
 ```python
 from chemassistent import ChemAssistent
 

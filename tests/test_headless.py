@@ -189,3 +189,64 @@ def test_package_imports(fake_ai, tmp_path):
     assert process.stdout.startswith("finished")
     assert "Cannot connect to Chemotion" in process.stdout  # the real runner ran
     assert not marker.exists()
+
+
+def test_headless_prompt_and_tool(fake_ai, config):
+    """No window, panel or attachments in what the model is told."""
+    conv = ChemAssistent(config).conversations.new_conversation()
+    fake_ai.script_next({"content": "ok"})
+    conv.prompt("hi")
+    system = fake_ai.requests[0]["messages"][0]["content"]
+    execute = next(t for t in fake_ai.requests[0]["tools"] if t["function"]["name"] == "execute_python")
+    for text in (system, execute["function"]["description"]):
+        assert "approval function" in text and "must confirm it" not in text
+    assert "there is no window and no result panel" in system
+    assert "attach files" not in system and "summarize instead of repeating" not in system
+
+
+@pytest.fixture
+def saved_settings(tmp_path, monkeypatch):
+    """Desktop settings whose secrets are in the keyring (empty in the file)."""
+    import config as app_config
+
+    monkeypatch.setattr(app_config, "CONFIG_FILE", tmp_path / "config.json")
+    monkeypatch.setattr(app_config, "CONFIG_DIR", tmp_path)
+    monkeypatch.delenv("CHEMOTION_PASSWORD", raising=False)
+    monkeypatch.delenv("KI_TOOLBOX_API_KEY", raising=False)
+    app_config.write_private_json(app_config.CONFIG_FILE, {
+        "url": "http://chemotion.test", "user": "u", "password": "", "ai_token": "",
+        "ai_url": "http://ai.test", "ai_model": "m", "secret_store": "keyring"})
+
+
+def test_saved_settings_without_keyring_module(saved_settings, monkeypatch):
+    import keystore
+
+    monkeypatch.setattr(keystore, "_store", False)
+    monkeypatch.setattr(keystore, "_problem", "no system keyring: No module named 'gi'")
+    monkeypatch.setattr(keystore, "PROBE_RETRY_S", float("inf"))
+    with pytest.raises(ValueError) as error:
+        ChemAssistent("")
+    message = str(error.value)
+    assert "CHEMOTION_PASSWORD" in message and "KI_TOOLBOX_API_KEY" in message
+    assert "--system-site-packages" in message and "chemassistent.Config" in message
+    # The environment stands in for the keyring.
+    monkeypatch.setenv("CHEMOTION_PASSWORD", "pw")
+    monkeypatch.setenv("KI_TOOLBOX_API_KEY", "token")
+    assistant = ChemAssistent("")
+    assert (assistant.config.password, assistant.config.ai_token) == ("pw", "token")
+
+
+def test_saved_settings_locked_keyring(saved_settings, keyring, monkeypatch):
+    keyring.fail = True
+    monkeypatch.setenv("KI_TOOLBOX_API_KEY", "token")
+    with pytest.raises(ValueError) as error:
+        ChemAssistent("")
+    message = str(error.value)
+    assert "the Chemotion password (or set CHEMOTION_PASSWORD)" in message and "AI token" not in message
+    assert "--system-site-packages" not in message  # not a missing PyGObject
+
+
+def test_saved_settings_with_keyring(saved_settings, keyring):
+    keyring.secrets.update(password="secret", ai_token="tok")
+    assistant = ChemAssistent("")
+    assert (assistant.config.password, assistant.config.ai_token) == ("secret", "tok")

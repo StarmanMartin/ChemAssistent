@@ -61,10 +61,14 @@ ATTACHMENT_NOTE = ("\n\nAttached by the user (read them with read_file / list_fi
 STOPPED_NOTE = "(Stopped after many tool calls.)"
 
 
-def execute_python_tool(mode: str) -> dict:
+def execute_python_tool(mode: str, headless: bool = False) -> dict:
     """The execute_python tool for one auto-run mode (config.AUTO_RUN_MODES):
-    what the description says about running depends on it."""
-    if mode == "readonly":
+    what the description says about running depends on it. `headless`:
+    headless.py's approval function decides, nobody sees a panel."""
+    if headless:
+        confirm = ("The calling program's approval function decides whether the code runs; it may "
+                   "reject it.")
+    elif mode == "readonly":
         confirm = (
             "Read-only code (fetching data only) runs automatically; code that creates, changes "
             "or deletes data, or writes files, waits for the user to confirm it in the result "
@@ -89,10 +93,13 @@ def execute_python_tool(mode: str) -> dict:
                 "A logged-in `instance` (chemotion_api.Instance) is predefined; never log in. "
                 "Only chemotion_api and the standard library are available: never install packages "
                 "or start other programs (pip, subprocess) here. "
-                + confirm +
-                " Assign what the user should see to `result`. The answer contains the printed "
-                "output, `result` as JSON, the error traceback, or the user's reason for rejecting "
-                "the code."
+                + confirm
+                + (" Assign the data you need to `result`. The answer contains the printed output, "
+                   "`result` as JSON, the error traceback, or that the code was not approved."
+                   if headless else
+                   " Assign what the user should see to `result`. The answer contains the printed "
+                   "output, `result` as JSON, the error traceback, or the user's reason for rejecting "
+                   "the code.")
             ),
             "parameters": {
                 "type": "object",
@@ -263,16 +270,17 @@ def clip(text: str, limit: int = MAX_ANSWER_CHARS) -> str:
 
 
 def build_tools(mode: str, jupyter: bool = False, developer: bool = False,
-                save_lessons: bool = True) -> list[dict]:
+                headless: bool = False) -> list[dict]:
     """The tools with the execute_* descriptions for `mode`; the JupyterLab
     tools only with JupyterLab configured, report_api_bug in developer mode,
-    save_lesson unless `save_lessons` is off (headless.py)."""
+    save_lesson except for `headless` (headless.py: no prompt may change the
+    lessons every other conversation reads)."""
     if not jupyter:
-        tools = [execute_python_tool(mode)] + READ_ONLY_TOOLS
+        tools = [execute_python_tool(mode, headless)] + READ_ONLY_TOOLS
     else:
         tools = ([execute_python_tool(mode), execute_jupyter_tool(mode), start_jupyter_job_tool(mode),
                   JUPYTER_JOBS_TOOL] + READ_ONLY_TOOLS)
-    if save_lessons:
+    if not headless:
         tools.append(SAVE_LESSON_TOOL)
     return tools + [REPORT_API_BUG_TOOL] if developer else tools
 
@@ -615,18 +623,17 @@ class Agent:
 
     def __init__(self, config: Config, system_prompt: str, execute, on_event,
                  auto_run: str = "off", exchange: Path | None = None, jobs=None,
-                 save_lessons: bool = True) -> None:
+                 headless: bool = False) -> None:
         self.config = config
-        # Off: no save_lesson tool (headless.py: no prompt may change the
-        # lessons every other conversation reads).
-        self.save_lessons = save_lessons
+        # headless.py: no save_lesson, the approval function instead of a panel.
+        self.headless = headless
         self.jupyter = exchange is not None
         self.execute = execute
         self.jobs = jobs
         self.on_event = on_event
         self.auto_run = auto_run if auto_run in AUTO_RUN_MODES else "off"
         # The tool descriptions depend on the auto-run mode (execute_python).
-        self.tools = build_tools(self.auto_run, self.jupyter, self.config.developer_mode, self.save_lessons)
+        self.tools = build_tools(self.auto_run, self.jupyter, self.config.developer_mode, self.headless)
         self.messages: list[dict] = [{"role": "system", "content": system_prompt}]
         # What the read-only tools may read: base_roots() and every attachment.
         self.roots: list[Path] = base_roots(config.history_access)
@@ -650,7 +657,7 @@ class Agent:
         """Switch the auto-run mode mid-conversation (the header menu); the
         changed tool description goes out with the next request."""
         self.auto_run = mode if mode in AUTO_RUN_MODES else "off"
-        self.tools = build_tools(self.auto_run, self.jupyter, self.config.developer_mode, self.save_lessons)
+        self.tools = build_tools(self.auto_run, self.jupyter, self.config.developer_mode, self.headless)
 
     def set_model(self, model: str) -> None:
         """Switch the model mid-conversation (the header menu); the next
@@ -881,14 +888,14 @@ class Agent:
                     self.failed_run = True
                 elif RAN_TEXT in answer and self.failed_run:
                     self.failed_run = False  # one reminder per fixed failure
-                    if self.save_lessons:
+                    if not self.headless:
                         answer += "\n\n" + LESSON_REMINDER
                 return answer
             if name == "jupyter_jobs" and self.jupyter and self.jobs is not None:
                 text = self.jobs()
                 self.on_event("tool", tool_summary(name, arguments))
                 return text
-            if name == "save_lesson" and self.save_lessons:
+            if name == "save_lesson" and not self.headless:
                 key = str(arguments.get("key") or "")
                 if arguments.get("remove"):
                     text = lessons.remove_lesson(key)

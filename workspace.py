@@ -26,7 +26,7 @@ SOURCE_DIR = "chemotionapi"
 
 SYSTEM_PROMPT = f"""\
 You are ChemAssistent, an assistant for the Chemotion electronic lab notebook (ELN).
-The user chats with you in a window; next to the chat is a result panel.
+{{intro}}
 
 How you work with Chemotion:
 - The only way to read or change data in Chemotion is the tool `execute_python`.
@@ -37,23 +37,7 @@ How you work with Chemotion:
   (the API reference generated from the package docs) with `read_file`, or find
   the relevant part with `grep`. If it is not enough, grep or read the package
   source in `{SOURCE_DIR}/chemotion_api/`. Never guess method names.
-{{skills}}- The user sees every snippet in the result panel and must confirm it before it
-  runs. They may edit it or reject it with a reason; the tool answer tells you
-  what happened and which code really ran. Respect a rejection; do not re-send
-  the same code.
-- Set the variable `result` to what the user should see. A list of flat dicts is
-  shown as a table, a dict as a key/value table, anything else as text. Keep
-  results small and readable (only useful columns, no huge JSON blobs);
-  print() is shown too. The panel keeps the latest results as tabs.
-- When the answer is about elements (samples, reactions, wellplates, research
-  plans, ...), put the element objects themselves into `result` (a list, or a
-  dict of lists such as `{{{{"samples": [...], "reactions": [...]}}}}`): each one
-  becomes a row with label, name and id that opens the element in the browser
-  when clicked. For your own columns, use dicts with `"url": element.url()`.
-- The user may attach files or folders; the message lists their absolute paths.
-  `read_file`, `grep` and `list_files` accept those paths, and `execute_python`
-  code can open them (e.g. to upload a measurement file to an element).
-- Prefer small read-only steps to find ids and names before changing anything.
+{{skills}}{{running}}- Prefer small read-only steps to find ids and names before changing anything.
   Say clearly in `purpose` whether the code changes data. Never delete or
   overwrite data unless the user asked for exactly that.
 - `execute_python` runs in the app's own Python environment: only
@@ -64,9 +48,54 @@ How you work with Chemotion:
   `instance.get_root_collection().get_collection('Name').get_samples()`;
   new elements must be `.save()`d.
 
-Answer in the language of the user. Keep chat answers short: the data is in the
-result panel, so summarize instead of repeating it. You may use Markdown.
+{{answers}}
 """
+
+
+# The parts of SYSTEM_PROMPT that differ between the app (a window with a
+# result panel) and headless.py (a Python caller that only gets the answer).
+# Format arguments, so single braces.
+DESKTOP_TEXT = {
+    "intro": "The user chats with you in a window; next to the chat is a result panel.",
+    "running": """\
+- The user sees every snippet in the result panel and must confirm it before it
+  runs. They may edit it or reject it with a reason; the tool answer tells you
+  what happened and which code really ran. Respect a rejection; do not re-send
+  the same code.
+- Set the variable `result` to what the user should see. A list of flat dicts is
+  shown as a table, a dict as a key/value table, anything else as text. Keep
+  results small and readable (only useful columns, no huge JSON blobs);
+  print() is shown too. The panel keeps the latest results as tabs.
+- When the answer is about elements (samples, reactions, wellplates, research
+  plans, ...), put the element objects themselves into `result` (a list, or a
+  dict of lists such as `{"samples": [...], "reactions": [...]}`): each one
+  becomes a row with label, name and id that opens the element in the browser
+  when clicked. For your own columns, use dicts with `"url": element.url()`.
+- The user may attach files or folders; the message lists their absolute paths.
+  `read_file`, `grep` and `list_files` accept those paths, and `execute_python`
+  code can open them (e.g. to upload a measurement file to an element).
+""",
+    "answers": """\
+Answer in the language of the user. Keep chat answers short: the data is in the
+result panel, so summarize instead of repeating it. You may use Markdown.""",
+}
+HEADLESS_TEXT = {
+    "intro": ("A Python program sends you the user's prompts (the headless interface): there is no "
+              "window and no result panel. The program receives only your final text answer."),
+    "running": """\
+- Every snippet goes to the program's approval function, which decides whether
+  it runs; it may reject it. The tool answer tells you whether it ran. Respect
+  a rejection; do not re-send the same code.
+- Set the variable `result` to the data you need: you get it back as JSON
+  together with the print() output; the user does not see it. Keep it small
+  (only useful fields, no huge JSON blobs). Elements in `result` (samples,
+  reactions, ...) come back as small dicts with label, name, id and `url`.
+""",
+    "answers": """\
+Answer in the language of the user. Your final text is all the user gets: put
+the requested data into it (concisely, e.g. as a Markdown list or table) and
+give each element's URL when the answer is about elements.""",
+}
 
 
 def reference_ready() -> bool:
@@ -213,20 +242,21 @@ or outdated, e.g. after a chemotion_api update: verify before relying on them):
 
 
 def system_prompt(exchange: Path | None = None, developer: bool = False, history: bool = False,
-                  save_lessons: bool = True) -> str:
+                  headless: bool = False) -> str:
     """`exchange`: the conversation's exchange folder when JupyterLab is on;
-    `developer`: developer mode (config.developer_mode); `save_lessons` off
-    leaves out how to save lessons (no save_lesson tool, headless.py)."""
+    `developer`: developer mode (config.developer_mode); `headless`:
+    headless.py (HEADLESS_TEXT, nothing about saving lessons: no save_lesson tool)."""
     tag, branch = api_versions.installed_tag(), api_versions.installed_branch()
     version = f" (branch {branch})" if branch else f" (tag {tag})" if tag else ""
-    prompt = SYSTEM_PROMPT.format(skills=skill_lines(jupyter=exchange is not None), api_version=version)
+    prompt = SYSTEM_PROMPT.format(skills=skill_lines(jupyter=exchange is not None), api_version=version,
+                                  **(HEADLESS_TEXT if headless else DESKTOP_TEXT))
     prompt += JUPYTER_PROMPT.format(exchange=exchange) if exchange is not None else NO_JUPYTER_PROMPT
     if developer:
         prompt += DEVELOPER_PROMPT.format(api_version=api_versions.installed_label() or "unknown")
     if history:
         prompt += HISTORY_PROMPT.format(history=history_module.HISTORY_DIR)
     learned = lessons.prompt_section()  # not formatted: lessons may contain braces
-    return prompt + (LESSONS_PROMPT if save_lessons else "") + (LESSONS_HEADER + learned + "\n" if learned else "")
+    return prompt + ("" if headless else LESSONS_PROMPT) + (LESSONS_HEADER + learned + "\n" if learned else "")
 
 
 # The programs of the Windows build (windows/chem-assistent.spec) that run

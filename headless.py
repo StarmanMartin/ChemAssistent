@@ -12,7 +12,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from .agent import Agent, AgentError, FAILED_TEXT, RAN_TEXT, clip
-from .config import WINDOWS, Config, load_config
+from .config import AI_TOKEN_ENV, WINDOWS, Config, agent_of, ai_token, load_config, read_raw_config
 from . import workspace
 
 
@@ -40,6 +40,28 @@ def _kill_tree(process: subprocess.Popen) -> None:
     process.wait()
 
 
+def saved_config() -> Config:
+    """The desktop app's settings. Without a readable keyring (a venv without
+    PyGObject, a locked keyring) CHEMOTION_PASSWORD and KI_TOOLBOX_API_KEY
+    may stand in for the secrets kept there."""
+    raw = read_raw_config()
+    if raw.keyring_problem:
+        missing = []
+        if not (os.environ.get("CHEMOTION_PASSWORD") or raw.get("password")):
+            missing.append("the Chemotion password (or set CHEMOTION_PASSWORD)")
+        if agent_of(raw) == "api" and not ai_token(raw):
+            missing.append(f"the AI token (or set {AI_TOKEN_ENV})")
+        if missing:
+            hint = ""
+            if "No module named 'gi'" in raw.keyring_problem:
+                hint = (" Reading it needs PyGObject: on Linux create the virtual environment with "
+                        "--system-site-packages (packages python3-gi and gir1.2-secret-1).")
+            raise ValueError(
+                f"The saved settings keep {' and '.join(missing)} in the system keyring, which cannot "
+                f"be read here: {raw.keyring_problem}.{hint} Alternatively pass a chemassistent.Config.")
+    return load_config(keyring_required=False)
+
+
 class ChemAssistent:
     """A headless assistant. An empty config uses the desktop settings.
 
@@ -50,7 +72,7 @@ class ChemAssistent:
     def __init__(self, config: Config | str = "", *,
                  approve: Callable[[str, str], bool] | None = None) -> None:
         if config == "":
-            config = load_config()
+            config = saved_config()
         if not isinstance(config, Config):
             raise TypeError('config must be a Config or "" to use saved settings')
         if config.agent not in ("api", "ollama"):
@@ -77,14 +99,11 @@ class Conversation:
         self._assistant = assistant
         self._lock = threading.Lock()
         self._error = ""
-        # No save_lesson: a prompt (maybe from an untrusted document) must not
-        # write into the lessons every desktop conversation reads.
-        prompt = workspace.system_prompt(save_lessons=False) + (
-            "\nThis is a headless Python conversation, not a graphical window. "
-            "The caller receives only your final text; include the requested results and element URLs "
-            "in that text. Code execution requires explicit caller approval and may be rejected.\n"
-        )
-        self._agent = Agent(assistant.config, prompt, self._execute, self._event, save_lessons=False)
+        # headless: no save_lesson (a prompt, maybe from an untrusted document,
+        # must not write into the lessons every desktop conversation reads),
+        # and a prompt that knows there is no window or result panel.
+        self._agent = Agent(assistant.config, workspace.system_prompt(headless=True), self._execute,
+                            self._event, headless=True)
 
     def _event(self, kind: str, data) -> None:
         if kind == "error":
