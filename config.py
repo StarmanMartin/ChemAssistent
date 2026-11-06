@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -186,6 +187,9 @@ class Config:
     # The agent may read the saved conversations (history.py) when the user
     # asks about them; off: they are no root of its read-only tools.
     history_access: bool = False
+    # MCP servers the user added (settings, or the agent after "/mcp"):
+    # normalized dicts (mcp_servers()), the disabled ones included.
+    mcp_servers: tuple = ()
 
     @property
     def jupyter(self) -> bool:
@@ -219,6 +223,7 @@ EXAMPLE = {
     "developer_mode": False,
     "github_token": "",
     "history_access": False,
+    "mcp_servers": [],
     "use_keyring": True,
 }
 
@@ -314,6 +319,62 @@ def jupyter_problem(data: dict) -> str | None:
 def jupyter_folder(data: dict) -> str:
     """The folder below the Jupyter root, without leading/trailing slashes."""
     return str(data.get("jupyter_folder") or "").strip().strip("/\\") or DEFAULT_JUPYTER_FOLDER
+
+
+# MCP servers (config key mcp_servers, a list): {"name", "command", "args",
+# "env"} for a program speaking MCP on stdio, or {"name", "url", "headers"}
+# for a Streamable HTTP server; "enabled" false keeps one without starting it.
+# Their tools are named mcp__<name>__<tool>, so a name has no "__".
+MCP_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$")
+
+
+def mcp_server_problem(spec) -> str | None:
+    """Why one entry of mcp_servers cannot be used, or None."""
+    if not isinstance(spec, dict):
+        return "an MCP server must be a JSON object"
+    name = str(spec.get("name") or "")
+    if not MCP_NAME_PATTERN.match(name) or "__" in name:
+        return (f"“{name}” is no valid MCP server name (letters, digits, - and _, at most 32 characters, "
+                "no double underscore)")
+    command, url = str(spec.get("command") or "").strip(), str(spec.get("url") or "").strip()
+    if bool(command) == bool(url):
+        return f"MCP server {name}: give either a command or a URL"
+    if url and not url.startswith(("http://", "https://")):
+        return f"MCP server {name}: the URL must start with http:// or https://"
+    args = spec.get("args") or []
+    if not isinstance(args, list) or not all(isinstance(arg, (str, int, float)) for arg in args):
+        return f"MCP server {name}: args must be a list of strings"
+    for key in ("env", "headers"):
+        value = spec.get(key) or {}
+        if not isinstance(value, dict) or not all(isinstance(v, (str, int, float)) for v in value.values()):
+            return f"MCP server {name}: {key} must be an object of strings"
+    return None
+
+
+def normalize_mcp_server(spec: dict) -> dict:
+    """One valid entry with every key (mcp_server_problem() is None)."""
+    url = str(spec.get("url") or "").strip()
+    return {
+        "name": str(spec["name"]),
+        "command": "" if url else str(spec.get("command") or "").strip(),
+        "args": [] if url else [str(arg) for arg in spec.get("args") or []],
+        "env": {} if url else {str(k): str(v) for k, v in (spec.get("env") or {}).items()},
+        "url": url,
+        "headers": {str(k): str(v) for k, v in (spec.get("headers") or {}).items()} if url else {},
+        "enabled": spec.get("enabled", True) is not False,
+    }
+
+
+def mcp_servers(data: dict) -> list[dict]:
+    """The valid MCP servers of a raw config, normalized; invalid entries
+    (edited by hand) and repeated names are left out."""
+    servers, names = [], set()
+    entries = data.get("mcp_servers")
+    for spec in entries if isinstance(entries, list) else []:
+        if mcp_server_problem(spec) is None and spec["name"] not in names:
+            names.add(spec["name"])
+            servers.append(normalize_mcp_server(spec))
+    return servers
 
 
 def write_private_json(path: Path, data: object) -> None:
@@ -624,4 +685,5 @@ def load_config(keyring_required: bool = True) -> Config:
         developer_mode=bool(data.get("developer_mode", False)),
         github_token=str(data.get("github_token") or "").strip(),
         history_access=bool(data.get("history_access", False)),
+        mcp_servers=tuple(mcp_servers(data)),
     )

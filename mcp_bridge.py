@@ -11,13 +11,22 @@ in the result panel like a call of the built-in agent (auto-run mode
 included) and answers with {"text"} once the user ran or rejected the code.
 So a CLI agent reaches Chemotion only through the user-confirmed path.
 
+The MCP servers the user added (mcp_client.py) run in the app, one McpHub
+per conversation: tools/list asks the app for their tools
+({"type": "mcp_tools"}), offered here as <server>__<tool> (the CLI adds its
+own mcp__chemotion__ prefix), and a call goes to the app as an "execute"
+with target "mcp", i.e. as a card. In a "/mcp" turn (`mcp_admin` in the
+session file) the bridge also offers agent.MCP_ADMIN_TOOLS: list_mcp_servers
+({"type": "mcp_list"}) and add/remove_mcp_server (targets "mcp-add" and
+"mcp-remove", confirmed on a card).
+
     mcp_bridge.py --session-file <path>
 
 The session file (written by cli_agent.py for every turn, mode 0600) holds
 the app's ipc `address` and `token`, the conversation's `session` token,
 which the app checks, its `auto_run` mode for the tool description, the
 `roots` the read-only tools may read, and `developer` and `model` for
-report_api_bug.
+report_api_bug, `mcp_admin` for the MCP admin tools.
 """
 from __future__ import annotations
 
@@ -28,8 +37,9 @@ from pathlib import Path
 
 import ipc
 import issues
-from agent import (MAX_READ_LINES, READ_ONLY_TOOLS, REPORT_API_BUG_TOOL, AgentError, execute_python_tool, grep,
-                   list_files, read_file)
+from agent import (MAX_READ_LINES, MCP_ADMIN_NAMES, MCP_ADMIN_TOOLS, MCP_TOOL_PREFIX, READ_ONLY_TOOLS,
+                   REPORT_API_BUG_TOOL, AgentError, execute_python_tool, grep, list_files, mcp_server_entry,
+                   read_file, tool_summary)
 from config import load_config
 
 
@@ -57,6 +67,9 @@ class Bridge:
         self.model = str(data.get("model") or "")
         if self.developer:
             self.tools.append(mcp_tool(REPORT_API_BUG_TOOL, False))
+        self.mcp_admin = bool(data.get("mcp_admin"))
+        if self.mcp_admin:
+            self.tools += [mcp_tool(tool, tool["function"]["name"] == "list_mcp_servers") for tool in MCP_ADMIN_TOOLS]
         self.lock = threading.Lock()
 
     def write(self, message: dict) -> None:
@@ -74,7 +87,9 @@ class Bridge:
                       "capabilities": {"tools": {}},
                       "serverInfo": {"name": SERVER_NAME, "version": "1"}}
         elif method == "tools/list":
-            result = {"tools": self.tools}
+            # The app may first start the MCP servers: in a thread, as tools/call.
+            threading.Thread(target=self._list, args=(request_id,), daemon=True).start()
+            return
         elif method == "tools/call":
             # execute_python waits for the user: in a thread, so pings are still answered.
             threading.Thread(target=self._call, args=(request_id, message.get("params") or {}),
@@ -87,6 +102,18 @@ class Bridge:
                         "error": {"code": -32601, "message": f"Unknown method {method}"}})
             return
         self.write({"jsonrpc": "2.0", "id": request_id, "result": result})
+
+    def _list(self, request_id) -> None:
+        self.write({"jsonrpc": "2.0", "id": request_id, "result": {"tools": self.tools + self.mcp_tools()}})
+
+    def mcp_tools(self) -> list[dict]:
+        """The app's MCP tools for this conversation, as <server>__<tool>."""
+        try:
+            tools = self.ask({"type": "mcp_tools"}).get("tools") or []
+        except AgentError:
+            return []  # the CLI goes on with the built-in tools
+        return [{**tool, "name": str(tool["name"]).removeprefix(MCP_TOOL_PREFIX)}
+                for tool in tools if isinstance(tool, dict) and str(tool.get("name") or "").startswith(MCP_TOOL_PREFIX)]
 
     def _call(self, request_id, params: dict) -> None:
         arguments = params.get("arguments") or {}
@@ -110,6 +137,19 @@ class Bridge:
             return grep(str(arguments.get("pattern") or ""), self.roots, arguments.get("path"), arguments.get("glob"))
         if name == "list_files":
             return list_files(self.roots, arguments.get("path"))
+        if "__" in name:  # an MCP server's tool; built-in names have no "__"
+            return self.execute(tool_summary(MCP_TOOL_PREFIX + name, arguments),
+                                json.dumps(arguments, indent=2, ensure_ascii=False), "mcp", MCP_TOOL_PREFIX + name)
+        if self.mcp_admin and name == "list_mcp_servers":
+            return str(self.ask({"type": "mcp_list"}).get("text") or "")
+        if self.mcp_admin and name == "add_mcp_server":
+            return self.execute(f"Add the MCP server {arguments.get('name')}", mcp_server_entry(arguments), "mcp-add")
+        if self.mcp_admin and name == "remove_mcp_server":
+            return self.execute(f"Remove the MCP server {arguments.get('name')}",
+                                json.dumps({"name": str(arguments.get("name") or "")}), "mcp-remove")
+        if name in MCP_ADMIN_NAMES:
+            raise AgentError("MCP servers can only be added or removed in a turn whose message starts with /mcp; "
+                             "tell the user to write one.")
         if name == "report_api_bug" and self.developer:
             # Fresh settings (URL, GitHub token); load_config() raises ValueError while incomplete.
             return issues.report(load_config(), self.model, str(arguments.get("title") or ""),
@@ -117,21 +157,33 @@ class Bridge:
         names = ", ".join(tool["name"] for tool in self.tools)
         raise AgentError(f"There is no tool {name}. Use {names}.")
 
-    def execute(self, purpose: str, code: str) -> str:
-        request = {"type": "execute", "token": self.token, "session": self.session, "purpose": purpose, "code": code}
+    def ask(self, request: dict) -> dict:
+        """One request to the app (ipc.py) and its JSON answer."""
+        request = {**request, "token": self.token, "session": self.session}
         try:
             with ipc.connect(self.address, timeout=10) as conn:
                 conn.sendall(json.dumps(request).encode("utf-8") + b"\n")
-                conn.settimeout(None)  # the user may take their time
+                conn.settimeout(None)  # the user may take their time; MCP servers may start
                 data = b""
                 while len(data) < MAX_RESPONSE_BYTES and not data.endswith(b"\n"):
                     chunk = conn.recv(65536)
                     if not chunk:
                         break
                     data += chunk
-            return str(json.loads(data.decode("utf-8"))["text"])
-        except (OSError, ValueError, KeyError, TypeError) as exc:
-            raise AgentError(f"ChemAssistent did not answer ({exc}); the code did not run.") from None
+            answer = json.loads(data.decode("utf-8"))
+            if not isinstance(answer, dict):
+                raise ValueError("not an object")
+            return answer
+        except (OSError, ValueError, TypeError) as exc:
+            raise AgentError(f"ChemAssistent did not answer ({exc}).") from None
+
+    def execute(self, purpose: str, code: str, target: str = "chemotion", tool: str = "") -> str:
+        """A card in the app's result panel (code, an MCP call or an MCP server change)."""
+        try:
+            return str(self.ask({"type": "execute", "purpose": purpose, "code": code, "target": target,
+                                 "tool": tool})["text"])
+        except (AgentError, KeyError) as exc:
+            raise AgentError(f"{exc} Nothing ran.") from None
 
 
 def main(args: list[str] | None = None) -> None:

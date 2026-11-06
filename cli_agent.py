@@ -9,7 +9,10 @@ web, ...) are switched off; their only tools come from mcp_bridge.py, an MCP
 server the CLI starts: the built-in agent's `execute_python`, which reaches
 the app over ipc.py and waits for the user's confirmation in the result panel
 (or runs by itself in an auto-run mode), and read-only `read_file`, `grep`
-and `list_files`, confined to the workspace and the attachments.
+and `list_files`, confined to the workspace and the attachments. The MCP
+servers the user added reach it the same way: the bridge asks the app for
+their tools and forwards every call to the app's result panel, and in a
+"/mcp" turn it also offers the MCP admin tools (agent.MCP_ADMIN_TOOLS).
 
 The CLIs log in with their own accounts (`claude` / `codex login`); the app
 neither knows nor needs those credentials.
@@ -31,7 +34,7 @@ from pathlib import Path
 
 import issues
 import workspace
-from agent import ATTACHMENT_NOTE, AgentError, base_roots, describe_attachment, tool_summary
+from agent import ATTACHMENT_NOTE, MCP_ADMIN_NAMES, AgentError, base_roots, describe_attachment, tool_summary
 from config import AGENT_LABELS, AUTO_RUN_MODES, CLI_MODELS, STATE_DIR, WINDOWS, WORKSPACE_DIR, Config, write_private_json
 
 
@@ -41,6 +44,8 @@ SERVER = "chemotion"
 READ_TOOLS = ("read_file", "grep", "list_files")
 # execute_python waits for the user; the CLIs' MCP timeouts must not end it.
 TOOL_TIMEOUT_S = 86400
+# The bridge's tools/list waits for the user's MCP servers (npx may download).
+STARTUP_TIMEOUT_S = 300
 # Codex features that give the model tools of its own (unknown names are
 # ignored by older and newer versions; sandbox_mode is the second fence).
 CODEX_DISABLED_FEATURES = ("shell_tool", "unified_exec", "apps", "browser_use", "browser_use_external",
@@ -156,6 +161,7 @@ class CliAgent:
         self.cancelled = threading.Event()
         self.busy = False
         self._process: subprocess.Popen | None = None
+        self.mcp_admin = False  # this turn started with "/mcp" (agent.mcp_command())
         self._prompt = ""  # the message of the current turn, for retry()
         self._context = ""  # restore() without a session: the earlier conversation as text
 
@@ -207,9 +213,10 @@ class CliAgent:
             self.roots.append(path)
             self.attachments.append(path)
 
-    def send(self, text: str, attachments: list[str] | tuple[str, ...] = ()) -> None:
+    def send(self, text: str, attachments: list[str] | tuple[str, ...] = (), mcp_admin: bool = False) -> None:
         self.busy = True
         self.cancelled.clear()
+        self.mcp_admin = mcp_admin
         lines = []
         for item in attachments:
             path = Path(item).resolve()
@@ -250,6 +257,7 @@ class CliAgent:
                     prompt = f"{self.system_prompt}\n\n---\n\n{prompt}"
                 env = child_env(program)
                 env["MCP_TOOL_TIMEOUT"] = str(TOOL_TIMEOUT_S * 1000)  # claude, in ms
+                env["MCP_TIMEOUT"] = str(STARTUP_TIMEOUT_S * 1000)  # claude's server start, in ms
                 try:
                     self._process = subprocess.Popen(
                         command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -312,6 +320,7 @@ class CliAgent:
             "address": self.endpoint[0], "token": self.endpoint[1], "session": self.session_token,
             "auto_run": self.auto_run, "roots": [str(root) for root in self.roots],
             "developer": self.config.developer_mode, "model": issues.model_label(self.config),
+            "mcp_admin": self.mcp_admin,
         })
         return workspace.command("mcp_bridge.py", console=True) + ["--session-file", str(session_file)]
 
@@ -342,7 +351,7 @@ class CliAgent:
             f"mcp_servers.{SERVER}.args": _toml(bridge[1:]),
             f"mcp_servers.{SERVER}.default_tools_approval_mode": _toml("approve"),
             f"mcp_servers.{SERVER}.tool_timeout_sec": str(TOOL_TIMEOUT_S),
-            f"mcp_servers.{SERVER}.startup_timeout_sec": "30",
+            f"mcp_servers.{SERVER}.startup_timeout_sec": str(STARTUP_TIMEOUT_S),
         }
         for feature in CODEX_DISABLED_FEATURES:
             overrides[f"features.{feature}"] = "false"
@@ -371,9 +380,10 @@ class CliAgent:
                 arguments = json.loads(arguments) if isinstance(arguments, str) else {}
             except ValueError:
                 arguments = {}
-        if name in READ_TOOLS or name == "report_api_bug":
+        if name in READ_TOOLS or name in ("report_api_bug", "list_mcp_servers"):
             self.on_event("tool", tool_summary(name, arguments if isinstance(arguments, dict) else {}))
-        elif name != "execute_python":  # that one shows its card
+        elif name != "execute_python" and "__" not in name and name not in MCP_ADMIN_NAMES:
+            # execute_python, the MCP servers' tools (server__tool) and add/remove show their cards.
             self.on_event("tool", f"Used {name}")
 
     def _handle(self, event: dict) -> None:

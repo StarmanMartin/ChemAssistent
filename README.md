@@ -142,6 +142,35 @@ plan in X.” Locally the exchange folders are in
 conversation; the folders in JupyterLab stay. Kernels are not shut down when
 a conversation ends (you may still use them in JupyterLab).
 
+## MCP servers
+
+The assistant can use tools from other programs through the Model Context
+Protocol (MCP): files, databases, web search, other services. Add servers in
+settings → *MCP servers*: **Add…** for a program (command, arguments one per
+line, environment variables) or a remote server (URL, HTTP headers), or
+**Add from JSON…** to paste the `{"mcpServers": {…}}` snippet a server's
+README gives for Claude Desktop, Cursor or VS Code. **Test** starts a server
+once and lists its tools; the switch keeps a server without starting it.
+
+Or let the assistant do it: start a message with `/mcp`, e.g. “/mcp add a
+server for the files in ~/Data” or “/mcp remove the time server”. Only in
+such a turn it gets the tools `list_mcp_servers`, `add_mcp_server` and
+`remove_mcp_server`. It cannot install software, so it picks commands that
+fetch the server themselves (`npx -y <package>`, `uvx <package>`,
+`docker run -i --rm <image>`; Node.js, uv or Docker must be installed). You
+confirm each change on a card in the result panel (and may edit the entry);
+the app starts the server and saves it only if it works.
+
+Every conversation starts its enabled servers when the assistant first needs
+them and ends them with the conversation. Their tools are named
+`mcp__<server>__<tool>`, and each call shows up as a card with its JSON
+arguments, under the same rules as code: *Ask before every run* asks every
+time, *Auto-run read-only code* runs only the tools the server marks
+read-only, *Auto-run everything* runs all of them. Claude Code and Codex get
+the same servers through the app, also with cards. Supported transports are
+stdio and Streamable HTTP; the old SSE transport and OAuth logins are not
+(put a token into the headers instead).
+
 ## Lessons the assistant learns
 
 The assistant keeps notes about its tools that every conversation gets: when
@@ -172,6 +201,11 @@ shows it for editing and has *Clear lessons*.
   them (only *Auto-run everything* runs them without asking);
   `jupyter_jobs` only reads the state of the conversation's jobs.
   `save_lesson` writes only the lessons file (see above).
+- MCP servers you added (see [MCP servers](#mcp-servers)) bring their own
+  tools; every call is a card in the result panel under the auto-run rules,
+  and servers are added or removed only in a `/mcp` turn, on a card you
+  confirm. A server is a program running with your user rights: add only
+  servers you trust. Its tool results go to the AI model.
 - Confirmed code runs in its own process with an already logged-in
   `instance`; your password is never shown to the AI model. It is stopped
   after `execution_timeout` seconds and can be cancelled while it runs.
@@ -490,6 +524,10 @@ keyring.
 - `jupyter_folder`: the folder below the Jupyter root for the conversations'
   folders.
 - `jupyter_verify_tls`: like `verify_tls`, for the Jupyter server.
+- `mcp_servers`: the MCP servers, a list of `{"name", "command", "args",
+  "env"}` (a program speaking MCP on stdio) or `{"name", "url", "headers"}`
+  (Streamable HTTP), each with `"enabled"`. The values of `env` and `headers`
+  (e.g. API keys) stay in config.json, not in the keyring.
 
 Changes apply to the next conversation; no restart needed.
 

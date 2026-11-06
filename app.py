@@ -83,9 +83,10 @@ import ipc  # noqa: E402
 import workspace  # noqa: E402
 from agent import (  # noqa: E402
     ATTACHMENT_NOTE, FAILED_TEXT, MAX_ANSWER_CHARS, RAN_TEXT, STOPPED_NOTE, Agent, AgentError, clip, list_models,
-    looks_read_only, tool_summary,
+    looks_read_only, mcp_command, tool_summary,
 )
 from cli_agent import CliAgent, cli_models, command_problem  # noqa: E402
+from mcp_client import McpHub, split_tool_name  # noqa: E402
 from jobs import ACTIVE, FINISHED, REPORT_HEADER, USER_TEXT, Jobs, duration  # noqa: E402
 from jupyter import JupyterBridge, JupyterError  # noqa: E402
 from config import (  # noqa: E402
@@ -349,10 +350,13 @@ def open_settings() -> None:
 class PendingRequest:
     """One execute_python/execute_jupyter call, waiting in the agent's thread for the user."""
 
-    def __init__(self, purpose: str, code: str, target: str = "chemotion") -> None:
+    def __init__(self, purpose: str, code: str, target: str = "chemotion", tool: str = "") -> None:
         self.purpose = purpose
         self.code = code
-        self.target = target  # "chemotion", "jupyter" or "job" (start_jupyter_job)
+        # "chemotion", "jupyter", "job" (start_jupyter_job), "mcp" (an MCP tool;
+        # code = its JSON arguments) or "mcp-add"/"mcp-remove" (code = the entry).
+        self.target = target
+        self.tool = tool  # target "mcp": the agent's name of the tool (mcp__<server>__<tool>)
         # Set by AssistantWindow._show_request(): code -> Execution/JupyterExecution/JobExecution.
         self.new_execution = Execution
         self.reply: dict | None = None
@@ -434,12 +438,17 @@ class RequestServer:
                 GLib.idle_add(self.app.open_prompt)
             elif request.get("type") == "hotkey":  # hotkey.py, run by the GNOME shortcut
                 GLib.idle_add(self.app.hotkey_pressed)
-            elif request.get("type") == "execute":  # mcp_bridge.py
-                conn.settimeout(None)  # the user may take their time
-                text = self.app.execute_for_bridge(str(request.get("session") or ""),
-                                                   str(request.get("purpose") or ""), str(request.get("code") or ""))
+            elif request.get("type") in ("execute", "mcp_tools", "mcp_list"):  # mcp_bridge.py
+                conn.settimeout(None)  # the user may take their time; MCP servers may start
+                session = str(request.get("session") or "")
+                if request["type"] == "execute":
+                    answer = {"text": self.app.execute_for_bridge(
+                        session, str(request.get("purpose") or ""), str(request.get("code") or ""),
+                        str(request.get("target") or "chemotion"), str(request.get("tool") or ""))}
+                else:
+                    answer = self.app.mcp_for_bridge(session, request["type"])
                 try:
-                    conn.sendall(json.dumps({"text": text}).encode("utf-8") + b"\n")
+                    conn.sendall(json.dumps(answer).encode("utf-8") + b"\n")
                 except OSError:
                     pass  # the CLI was stopped meanwhile
 
@@ -590,6 +599,44 @@ class JobExecution:
 
     def cancel(self) -> None:
         pass  # starting takes seconds; the job menu cancels the job itself
+
+
+class McpExecution:
+    """One confirmed MCP action (mcp_client.McpHub: a tool call, adding or
+    removing a server); the same interface as Execution. `action(code,
+    cancelled)` returns the outcome."""
+
+    def __init__(self, code: str, action) -> None:
+        self.code = code
+        self.action = action
+        self.cancel_event = threading.Event()
+
+    def run(self) -> dict:
+        # Runs in a thread: no GTK calls here.
+        try:
+            return self.action(self.code, self.cancel_event)
+        except Exception as exc:  # a bug must not leave the card running forever
+            LOG.exception("MCP action failed")
+            return {"ok": False, "stdout": "", "result": None, "error": f"{type(exc).__name__}: {exc}"}
+
+    def cancel(self) -> None:
+        self.cancel_event.set()
+
+
+# What a card says per target (PendingRequest.target): default purpose, the
+# tag in its head, the Run button and its tooltip, what is being confirmed.
+TARGETS = {
+    "chemotion": ("Run code against Chemotion", "", "Run", "Run this code against Chemotion", "code"),
+    "jupyter": ("Run code in JupyterLab", "JupyterLab", "Run", "Run this code in JupyterLab", "code"),
+    "job": ("Start a background job in JupyterLab", "JupyterLab job", "Run",
+            "Start this code as a background job in JupyterLab", "code"),
+    "mcp": ("Call an MCP tool", "MCP", "Call", "Call the tool with these arguments", "tool call"),
+    "mcp-add": ("Add an MCP server", "MCP setup", "Add server",
+                "Start this server, and save it in the settings if it works", "change"),
+    "mcp-remove": ("Remove an MCP server", "MCP setup", "Remove server",
+                   "Remove this server from the settings", "change"),
+}
+MCP_TARGETS = ("mcp", "mcp-add", "mcp-remove")
 
 
 # --- result widgets ----------------------------------------------------------
@@ -787,11 +834,12 @@ def text_block(text: str, css: str = "request-output") -> Gtk.Widget:
     return widget
 
 
-def code_editor(code: str) -> tuple[Gtk.Widget, Gtk.TextView]:
+def code_editor(code: str, language_id: str = "python") -> tuple[Gtk.Widget, Gtk.TextView]:
     if GtkSource is not None:
         buffer = GtkSource.Buffer()
-        language = GtkSource.LanguageManager.get_default().get_language("python3") or \
-            GtkSource.LanguageManager.get_default().get_language("python")
+        manager = GtkSource.LanguageManager.get_default()
+        language = (manager.get_language("json") if language_id == "json" else
+                    manager.get_language("python3") or manager.get_language("python"))
         if language is not None:
             buffer.set_language(language)
         scheme = GtkSource.StyleSchemeManager.get_default().get_scheme("oblivion")
@@ -839,15 +887,13 @@ class RequestCard(Gtk.Box):
 
         head = Gtk.Box(spacing=8)
         head.pack_start(label(f"#{number}", "dim", wrap=False), False, False, 0)
-        jupyter = pending.target in ("jupyter", "job")
-        job = pending.target == "job"
-        purpose = label(pending.purpose or ("Start a background job in JupyterLab" if job else
-                                            "Run code in JupyterLab" if jupyter else "Run code against Chemotion"),
-                        "request-purpose")
+        default, tag, run_label, run_tooltip, self.noun = TARGETS.get(pending.target, TARGETS["chemotion"])
+        if pending.target == "mcp":
+            tag = f"MCP · {split_tool_name(pending.tool)[0]}"
+        purpose = label(pending.purpose or default, "request-purpose")
         head.pack_start(purpose, True, True, 0)
-        if jupyter:
-            head.pack_end(label("JupyterLab job" if job else "JupyterLab", "request-target", wrap=False),
-                          False, False, 0)
+        if tag:
+            head.pack_end(label(tag, "request-target", wrap=False), False, False, 0)
         if pending.auto:
             # pack_end: goes left of the time below.
             head.pack_end(label("auto · read-only" if pending.auto == "readonly" else "auto-run",
@@ -855,7 +901,7 @@ class RequestCard(Gtk.Box):
         head.pack_end(label(time.strftime("%H:%M:%S"), "dim", wrap=False), False, False, 0)
         self.pack_start(head, False, False, 0)
 
-        editor, self.view = code_editor(pending.code)
+        editor, self.view = code_editor(pending.code, "json" if pending.target in MCP_TARGETS else "python")
         if pending.auto:
             self.view.set_editable(False)  # the code runs as it arrived
         self.view.connect("key-press-event", self._on_code_key)
@@ -870,11 +916,9 @@ class RequestCard(Gtk.Box):
         reject.get_style_context().add_class("destructive-action")
         reject.connect("clicked", lambda *_: self.reject())
         self.actions.pack_start(reject, False, False, 0)
-        self.run_button = Gtk.Button(label="Run")
+        self.run_button = Gtk.Button(label=run_label)
         self.run_button.get_style_context().add_class("suggested-action")
-        self.run_button.set_tooltip_text(("Start this code as a background job in JupyterLab" if job else
-                                          "Run this code in JupyterLab" if jupyter else
-                                          "Run this code against Chemotion") + " (Ctrl+Enter in the code)")
+        self.run_button.set_tooltip_text(run_tooltip + " (Ctrl+Enter in the editor)")
         self.run_button.connect("clicked", lambda *_: self.run())
         self.actions.pack_start(self.run_button, False, False, 0)
         self.pack_start(self.actions, False, False, 0)
@@ -884,12 +928,12 @@ class RequestCard(Gtk.Box):
         self.spinner.set_no_show_all(True)
         status_row.pack_start(self.spinner, False, False, 0)
         if pending.auto:
-            waiting = "Auto-run: this code runs without your confirmation."
+            waiting = f"Auto-run: this {self.noun} runs without your confirmation."
         elif pending.auto_reason:
             waiting = (f"Waiting for your confirmation (auto-run skipped: {pending.auto_reason}). "
-                       "Nothing runs before you click Run.")
+                       f"Nothing runs before you click {run_label}.")
         else:
-            waiting = "Waiting for your confirmation. Nothing runs before you click Run."
+            waiting = f"Waiting for your confirmation. Nothing runs before you click {run_label}."
         self.status = label(waiting, "request-status")
         status_row.pack_start(self.status, True, True, 0)
         self.cancel_button = Gtk.Button(label="Cancel")
@@ -929,10 +973,10 @@ class RequestCard(Gtk.Box):
             return
         reason = (reason if reason is not None else self.reason.get_text()).strip()
         self._lock()
-        self._set_state("failed", f"Rejected{': ' + reason if reason else ''}. The code did not run.")
+        self._set_state("failed", f"Rejected{': ' + reason if reason else ''}. The {self.noun} did not run.")
         self.pending.answer(
             False,
-            "The user rejected the code; it did not run. "
+            f"The user rejected the {self.noun}; it did not run. "
             + (f"Reason: {reason}" if reason else "No reason was given; ask the user what to do instead."),
         )
 
@@ -979,7 +1023,24 @@ class RequestCard(Gtk.Box):
         self.pending.answer(ok, self._answer_text(code, ok, stdout, error, result, outcome))
         return False
 
+    def _mcp_answer_text(self, code: str, ok: bool, stdout: str, error: str, result) -> str:
+        parts = []
+        if code != self.pending.code:
+            parts.append(f"The user edited the JSON before confirming it. This was used:\n```json\n{code}\n```")
+        if self.pending.target != "mcp":
+            parts.append(stdout if ok else f"Failed: {error}")
+            return clip("\n\n".join(parts))
+        parts.append("The tool call succeeded." if ok else f"The tool call failed:\n{error}")
+        if ok:
+            parts.append(f"Output:\n{stdout}" if stdout.strip() else "The tool returned no text.")
+            if result is not None:
+                parts.append("Structured result: " + json.dumps(result, ensure_ascii=False, indent=1, default=str))
+        parts.append("The user sees this output in the result panel.")
+        return clip("\n\n".join(parts))
+
     def _answer_text(self, code: str, ok: bool, stdout: str, error: str, result, outcome: dict) -> str:
+        if self.pending.target in MCP_TARGETS:
+            return self._mcp_answer_text(code, ok, stdout, error, result)
         parts = []
         jupyter = self.pending.target in ("jupyter", "job")
         if code != self.pending.code:
@@ -1758,6 +1819,8 @@ class AssistantWindow(Gtk.Window):
         self.exchange: Path | None = None
         self.jobs_button: Gtk.MenuButton | None = None
         self.jobs_label: Gtk.Label | None = None
+        # The conversation's MCP servers (mcp_client.py), for both kinds of agent.
+        self.mcp: McpHub | None = None
 
         self.set_decorated(False)
         self.set_resizable(False)
@@ -2175,6 +2238,8 @@ class AssistantWindow(Gtk.Window):
         """A new conversation starting with `text` (and `attachments`), or a `saved` one from the history."""
         self.conversation_id = conversation_id = conversation_id or history.new_id()
         on_event = lambda kind, data: GLib.idle_add(self._on_agent_event, kind, data)  # noqa: E731
+        # Started by the agent before its first request (a CLI agent's bridge asks for the tools).
+        self.mcp = McpHub(config.mcp_servers)
         if config.agent in CLI_AGENTS:
             # A CLI agent reaches only execute_python (mcp_bridge.py), not JupyterLab.
             listener = self.app.server.listener
@@ -2193,6 +2258,7 @@ class AssistantWindow(Gtk.Window):
                 auto_run=config.auto_run,
                 exchange=self.exchange,
                 jobs=lambda: self.app.jobs.info(conversation_id),
+                mcp=self.mcp,
             )
         self.conversation_title = str(saved.get("title") or "") if saved else text
         self.auto_run = config.auto_run  # the header menu can change it for this conversation
@@ -2271,7 +2337,9 @@ class AssistantWindow(Gtk.Window):
         self.chat.add_user(text, attachments)
         self.chat.set_busy(True, "Working…")
         self.agent.busy = True  # before the thread starts: no second send meanwhile
-        threading.Thread(target=self.agent.send, args=(message, attachments), daemon=True).start()
+        # "/mcp ...": this turn may list, add and remove MCP servers.
+        threading.Thread(target=self.agent.send, args=(message, attachments, mcp_command(text)),
+                         daemon=True).start()
 
     def _retry(self) -> None:
         """Repeat the failed request (maybe with another model)."""
@@ -2295,6 +2363,10 @@ class AssistantWindow(Gtk.Window):
             self.chat.set_busy(True, "Writing…")
         elif kind == "thinking":
             self.chat.set_busy(True, "Thinking…")
+        elif kind == "status":
+            self.chat.set_busy(True, data)
+        elif kind == "warning":
+            self.chat.add_note(data, "dialog-warning-symbolic", "request-error")
         elif kind == "tool":
             self.chat.add_note(data)
             self.chat.set_busy(True, "Working…")
@@ -2315,11 +2387,12 @@ class AssistantWindow(Gtk.Window):
             self.chat.focus_input()
         return False
 
-    def _execute(self, purpose: str, code: str, cancelled: threading.Event, target: str = "chemotion") -> str:
-        """The agent's execute_python/execute_jupyter: a card in the result
-        panel; returns the text for the model once the user ran or rejected it."""
+    def _execute(self, purpose: str, code: str, cancelled: threading.Event, target: str = "chemotion",
+                 tool: str = "") -> str:
+        """The agent's execute_python/execute_jupyter/MCP calls: a card in the
+        result panel; returns the text for the model once the user ran or rejected it."""
         # Runs in the agent's thread: GTK only through GLib.idle_add.
-        pending = PendingRequest(purpose, code, target)
+        pending = PendingRequest(purpose, code, target, tool)
         GLib.idle_add(self._show_request, pending)
         while not pending.done.wait(0.2):
             if cancelled.is_set():
@@ -2344,11 +2417,40 @@ class AssistantWindow(Gtk.Window):
                 pending.new_execution = lambda code: JobExecution(code, pending.purpose, bridge, jobs, conversation)
             else:
                 pending.new_execution = lambda code: JupyterExecution(code, pending.purpose, bridge)
+        elif pending.target in MCP_TARGETS:
+            hub = self.mcp
+            if hub is None:
+                pending.answer(False, "This conversation has no MCP servers; nothing ran.")
+                return False
+            if pending.target == "mcp":
+                tool = pending.tool
+
+                def call(code: str, cancel: threading.Event) -> dict:
+                    try:
+                        timeout = load_config().execution_timeout
+                    except ValueError:
+                        timeout = 300
+                    return hub.call(tool, code, timeout, cancel)
+
+                action = call
+            elif pending.target == "mcp-add":
+                action = hub.add
+            else:
+                action = lambda code, _cancel: hub.remove(code)  # noqa: E731
+            pending.new_execution = lambda code: McpExecution(code, action)
         else:
             exchange = self.exchange
             pending.new_execution = lambda code: Execution(code, exchange)
         # Decide about auto-run here on the main loop, with the current mode.
-        if self.auto_run == "always":
+        if pending.target in ("mcp-add", "mcp-remove"):
+            if self.auto_run != "off":
+                pending.auto_reason = "MCP servers are only added or removed with your confirmation"
+        elif pending.target == "mcp" and self.auto_run == "readonly":
+            if self.mcp.read_only(pending.tool):
+                pending.auto = "readonly"
+            else:
+                pending.auto_reason = "the MCP server does not mark this tool read-only"
+        elif self.auto_run == "always":
             pending.auto = "always"
         elif self.auto_run == "readonly" and pending.target != "chemotion":
             pending.auto_reason = "JupyterLab code is never checked for read-only"
@@ -2360,10 +2462,11 @@ class AssistantWindow(Gtk.Window):
                 pending.auto_reason = reason
         card = self.results.add_request(pending)
         self.chat.add_note(f"#{card.number} {pending.purpose or 'Code'}"
-                           + {"jupyter": " · JupyterLab", "job": " · JupyterLab job"}.get(pending.target, "")
+                           + {"jupyter": " · JupyterLab", "job": " · JupyterLab job",
+                              "mcp": " · MCP"}.get(pending.target, "")
                            + (" · auto-run" if pending.auto else ""), "system-run-symbolic")
-        self.chat.set_busy(True, "Running code automatically…" if pending.auto else
-                           "Waiting for you to Run or Reject the code on the right…")
+        self.chat.set_busy(True, "Running automatically…" if pending.auto else
+                           f"Waiting for you to confirm or reject the {TARGETS[pending.target][4]} on the right…")
         return False
 
     def _on_header_press(self, _widget, event) -> bool:
@@ -2429,6 +2532,9 @@ class AssistantWindow(Gtk.Window):
             self.agent.cancel()
         if self.results is not None:
             self.results.close()
+        if self.mcp is not None:
+            # Ends the server programs (each may take a few seconds).
+            threading.Thread(target=self.mcp.close, name="mcp-close", daemon=True).start()
         self.app.window_closed(self)
         self.destroy()
 
@@ -2661,18 +2767,45 @@ class ChemAssistentApp:
         self.window.open_prompt()
         self.window.resume(conversation_id)
 
-    def execute_for_bridge(self, session: str, purpose: str, code: str) -> str:
-        """A CLI agent's execute_python (mcp_bridge.py; in a server thread):
-        the same card as the built-in agent's, if `session` belongs to the
-        open conversation."""
+    def _bridge_window(self, session: str) -> AssistantWindow | None:
+        """The open window whose CLI agent has this session token."""
         window = self.window
         agent = window.agent if window is not None else None
         if (not isinstance(agent, CliAgent) or window.closed
                 or not secrets.compare_digest(agent.session_token, session)):
+            return None
+        return window
+
+    def execute_for_bridge(self, session: str, purpose: str, code: str, target: str = "chemotion",
+                           tool: str = "") -> str:
+        """A CLI agent's execute_python or MCP call (mcp_bridge.py; in a server
+        thread): the same card as the built-in agent's, if `session` belongs to
+        the open conversation."""
+        window = self._bridge_window(session)
+        if window is None:
             return "Not run: this ChemAssistent conversation is closed."
+        if target not in ("chemotion",) + MCP_TARGETS:
+            return f"Not run: unknown target {target}."
+        if target in ("mcp-add", "mcp-remove") and not window.agent.mcp_admin:
+            return "Not run: MCP servers can only be changed in a turn whose message starts with /mcp."
         if not code.strip():
             return "No code given."
-        return window._execute(purpose, code, agent.cancelled)
+        return window._execute(purpose, code, window.agent.cancelled, target, tool)
+
+    def mcp_for_bridge(self, session: str, kind: str) -> dict:
+        """mcp_bridge.py's {"type": "mcp_tools"} (starts the servers) or "mcp_list"."""
+        window = self._bridge_window(session)
+        hub = window.mcp if window is not None else None
+        if hub is None:
+            return {"tools": [], "text": "This ChemAssistent conversation is closed."}
+        if kind == "mcp_list":
+            return {"text": hub.describe()}
+        if hub.waiting():
+            GLib.idle_add(lambda: window.chat is not None and window.chat.busy
+                          and window.chat.set_busy(True, "Starting the MCP servers…"))
+        for problem in hub.start(window.agent.cancelled):
+            GLib.idle_add(window._on_agent_event, "warning", problem)
+        return {"tools": hub.mcp_tools()}
 
     def new_conversation(self) -> None:
         if self.window is not None:

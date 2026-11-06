@@ -17,6 +17,13 @@ and folders the user attached. With JupyterLab configured there are also
 callback with target "job", it returns at once and the report arrives later
 as a new message) and `jupyter_jobs` (their state), and the conversation's
 exchange folder is readable too.
+
+MCP servers the user added (mcp_client.py; the app passes the conversation's
+McpHub as `mcp`) bring their tools as mcp__<server>__<tool>; a call goes to
+the same callback with target "mcp" (a card with the JSON arguments). In a
+turn whose message starts with "/mcp" (mcp_command()) the agent also gets
+MCP_ADMIN_TOOLS to list, add and remove servers; adding and removing go to
+the callback as targets "mcp-add"/"mcp-remove", so the user confirms them.
 """
 from __future__ import annotations
 
@@ -263,6 +270,80 @@ REPORT_API_BUG_TOOL = {
 }
 
 
+# MCP (mcp_client.py): the agent's names of MCP tools start with this.
+MCP_TOOL_PREFIX = "mcp__"
+MCP_COMMAND = re.compile(r"\s*/mcp(?![\w-])", re.IGNORECASE)
+
+
+def mcp_command(text: str) -> bool:
+    """The user's message asks to manage MCP servers ("/mcp ..."): that turn
+    gets MCP_ADMIN_TOOLS."""
+    return bool(MCP_COMMAND.match(text or ""))
+
+
+MCP_ADMIN_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "list_mcp_servers",
+            "description": "List the MCP servers saved in the settings: name, command or URL, and whether "
+                           "they run in this conversation with which tools. Values of env and headers are "
+                           "not shown.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_mcp_server",
+            "description": (
+                "Add an MCP server to the settings (the same name replaces one). Either `command` (+ `args`, "
+                "`env`) for a server program speaking MCP on stdio, or `url` (+ `headers`) for a remote "
+                "server (Streamable HTTP). You cannot install software: use a command that fetches the "
+                "server itself, e.g. command `npx` with args [\"-y\", \"<npm package>\", ...] (Node.js), "
+                "`uvx` with [\"<PyPI package>\", ...] (Python, uv) or `docker` with [\"run\", \"-i\", \"--rm\", "
+                "\"<image>\"]. The user sees the entry in the result panel and must confirm it (they may edit "
+                "it); the app then starts the server and saves it only if it starts and lists its tools. "
+                "The answer names its tools (mcp__<name>__<tool>), or the error, e.g. the server's output."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Short name: letters, digits, - and _ (no "
+                                                              "double underscore), e.g. filesystem."},
+                    "command": {"type": "string", "description": "The program, e.g. npx, uvx, docker."},
+                    "args": {"type": "array", "items": {"type": "string"}, "description": "Its arguments."},
+                    "env": {"type": "object", "additionalProperties": {"type": "string"},
+                            "description": "Environment variables, e.g. an API key the user gave you."},
+                    "url": {"type": "string", "description": "Instead of command: the server's URL."},
+                    "headers": {"type": "object", "additionalProperties": {"type": "string"},
+                                "description": "HTTP headers for `url`, e.g. Authorization."},
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "remove_mcp_server",
+            "description": "Remove an MCP server from the settings and from this conversation; the user "
+                           "confirms it in the result panel.",
+            "parameters": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]},
+        },
+    },
+]
+MCP_ADMIN_NAMES = {tool["function"]["name"] for tool in MCP_ADMIN_TOOLS}
+# What add_mcp_server takes into the settings entry (config.normalize_mcp_server).
+MCP_SERVER_KEYS = ("name", "command", "args", "env", "url", "headers")
+
+
+def mcp_server_entry(arguments: dict) -> str:
+    """The settings entry add_mcp_server shows on its card (JSON, editable)."""
+    entry = {key: arguments[key] for key in MCP_SERVER_KEYS if arguments.get(key)}
+    return json.dumps(entry, indent=2, ensure_ascii=False)
+
+
 def clip(text: str, limit: int = MAX_ANSWER_CHARS) -> str:
     if len(text) <= limit:
         return text
@@ -500,6 +581,13 @@ def tool_summary(name: str, arguments: dict) -> str:
         return f"{'Removed' if arguments.get('remove') else 'Saved'} a lesson: {arguments.get('key')}"
     if name == "report_api_bug":
         return f"Reported a chemotion_api bug: {arguments.get('title')}"
+    if name == "list_mcp_servers":
+        return "Listed the MCP servers"
+    if name in ("add_mcp_server", "remove_mcp_server"):
+        return f"{'Add' if name == 'add_mcp_server' else 'Remove'} the MCP server {arguments.get('name')}"
+    if name.startswith(MCP_TOOL_PREFIX):
+        server, _, tool = name.removeprefix(MCP_TOOL_PREFIX).partition("__")
+        return f"MCP {server} · {tool}"
     return f"Listed {arguments.get('path') or 'the workspace'}"
 
 
@@ -619,17 +707,22 @@ class Agent:
     "job" (start_jupyter_job).
     `exchange`: the conversation's exchange folder when JupyterLab is on;
     `jobs()` returns the text of the jupyter_jobs tool.
+    `mcp`: the conversation's mcp_client.McpHub; its tool calls go to
+    `execute(purpose, arguments_json, cancelled, "mcp", tool)`, and in a
+    "/mcp" turn add/remove_mcp_server to targets "mcp-add"/"mcp-remove".
     """
 
     def __init__(self, config: Config, system_prompt: str, execute, on_event,
                  auto_run: str = "off", exchange: Path | None = None, jobs=None,
-                 headless: bool = False) -> None:
+                 headless: bool = False, mcp=None) -> None:
         self.config = config
         # headless.py: no save_lesson, the approval function instead of a panel.
         self.headless = headless
         self.jupyter = exchange is not None
         self.execute = execute
         self.jobs = jobs
+        self.mcp = mcp
+        self.mcp_admin = False  # this turn started with "/mcp": MCP_ADMIN_TOOLS
         self.on_event = on_event
         self.auto_run = auto_run if auto_run in AUTO_RUN_MODES else "off"
         # The tool descriptions depend on the auto-run mode (execute_python).
@@ -692,11 +785,23 @@ class Agent:
             except Exception:
                 pass
 
-    def send(self, text: str, attachments: list[str] | tuple[str, ...] = ()) -> None:
-        """`attachments`: files and folders the user attached to this message."""
+    def current_tools(self) -> list[dict]:
+        """What the next request offers: the built-in tools, the MCP servers'
+        and in a "/mcp" turn the MCP admin tools."""
+        tools = list(self.tools)
+        if self.mcp is not None:
+            tools += self.mcp.openai_tools()
+            if self.mcp_admin:
+                tools += MCP_ADMIN_TOOLS
+        return tools
+
+    def send(self, text: str, attachments: list[str] | tuple[str, ...] = (), mcp_admin: bool = False) -> None:
+        """`attachments`: files and folders the user attached to this message;
+        `mcp_admin`: the user's message started with "/mcp" (mcp_command())."""
         self.busy = True
         self.cancelled.clear()
         self.failed_run = False
+        self.mcp_admin = mcp_admin
         lines = []
         for item in attachments:
             path = Path(item).resolve()
@@ -715,8 +820,17 @@ class Agent:
         self.cancelled.clear()
         self._run()
 
+    def _start_mcp(self) -> None:
+        """Start the MCP servers not tried yet (npx may download for a while)."""
+        if self.mcp is None or not self.mcp.waiting():
+            return
+        self.on_event("status", "Starting the MCP servers…")
+        for problem in self.mcp.start(self.cancelled):
+            self.on_event("warning", problem)
+
     def _run(self) -> None:
         try:
+            self._start_mcp()
             for _ in range(MAX_ROUNDS):
                 message = self._complete()
                 if self.cancelled.is_set():
@@ -768,7 +882,7 @@ class Agent:
         body = {
             "model": self.config.ai_model,
             "messages": self.messages,
-            "tools": self.tools,
+            "tools": self.current_tools(),
             "tool_choice": "auto",
             "stream": True,
         }
@@ -891,6 +1005,19 @@ class Agent:
                     if not self.headless:
                         answer += "\n\n" + LESSON_REMINDER
                 return answer
+            if self.mcp is not None and name.startswith(MCP_TOOL_PREFIX) and self.mcp.has(name):
+                return self.execute(tool_summary(name, arguments),
+                                    json.dumps(arguments, indent=2, ensure_ascii=False), self.cancelled, "mcp", name)
+            if self.mcp is not None and self.mcp_admin and name in MCP_ADMIN_NAMES:
+                if name == "list_mcp_servers":
+                    self.on_event("tool", tool_summary(name, arguments))
+                    return self.mcp.describe()
+                if name == "add_mcp_server":
+                    return self.execute(tool_summary(name, arguments), mcp_server_entry(arguments),
+                                        self.cancelled, "mcp-add")
+                return self.execute(tool_summary(name, arguments),
+                                    json.dumps({"name": str(arguments.get("name") or "")}), self.cancelled,
+                                    "mcp-remove")
             if name == "jupyter_jobs" and self.jupyter and self.jobs is not None:
                 text = self.jobs()
                 self.on_event("tool", tool_summary(name, arguments))
@@ -927,5 +1054,7 @@ class Agent:
             return f"Error: {exc}"
         except (OSError, TypeError, ValueError) as exc:
             return f"Error: {exc}"
-        names = ", ".join(tool["function"]["name"] for tool in self.tools)
-        return f"There is no tool {name}. Use one of: {names}."
+        names = ", ".join(tool["function"]["name"] for tool in self.current_tools())
+        hint = (" MCP servers can only be added or removed in a turn whose message starts with /mcp; tell the "
+                "user to write one." if name in MCP_ADMIN_NAMES else "")
+        return f"There is no tool {name}. Use one of: {names}.{hint}"

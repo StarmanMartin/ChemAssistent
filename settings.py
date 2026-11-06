@@ -12,7 +12,7 @@ import gi
 
 gi.require_version("Gtk", "3.0")
 
-from gi.repository import GLib, Gtk  # type: ignore  # noqa: E402
+from gi.repository import GLib, Gtk, Pango  # type: ignore  # noqa: E402
 
 import api_versions  # noqa: E402
 import app_control  # noqa: E402
@@ -20,13 +20,14 @@ import history  # noqa: E402
 import hotkey  # noqa: E402
 import issues  # noqa: E402
 import lessons  # noqa: E402
+import mcp_client  # noqa: E402
 from agent import AgentError, list_models  # noqa: E402
 from cli_agent import check_command, cli_models  # noqa: E402
 from config import (  # noqa: E402
     AGENT_KEYS, AGENT_LABELS, AGENTS, AI_TOKEN_ENV, AUTO_RUN_LABELS, AUTO_RUN_MODES, CLI_AGENTS,
     CONFIG_FILE, DEFAULT_JUPYTER_FOLDER, EXAMPLE, KI_TOOLBOX_URL, OLLAMA_URL, Config, agent_of, ai_problem,
     MAIN_THREAD_KEYRING_WAIT_S, SECRET_KEYS, ai_token, config_problem, jupyter_folder, jupyter_problem,
-    limit_main_thread_wait, WINDOWS, read_raw_config, save_raw_config, storage_location, uses_keyring,
+    limit_main_thread_wait, mcp_server_problem, mcp_servers, normalize_mcp_server, WINDOWS, read_raw_config, save_raw_config, storage_location, uses_keyring,
 )
 from jupyter import JupyterClient, JupyterError, split_url  # noqa: E402
 
@@ -211,6 +212,12 @@ class SettingsWindow(Gtk.Window):
 
         jupyter_grid = self._page("JupyterLab", "Optional: analyses (RDKit, pandas, plots, ...) in your JupyterLab.")
         run_grid, run_row = self._page("Running code"), 0
+        self._build_mcp_page(self._page(
+            "MCP servers",
+            "Tools from other programs for the assistant (Model Context Protocol): files, databases, web "
+            "search, other services. Every tool call shows up in the result panel like code. You can also "
+            "let the assistant add a server: start a message with /mcp, e.g. “/mcp add a server for the "
+            "files in my Documents folder”."))
         grid, row = self._page("General"), 0
 
         self.hotkey = Gtk.Entry(hexpand=True)
@@ -561,6 +568,7 @@ class SettingsWindow(Gtk.Window):
             "github_token": self.github_token.get_text().strip(),
             "history_access": self.history_access.get_active(),
             "use_keyring": self.use_keyring.get_active(),
+            "mcp_servers": [dict(spec) for spec in self.mcp_servers],
         }
         self._store_agent_fields()
         values.update(self.agent_values)
@@ -575,6 +583,256 @@ class SettingsWindow(Gtk.Window):
         active = self.auto_run.get_active()
         values["auto_run"] = AUTO_RUN_MODES[active] if active in range(len(AUTO_RUN_MODES)) else "off"
         return values
+
+    # --- MCP servers --------------------------------------------------------
+    def _build_mcp_page(self, grid: Gtk.Grid) -> None:
+        self.mcp_servers: list[dict] = mcp_servers(self.data)
+        # The names this window knows (loaded, added, removed): a server the
+        # assistant added meanwhile ("/mcp") is kept on Save (_merge_mcp_servers()).
+        self.mcp_known = {spec["name"] for spec in self.mcp_servers}
+        self.mcp_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        placeholder = Gtk.Label(label="No MCP servers yet.", margin=12)
+        placeholder.get_style_context().add_class("dim-label")
+        placeholder.show()
+        self.mcp_list.set_placeholder(placeholder)
+        scroller = Gtk.ScrolledWindow(hexpand=True, vexpand=True, min_content_height=180)
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_shadow_type(Gtk.ShadowType.IN)
+        scroller.add(self.mcp_list)
+        grid.attach(scroller, 0, 1, 2, 1)
+        add_button = Gtk.Button(label="Add…")
+        add_button.set_tooltip_text("Add a server: a program (command) or a URL")
+        add_button.connect("clicked", lambda *_: self._edit_mcp_server(None))
+        json_button = Gtk.Button(label="Add from JSON…")
+        json_button.set_tooltip_text("Paste the JSON a server's README gives for Claude Desktop, Cursor or "
+                                     "VS Code ({\"mcpServers\": {…}})")
+        json_button.connect("clicked", lambda *_: self._add_mcp_json())
+        buttons = Gtk.Box(spacing=8)
+        buttons.pack_start(add_button, False, False, 0)
+        buttons.pack_start(json_button, False, False, 0)
+        grid.attach(buttons, 0, 2, 2, 1)
+        self.mcp_note = Gtk.Label(
+            label="Changes apply to the next conversation after Save. Values of environment variables and "
+                  f"headers (e.g. API keys) are saved in {CONFIG_FILE} (readable only by you), not in the "
+                  "keyring. Commands like npx or uvx download the server on its first start.",
+            xalign=0, wrap=True, max_width_chars=60, selectable=True)
+        self.mcp_note.get_style_context().add_class("dim-label")
+        grid.attach(self.mcp_note, 0, 3, 2, 1)
+        self._fill_mcp_list()
+
+    def _fill_mcp_list(self) -> None:
+        for child in self.mcp_list.get_children():
+            self.mcp_list.remove(child)
+        for spec in self.mcp_servers:
+            row = Gtk.Box(spacing=10, margin=8)
+            switch = Gtk.Switch(valign=Gtk.Align.CENTER, active=spec["enabled"])
+            switch.set_tooltip_text("Off: kept in the settings, but not started")
+            switch.connect("notify::active", lambda widget, _param, spec=spec: spec.update(enabled=widget.get_active()))
+            row.pack_start(switch, False, False, 0)
+            texts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            name = Gtk.Label(xalign=0)
+            name.set_markup(f"<b>{GLib.markup_escape_text(spec['name'])}</b>")
+            texts.pack_start(name, False, False, 0)
+            detail = Gtk.Label(label=mcp_client.summary(spec), xalign=0, ellipsize=Pango.EllipsizeMode.END, max_width_chars=50)
+            detail.set_tooltip_text(mcp_client.summary(spec))
+            detail.get_style_context().add_class("dim-label")
+            texts.pack_start(detail, False, False, 0)
+            row.pack_start(texts, True, True, 0)
+            edit = Gtk.Button(label="Edit…", valign=Gtk.Align.CENTER)
+            edit.connect("clicked", lambda *_, spec=spec: self._edit_mcp_server(spec))
+            remove = Gtk.Button.new_from_icon_name("user-trash-symbolic", Gtk.IconSize.BUTTON)
+            remove.set_valign(Gtk.Align.CENTER)
+            remove.set_tooltip_text("Remove this server")
+            remove.connect("clicked", lambda *_, spec=spec: self._remove_mcp_server(spec))
+            row.pack_end(remove, False, False, 0)
+            row.pack_end(edit, False, False, 0)
+            self.mcp_list.add(row)
+        self.mcp_list.show_all()
+
+    def _put_mcp_server(self, spec: dict, old_name: str | None = None) -> None:
+        """Add `spec`, or replace the server named `old_name` (or `spec`'s name)."""
+        names = {old_name, spec["name"]}
+        self.mcp_known |= {spec["name"]}
+        index = next((i for i, item in enumerate(self.mcp_servers) if item["name"] in names), None)
+        self.mcp_servers = [item for item in self.mcp_servers if item["name"] not in names]
+        self.mcp_servers.insert(len(self.mcp_servers) if index is None else index, spec)
+        self._fill_mcp_list()
+
+    def _merge_mcp_servers(self) -> None:
+        """Keep the servers the assistant saved while this window was open."""
+        added = [spec for spec in mcp_servers(read_raw_config(secrets=False)) if spec["name"] not in self.mcp_known]
+        if added:
+            self.mcp_servers += added
+            self.mcp_known |= {spec["name"] for spec in added}
+            self._fill_mcp_list()
+
+    def _remove_mcp_server(self, spec: dict) -> None:
+        self.mcp_servers = [item for item in self.mcp_servers if item is not spec]
+        self._fill_mcp_list()
+        self.mcp_note.set_text(f"Removed {spec['name']}. Save to apply.")
+
+    def _add_mcp_json(self) -> None:
+        dialog = Gtk.Dialog(title="Add MCP servers from JSON", transient_for=self, modal=True)
+        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Add", Gtk.ResponseType.OK).get_style_context().add_class("suggested-action")
+        dialog.set_default_size(520, 360)
+        box = dialog.get_content_area()
+        box.set_spacing(8)
+        box.set_border_width(12)
+        hint = Gtk.Label(label="Paste the configuration from the server's documentation, e.g.\n"
+                               '{"mcpServers": {"filesystem": {"command": "npx", "args": ["-y", '
+                               '"@modelcontextprotocol/server-filesystem", "/home/me/Data"]}}}',
+                         xalign=0, wrap=True, max_width_chars=70, selectable=True)
+        hint.get_style_context().add_class("dim-label")
+        box.pack_start(hint, False, False, 0)
+        view = Gtk.TextView(monospace=True, wrap_mode=Gtk.WrapMode.WORD_CHAR, left_margin=6, top_margin=6)
+        scroller = Gtk.ScrolledWindow(vexpand=True)
+        scroller.set_shadow_type(Gtk.ShadowType.IN)
+        scroller.add(view)
+        box.pack_start(scroller, True, True, 0)
+        error = Gtk.Label(xalign=0, wrap=True, max_width_chars=70, selectable=True)
+        box.pack_start(error, False, False, 0)
+        dialog.show_all()
+        while dialog.run() == Gtk.ResponseType.OK:
+            buffer = view.get_buffer()
+            try:
+                specs = mcp_client.parse_servers(buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), False))
+            except mcp_client.McpError as exc:
+                error.set_text(str(exc))
+                continue
+            for spec in specs:
+                self._put_mcp_server(spec)
+            self.mcp_note.set_text(f"Added {', '.join(spec['name'] for spec in specs)}. Save to apply; "
+                                   "Edit… → Test starts a server once.")
+            break
+        dialog.destroy()
+
+    def _edit_mcp_server(self, spec: dict | None) -> None:
+        """The add/edit dialog of one server (`spec` None: a new one)."""
+        spec = spec or {"name": "", "command": "", "args": [], "env": {}, "url": "", "headers": {}, "enabled": True}
+        dialog = Gtk.Dialog(title="MCP server", transient_for=self, modal=True)
+        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        dialog.add_button("OK", Gtk.ResponseType.OK).get_style_context().add_class("suggested-action")
+        dialog.set_default_size(540, -1)
+        grid = Gtk.Grid(column_spacing=12, row_spacing=8, border_width=12)
+        dialog.get_content_area().add(grid)
+
+        def text_area(text: str, placeholder: str) -> tuple[Gtk.Widget, Gtk.TextView]:
+            view = Gtk.TextView(monospace=True, left_margin=6, top_margin=4, bottom_margin=4)
+            view.get_buffer().set_text(text)
+            view.set_tooltip_text(placeholder)
+            scroller = Gtk.ScrolledWindow(hexpand=True, min_content_height=70)
+            scroller.set_shadow_type(Gtk.ShadowType.IN)
+            scroller.add(view)
+            return scroller, view
+
+        def text_of(view: Gtk.TextView) -> str:
+            buffer = view.get_buffer()
+            return buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), False)
+
+        name = Gtk.Entry(hexpand=True, text=spec["name"], placeholder_text="e.g. filesystem")
+        row = self._add_row(grid, 0, "Name", name)
+        kind = Gtk.ComboBoxText()
+        kind.append("stdio", "Program (command, stdio)")
+        kind.append("http", "Remote server (URL, Streamable HTTP)")
+        kind.set_active_id("http" if spec["url"] else "stdio")
+        row = self._add_row(grid, row, "Type", kind)
+        command = Gtk.Entry(hexpand=True, text=spec["command"], placeholder_text="e.g. npx, uvx, docker")
+        args_box, args = text_area("\n".join(spec["args"]), "One argument per line, e.g.\n-y\n"
+                                                           "@modelcontextprotocol/server-filesystem\n/home/me/Data")
+        env_box, env = text_area("\n".join(f"{k}={v}" for k, v in spec["env"].items()), "NAME=value, one per line")
+        url = Gtk.Entry(hexpand=True, text=spec["url"], placeholder_text="https://example.com/mcp")
+        headers_box, headers = text_area("\n".join(f"{k}: {v}" for k, v in spec["headers"].items()),
+                                         "Name: value, one per line, e.g. Authorization: Bearer …")
+        rows = {}
+        for key, text, widget in (("stdio", "Command", command), ("stdio", "Arguments\n(one per line)", args_box),
+                                  ("stdio", "Environment\n(NAME=value)", env_box), ("http", "URL", url),
+                                  ("http", "Headers\n(Name: value)", headers_box)):
+            row = self._add_row(grid, row, text, widget)
+            rows.setdefault(key, []).extend([grid.get_child_at(0, row - 1), widget])
+        test = Gtk.Button(label="Test", halign=Gtk.Align.START)
+        test.set_tooltip_text("Start the server, list its tools and end it again")
+        grid.attach(test, 1, row, 1, 1)
+        note = Gtk.Label(xalign=0, wrap=True, max_width_chars=60, selectable=True)
+        note.get_style_context().add_class("dim-label")
+        grid.attach(note, 0, row + 1, 2, 1)
+
+        def show_kind(*_args) -> None:
+            for key, widgets in rows.items():
+                for widget in widgets:
+                    widget.set_visible(key == kind.get_active_id())
+            dialog.resize(dialog.get_size()[0], 1)
+
+        def collect() -> dict | str:
+            """The entry, or why it is not valid."""
+            values = {"name": name.get_text().strip(), "enabled": spec.get("enabled", True)}
+            if kind.get_active_id() == "http":
+                values["url"] = url.get_text().strip()
+                values["headers"] = {}
+                for line in text_of(headers).splitlines():
+                    key, colon, value = line.partition(":")
+                    if line.strip() and not colon:
+                        return f"“{line.strip()}” is no header: write Name: value."
+                    if key.strip():
+                        values["headers"][key.strip()] = value.strip()
+            else:
+                values["command"] = command.get_text().strip()
+                values["args"] = [line.strip() for line in text_of(args).splitlines() if line.strip()]
+                values["env"] = {}
+                for line in text_of(env).splitlines():
+                    key, equals, value = line.partition("=")
+                    if line.strip() and not equals:
+                        return f"“{line.strip()}” is no variable: write NAME=value."
+                    if key.strip():
+                        values["env"][key.strip()] = value.strip()
+            problem = mcp_server_problem(values)
+            if problem:
+                return problem[0].upper() + problem[1:] + "."
+            others = {item["name"] for item in self.mcp_servers if item is not spec and item["name"] != spec["name"]}
+            if values["name"] in others:
+                return f"There is already a server named {values['name']}."
+            return normalize_mcp_server(values)
+
+        def on_test(_button) -> None:
+            values = collect()
+            if isinstance(values, str):
+                note.set_text(values)
+                return
+            test.set_sensitive(False)
+            note.set_text(f"Starting {values['name']}… (a first start with npx or uvx downloads the server)")
+
+            def worker() -> None:
+                try:
+                    text = "Works: " + mcp_client.test_server(values)
+                except mcp_client.McpError as exc:
+                    text = f"Did not start: {exc}"
+                except Exception as exc:
+                    text = f"Did not start: {type(exc).__name__}: {exc}"
+                GLib.idle_add(show_test, text)
+
+            def show_test(text: str) -> bool:
+                if not closed:
+                    test.set_sensitive(True)
+                    note.set_text(text)
+                return False
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        closed = False
+        kind.connect("changed", show_kind)
+        test.connect("clicked", on_test)
+        grid.show_all()
+        show_kind()
+        while dialog.run() == Gtk.ResponseType.OK:
+            values = collect()
+            if isinstance(values, str):
+                note.set_text(values)
+                continue
+            self._put_mcp_server(values, spec["name"] or None)
+            self.mcp_note.set_text(f"{values['name']}: changed. Save to apply.")
+            break
+        closed = True  # noqa: F841 (read by show_test)
+        dialog.destroy()
 
     # --- AI models ----------------------------------------------------------
     def _load_models(self) -> None:
@@ -812,6 +1070,7 @@ class SettingsWindow(Gtk.Window):
             return
         if self.keyring_failed and not self._recover_secrets():
             return
+        self._merge_mcp_servers()
         values = self._form_values()
         if values["hotkey"] and not Gtk.accelerator_parse(values["hotkey"])[0]:
             self._set_status(f"“{values['hotkey']}” is not a key: write it like <Control>space or <Super>c.")
