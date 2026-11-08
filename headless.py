@@ -67,19 +67,22 @@ class ChemAssistent:
 
     ``approve`` receives (purpose, code) and must return True to run code.
     Generated code is rejected by default; approval is not a sandbox.
+    ``report_bugs``: the agent reports chemotion_api bugs it finds with
+    report_api_bug (developer mode: a public GitHub issue with the config's
+    github_token, else a draft in issues.ISSUES_DIR).
     """
 
     def __init__(self, config: Config | str = "", *,
-                 approve: Callable[[str, str], bool] | None = None) -> None:
+                 approve: Callable[[str, str], bool] | None = None, report_bugs: bool = False) -> None:
         if config == "":
             config = saved_config()
         if not isinstance(config, Config):
             raise TypeError('config must be a Config or "" to use saved settings')
         if config.agent not in ("api", "ollama"):
             raise ValueError("The headless interface supports OpenAI-compatible API and Ollama agents only")
-        # Reporting public issues is not appropriate without an interactive
-        # approval, and a script must not read the desktop's saved conversations.
-        self.config = dataclasses.replace(config, developer_mode=False, history_access=False)
+        # Public issues only when the caller asks (report_bugs: the evals);
+        # a script must not read the desktop's saved conversations.
+        self.config = dataclasses.replace(config, developer_mode=report_bugs, history_access=False)
         self.approve = approve
         self.conversations = Conversations(self)
 
@@ -102,8 +105,9 @@ class Conversation:
         # headless: no save_lesson (a prompt, maybe from an untrusted document,
         # must not write into the lessons every desktop conversation reads),
         # and a prompt that knows there is no window or result panel.
-        self._agent = Agent(assistant.config, workspace.system_prompt(headless=True), self._execute,
-                            self._event, headless=True)
+        self._agent = Agent(assistant.config,
+                            workspace.system_prompt(developer=assistant.config.developer_mode, headless=True),
+                            self._execute, self._event, headless=True)
 
     def _event(self, kind: str, data) -> None:
         if kind == "error":

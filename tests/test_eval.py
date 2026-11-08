@@ -257,3 +257,54 @@ def test_task_attachments(tmp_path):
     import documents
     text = "\n".join(documents.pdf_lines(Path(shipped[0]["attachments"][0])))
     assert "Compound 3b" in text and "C8H8BrO2" in text and "bromo" not in text.lower()
+
+
+def test_run_task_reports_chemotion_api_bugs(fake_ai, config, runner, monkeypatch):
+    reported = []
+
+    def report(config, model, title, description, origin):
+        reported.append({"title": title, "origin": origin, "token": config.github_token})
+        return "Issue #7 created: https://github.com/x/y/issues/7."
+
+    monkeypatch.setattr(agent_module.issues, "report", report)
+    fake_ai.script_next(
+        {"tool_calls": [{"name": "report_api_bug",
+                         "arguments": {"title": "get_samples ignores per_page", "description": "Steps …"}}]},
+        {"content": "There are 3 samples. I reported a bug."})
+    chemotion = FakeChemotion()
+    record = run_eval.run_task(dataclasses_replace(config, github_token="ghp_x"), TASK, "test", 1, chemotion,
+                               run_eval.Options(collection="/Evals"))
+
+    assert record["bug_reports"] == [{"title": "get_samples ignores per_page",
+                                      "answer": "Issue #7 created: https://github.com/x/y/issues/7."}]
+    assert reported[0]["origin"] == "in an eval run (task `count`, evals/run_eval.py)"
+    assert reported[0]["token"] == "ghp_x"
+    tools = [t["function"]["name"] for t in fake_ai.requests[0]["tools"]]
+    assert "report_api_bug" in tools
+    assert "Developer mode" in fake_ai.requests[0]["messages"][0]["content"]
+
+
+def test_run_task_without_bug_reports(fake_ai, config, runner):
+    script_two_rounds(fake_ai)
+    record = run_eval.run_task(config, TASK, "test", 1, FakeChemotion(),
+                               run_eval.Options(collection="/Evals", report_bugs=False))
+    assert record["bug_reports"] == []
+    assert "report_api_bug" not in [t["function"]["name"] for t in fake_ai.requests[0]["tools"]]
+    assert "Developer mode" not in fake_ai.requests[0]["messages"][0]["content"]
+
+
+def test_github_token_for_the_reports(monkeypatch):
+    monkeypatch.setattr(run_eval, "read_raw_config", lambda: {"ai_url": "http://ai", "github_token": "ghp_saved"})
+    monkeypatch.setattr(run_eval, "load_config", lambda **kwargs: (_ for _ in ()).throw(ValueError("incomplete")))
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    args = run_eval.parse_args(["--model", "m", "--no-chemotion"])
+    assert args.no_report_bugs is False
+    assert run_eval.build_config(args).github_token == "ghp_saved"
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_env")
+    assert run_eval.build_config(args).github_token == "ghp_env"
+
+
+def dataclasses_replace(config, **changes):
+    import dataclasses
+
+    return dataclasses.replace(config, **changes)

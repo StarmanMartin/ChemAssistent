@@ -23,6 +23,15 @@ the same text), so repeated runs would otherwise only repeat the first one.
 `--server-cache` leaves the field out (for servers that refuse it). The exit code is 0 only if
 every run passed.
 
+Bugs in chemotion_api: the agent runs with the developer mode's
+`report_api_bug` and the developer prompt, so a bug it hits during a task
+becomes an issue of the chemotionapi repository, created with the settings'
+`github_token` (Developer tab) or `GITHUB_TOKEN`; the issue says it came from
+an eval run and names the task. An open issue with the same title is not
+created twice. Without a token the reports are saved as drafts in
+`~/.local/state/chem-assistent/issues/` (with a prefilled GitHub link in the
+results). The console prints each report. `--no-report-bugs` switches this off.
+
 ## Output
 
 `evals/results/<time>_<models>/` (or `--out`), rewritten after every run, so
@@ -38,7 +47,8 @@ an interrupted eval keeps its finished runs:
   of input/output/cached/reasoning tokens, cost, requests and model seconds,
   `requests` = the same per chat completion, tool calls by name, tool rounds,
   every executed snippet with purpose, code, seconds and outcome, the
-  answers, every check, the setup result, the cleanup and the transcript).
+  answers, every check, the setup result, the cleanup, `bug_reports` (title
+  and outcome of each report_api_bug call) and the transcript).
 - `runs.csv`: one row per run with the numbers.
 - `summary.md`: the summary table (also printed at the end).
 

@@ -56,7 +56,7 @@ if "chemassistent" not in sys.modules:
     _load_package()
 
 from chemassistent import agent as agent_module  # noqa: E402
-from chemassistent import headless, lessons, workspace  # noqa: E402
+from chemassistent import headless, issues, lessons, workspace  # noqa: E402
 from chemassistent.config import KI_TOOLBOX_URL, Config, ai_token, load_config, read_raw_config  # noqa: E402
 
 DEFAULT_TASKS = Path(__file__).resolve().with_name("tasks.json")
@@ -244,6 +244,8 @@ class Options:
     # that bypasses its response cache (the KI-Toolbox answers an identical
     # request from it in 0.1 s, so repeated runs would repeat the first one).
     extra_body: dict = dataclasses.field(default_factory=lambda: dict(NO_CACHE))
+    # The agent reports chemotion_api bugs it finds (report_api_bug, issues.py).
+    report_bugs: bool = True
 
 
 def _approver(mode: str):
@@ -252,6 +254,24 @@ def _approver(mode: str):
     if mode == "readonly":
         return lambda purpose, code: agent_module.looks_read_only(code)[0]
     return None
+
+
+def bug_reports(messages: list[dict]) -> list[dict]:
+    """The run's report_api_bug calls: title and what issues.report() said
+    (the issue's URL, an existing issue, or the saved draft and a link)."""
+    answers = {m.get("tool_call_id"): m.get("content") for m in messages if m.get("role") == "tool"}
+    reports = []
+    for message in messages:
+        for call in message.get("tool_calls") or []:
+            if call["function"]["name"] != "report_api_bug":
+                continue
+            try:
+                arguments = json.loads(call["function"]["arguments"] or "{}")
+            except ValueError:
+                arguments = {}
+            reports.append({"title": str(arguments.get("title") or "") if isinstance(arguments, dict) else "",
+                            "answer": str(answers.get(call["id"]) or "")})
+    return reports
 
 
 def _tool_stats(messages: list[dict]) -> tuple[dict, int]:
@@ -298,9 +318,10 @@ def run_task(config: Config, task: dict, model: str, index: int, chemotion: Chem
         record["prompts"] = prompts
 
         assistant = headless.ChemAssistent(dataclasses.replace(config, ai_model=model),
-                                           approve=_approver(options.approve))
+                                           approve=_approver(options.approve), report_bugs=options.report_bugs)
         conversation = assistant.conversations.new_conversation()
         conversation._agent.extra_body = dict(options.extra_body)
+        conversation._agent.report_origin = f"in an eval run (task `{task['id']}`, evals/run_eval.py)"
         execute = conversation._agent.execute
 
         def recorded(purpose, code, cancelled, target, *rest):
@@ -335,6 +356,7 @@ def run_task(config: Config, task: dict, model: str, index: int, chemotion: Chem
     record["requests"] = usage
     messages = conversation._agent.messages[1:] if conversation is not None else []
     record["tool_calls"], record["tool_rounds"] = _tool_stats(messages)
+    record["bug_reports"] = bug_reports(messages)
     record["executions"] = executions
     record["executions_failed"] = sum(1 for e in executions if e["ran"] and not e["ok"])
     record["executions_rejected"] = sum(1 for e in executions if not e["ran"])
@@ -504,6 +526,9 @@ def build_config(args) -> Config:
         base = dataclasses.replace(base, ai_url=args.ai_url)
     if os.environ.get("KI_TOOLBOX_API_KEY") and not base.ai_token:
         base = dataclasses.replace(base, ai_token=os.environ["KI_TOOLBOX_API_KEY"])
+    # For the bug reports: the settings' token (Developer tab), else GITHUB_TOKEN.
+    github_token = os.environ.get("GITHUB_TOKEN") or base.github_token or str(raw.get("github_token") or "")
+    base = dataclasses.replace(base, github_token=github_token)
     if args.no_chemotion:
         return dataclasses.replace(base, url="", user="", password="")
     if args.saved_chemotion:
@@ -564,6 +589,9 @@ def parse_args(argv=None):
                         help="let the AI gateway answer from its response cache (default: bypass it with "
                              "LiteLLM's cache.no-cache; use this for servers that refuse that field)")
     parser.add_argument("--no-transcripts", action="store_true", help="leave the transcripts out of results.json")
+    parser.add_argument("--no-report-bugs", action="store_true",
+                        help="the agent does not report chemotion_api bugs (default: it creates GitHub issues with "
+                             "the settings' github_token or GITHUB_TOKEN, else saves drafts)")
     args = parser.parse_args(argv)
     args.model = [m.strip() for value in args.model for m in value.split(",") if m.strip()]
     args.only = [t.strip() for value in args.only or [] for t in value.split(",") if t.strip()] or None
@@ -579,7 +607,8 @@ def main(argv=None) -> int:
     chemotion = None if args.no_chemotion else Chemotion(config)
     options = Options(approve=args.approve, timeout_s=args.timeout,
                       collection=str(settings.get("collection") or DEFAULT_COLLECTION), keep=args.keep,
-                      transcripts=not args.no_transcripts, extra_body={} if args.server_cache else dict(NO_CACHE))
+                      transcripts=not args.no_transcripts, extra_body={} if args.server_cache else dict(NO_CACHE),
+                      report_bugs=not args.no_report_bugs)
     if not args.with_lessons:
         lessons.LESSONS_FILE = Path(os.devnull)  # read as empty; headless never writes it
 
@@ -593,9 +622,14 @@ def main(argv=None) -> int:
             "ai_url": config.ai_url, "chemotion_url": config.url if chemotion else "",
             "collection": options.collection, "chemotionapi": _chemotionapi_label(), "commit": _git_commit(),
             "lessons": args.with_lessons, "extra_body": options.extra_body, "python": sys.version.split()[0],
-            "system_prompt": workspace.system_prompt(headless=True)}
+            "report_bugs": options.report_bugs, "github_token": bool(config.github_token),
+            "system_prompt": workspace.system_prompt(developer=options.report_bugs, headless=True)}
     total = len(tasks) * len(args.model) * args.runs
     print(f"{total} runs: {len(tasks)} tasks × {len(args.model)} models × {args.runs} → {out}", flush=True)
+    if options.report_bugs:
+        print("chemotion_api bugs the agent finds: "
+              + (f"GitHub issues of {issues.REPO}" if config.github_token
+                 else f"drafts in {issues.ISSUES_DIR} (no github_token / GITHUB_TOKEN)"), flush=True)
     runs: list[dict] = []
     done = 0
     try:
@@ -612,6 +646,8 @@ def main(argv=None) -> int:
                           + ("" if record["success"] else f" – {'; '.join(record['reasons'])[:200]}"), flush=True)
                     for problem in (record.get("cleanup") or {}).get("problems") or []:
                         print(f"    cleanup: {problem}", flush=True)
+                    for report in record.get("bug_reports") or []:
+                        print(f"    bug report: {report['title']} → {report['answer'][:300]}", flush=True)
                     meta["finished"] = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
                     write_outputs(out, meta, runs)
     except KeyboardInterrupt:
