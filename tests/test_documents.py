@@ -164,3 +164,42 @@ def test_describe(paper, tmp_path):
     assert documents.describe(tmp_path / "broken.pdf") == "PDF, unreadable"
     (tmp_path / "a.txt").write_text("text", encoding="utf-8")
     assert documents.describe(tmp_path / "a.txt") is None
+
+
+def test_encrypted_pdf_message(paper, monkeypatch):
+    import pypdfium2
+
+    def refuse(path):
+        raise pypdfium2.PdfiumError("Failed to load document (PDFium: Incorrect password error).")
+
+    monkeypatch.setattr(pypdfium2, "PdfDocument", refuse)
+    with pytest.raises(DocumentError, match="paper.pdf is encrypted"):
+        documents.page_count(paper)
+
+
+def test_windows_license_files_include_pep639_folders():
+    """windows/licenses.py: pypdfium2 names its texts pdfium.txt etc. below
+    dist-info/licenses/; the build must find them, or it fails."""
+    from pathlib import PurePosixPath
+
+    sys.path.insert(0, str(documents.Path(__file__).resolve().parent.parent / "windows"))
+    try:
+        import licenses
+    finally:
+        sys.path.pop(0)
+
+    class Dist:
+        files = [PurePosixPath(p) for p in (
+            "pypdfium2/__init__.py",
+            "pypdfium2-5.0.dist-info/METADATA",
+            "pypdfium2-5.0.dist-info/licenses/LICENSES/Apache-2.0.txt",
+            "pypdfium2-5.0.dist-info/licenses/BUILD_LICENSES/SHARED/Apache-2.0.txt",
+            "pypdfium2-5.0.dist-info/licenses/BUILD_LICENSES/pdfium.txt",
+            "other-1.0.dist-info/LICENSE",
+            "other-1.0.dist-info/COPYING.md",
+        )]
+
+    names = [name for name, _ in licenses.license_files(Dist)]
+    assert names == ["LICENSES/Apache-2.0.txt", "BUILD_LICENSES/SHARED/Apache-2.0.txt", "BUILD_LICENSES/pdfium.txt",
+                     "LICENSE", "COPYING.md"]
+    assert any(c.name == "PDFium" and "pdfium.dll" in c.dlls for c in licenses.COMPONENTS)
