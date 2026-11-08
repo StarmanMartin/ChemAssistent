@@ -72,6 +72,9 @@ ATTACHMENT_NOTE = ("\n\nAttached by the user (read them with read_file / list_fi
                    "absolute paths; execute_python code can open them, e.g. to upload a file to "
                    "Chemotion):\n")
 STOPPED_NOTE = "(Stopped after many tool calls.)"
+# Page images the model sees at once: per tool round, and kept in the
+# messages (older ones become a text note; every request resends them all).
+MAX_INLINE_IMAGES = 4
 
 
 def execute_python_tool(mode: str, headless: bool = False) -> dict:
@@ -357,16 +360,19 @@ def clip(text: str, limit: int = MAX_ANSWER_CHARS) -> str:
 
 
 def build_tools(mode: str, jupyter: bool = False, developer: bool = False,
-                headless: bool = False) -> list[dict]:
+                headless: bool = False, vision: bool = True) -> list[dict]:
     """The tools with the execute_* descriptions for `mode`; the JupyterLab
     tools only with JupyterLab configured, report_api_bug in developer mode,
     save_lesson except for `headless` (headless.py: no prompt may change the
-    lessons every other conversation reads)."""
+    lessons every other conversation reads), view_page for a model that
+    (perhaps) takes images."""
     if not jupyter:
         tools = [execute_python_tool(mode, headless)] + READ_ONLY_TOOLS
     else:
         tools = ([execute_python_tool(mode), execute_jupyter_tool(mode), start_jupyter_job_tool(mode),
                   JUPYTER_JOBS_TOOL] + READ_ONLY_TOOLS)
+    if vision:
+        tools.append(VIEW_PAGE_TOOL)
     if not headless:
         tools.append(SAVE_LESSON_TOOL)
     return tools + [REPORT_API_BUG_TOOL] if developer else tools
@@ -425,6 +431,30 @@ READ_ONLY_TOOLS = [
         },
     },
 ]
+
+
+VIEW_PAGE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "view_page",
+        "description": "Look at a page of a PDF the user attached, or at an attached picture (PNG, JPEG, "
+                       "WEBP, GIF), as an image. The text of a PDF (read_file) has no drawn structures, "
+                       "reaction schemes, figures or the layout of tables: look at them before deriving "
+                       "structures, substitution patterns or stereochemistry. `region` shows a part of the "
+                       f"page larger, for small print. At most {MAX_INLINE_IMAGES} images per step.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Absolute path of the attachment."},
+                "page": {"type": "integer", "description": "Page of a PDF, 1-based (read_file's "
+                                                           "\"--- page n of m ---\" lines)."},
+                "region": {"type": "string", "enum": list(documents.REGIONS),
+                           "description": "Part of the page, default full."},
+            },
+            "required": ["path"],
+        },
+    },
+}
 
 
 class AgentError(Exception):
@@ -646,6 +676,11 @@ def tool_summary(name: str, arguments: dict) -> str:
     if name == "grep":
         where = f" in {arguments['path']}" if arguments.get("path") else ""
         return f"Searched “{arguments.get('pattern')}”{where}"
+    if name == "view_page":
+        region = arguments.get("region")
+        part = f" ({region})" if region and region != "full" else ""
+        page = f"page {arguments.get('page')} of " if arguments.get("page") else ""
+        return f"Looked at {page}{Path(str(arguments.get('path') or '')).name}{part}"
     if name == "jupyter_jobs":
         return "Checked the background jobs"
     if name == "save_lesson":
@@ -751,6 +786,30 @@ def looks_read_only(code: str) -> tuple[bool, str]:
     return True, ""
 
 
+def view_page(path: str, roots: list[Path], page=None, region=None) -> tuple[str, "documents.Image", Path]:
+    """The text answer, the image and the file of view_page: a PDF page (or
+    a region of it) or an attached picture, within `roots` like read_file."""
+    target = _resolve(path, roots)
+    region = str(region or "full")
+    part = f", {region}" if region != "full" else ""
+    try:
+        if documents.is_pdf(target):
+            if page is None:
+                raise AgentError(f"{_shown(target)} is a PDF: give the page.")
+            number = int(page)
+            image = documents.render_page(target, number, region)
+            total = documents.page_count(target)
+            where = f"Page {number} of {total} of {_shown(target)}"
+        elif documents.image_type(target):
+            image = documents.load_image(target, region)
+            where = _shown(target)
+        else:
+            raise AgentError(f"{_shown(target)} is neither a PDF nor a picture; read it with read_file.")
+    except documents.DocumentError as exc:
+        raise AgentError(str(exc)) from None
+    return f"{where} ({image.width}×{image.height} px{part}); the image follows in the next message.", image, target
+
+
 def describe_attachment(path: Path) -> str:
     if path.is_dir():
         count = sum(1 for _ in _files(path, None))
@@ -822,7 +881,7 @@ class Agent:
         self.on_event = on_event
         self.auto_run = auto_run if auto_run in AUTO_RUN_MODES else "off"
         # The tool descriptions depend on the auto-run mode (execute_python).
-        self.tools = build_tools(self.auto_run, self.jupyter, self.config.developer_mode, self.headless)
+        self.tools = self._build_tools()
         self.messages: list[dict] = [{"role": "system", "content": system_prompt}]
         # What the read-only tools may read: base_roots() and every attachment.
         self.roots: list[Path] = base_roots(config.history_access)
@@ -847,12 +906,18 @@ class Agent:
         self._stream_usage = True  # False after a server refused stream_options
         # Further request fields (evals/run_eval.py: bypass a gateway's response cache).
         self.extra_body: dict = {}
+        # view_page's images of the current tool round: {"image", "path", "page", "region"}.
+        self._pending_images: list[dict] = []
 
     def set_auto_run(self, mode: str) -> None:
         """Switch the auto-run mode mid-conversation (the header menu); the
         changed tool description goes out with the next request."""
         self.auto_run = mode if mode in AUTO_RUN_MODES else "off"
-        self.tools = build_tools(self.auto_run, self.jupyter, self.config.developer_mode, self.headless)
+        self.tools = self._build_tools()
+
+    def _build_tools(self) -> list[dict]:
+        return build_tools(self.auto_run, self.jupyter, self.config.developer_mode, self.headless,
+                           self.vision is not False)
 
     def set_model(self, model: str) -> None:
         """Switch the model mid-conversation (the header menu); the next
@@ -866,6 +931,7 @@ class Agent:
         """Whether the current model takes images (the app learns it with the
         model list, possibly after the conversation started)."""
         self.vision = vision
+        self.tools = self._build_tools()
 
     def restore(self, messages: list[dict], roots: list[str]) -> None:
         """Continue a saved conversation (history.py): its messages after the
@@ -1159,6 +1225,16 @@ class Agent:
                 self.on_event("tool", tool_summary(name, arguments))
                 return issues.report(self.config, issues.model_label(self.config), str(arguments.get("title") or ""),
                                      str(arguments.get("description") or ""))
+            if name == "view_page" and self.vision is not False:
+                if len(self._pending_images) >= MAX_INLINE_IMAGES:
+                    return (f"Not shown: at most {MAX_INLINE_IMAGES} images per step. Look at the others in "
+                            f"the next step.")
+                text, image, target = view_page(str(arguments.get("path") or ""), self.roots,
+                                                arguments.get("page"), arguments.get("region"))
+                self._pending_images.append({"image": image, "path": str(target), "page": arguments.get("page"),
+                                             "region": arguments.get("region") or "full"})
+                self.on_event("tool", tool_summary(name, arguments))
+                return text
             if name == "read_file":
                 text = read_file(str(arguments.get("path") or ""), self.roots, arguments.get("offset") or 1,
                                  arguments.get("limit") or MAX_READ_LINES)

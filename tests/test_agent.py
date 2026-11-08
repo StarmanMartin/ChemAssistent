@@ -64,7 +64,7 @@ def test_streamed_answer(fake_ai, ai_config, workspace, recorder):
     assert request["messages"][0] == {"role": "system", "content": "You are ChemAssistent."}
     assert request["messages"][1] == {"role": "user", "content": "Hi"}
     assert [tool["function"]["name"] for tool in request["tools"]] == [
-        "execute_python", "read_file", "grep", "list_files", "save_lesson"]
+        "execute_python", "read_file", "grep", "list_files", "view_page", "save_lesson"]
     assert fake_ai.headers_seen[0]["Authorization"] == "Bearer test-token"
 
 
@@ -295,7 +295,7 @@ def test_tool_description_follows_the_auto_run_mode(fake_ai, ai_config, workspac
 # --- JupyterLab tools ---------------------------------------------------------
 def test_jupyter_tools_only_with_an_exchange_folder(fake_ai, ai_config, workspace, skills_dir, recorder, tmp_path):
     assert [tool["function"]["name"] for tool in build_tools("off")] == [
-        "execute_python", "read_file", "grep", "list_files", "save_lesson"]
+        "execute_python", "read_file", "grep", "list_files", "view_page", "save_lesson"]
 
     exchange = tmp_path / "exchange" / "conversation"
     jobs_text = "- job-abc (A long run): running (5 min)"
@@ -674,3 +674,47 @@ def test_agent_vision_setting(ai_config, recorder):
     assert agent.vision is None
     agent.set_vision(False)
     assert agent.vision is False
+
+
+# --- view_page -----------------------------------------------------------------
+def test_view_page_function(tmp_path):
+    import documents
+    from pdf_maker import make_pdf
+
+    paper = tmp_path / "paper.pdf"
+    paper.write_bytes(make_pdf(["Scheme 1", "Figure 2"]))
+    picture = tmp_path / "scheme.png"
+    picture.write_bytes(documents.png_encode(8, 6, 24, b"\x40" * 144))
+    (tmp_path / "notes.txt").write_text("text", encoding="utf-8")
+    roots = [tmp_path.resolve()]
+
+    text, image, target = agent_module.view_page(str(paper), roots, 2, "top")
+    assert text.startswith(f"Page 2 of 2 of {paper.resolve()} (") and ", top); the image follows" in text
+    assert image.mime == "image/png" and target == paper.resolve()
+    text, image, _ = agent_module.view_page(str(picture), roots)
+    assert text.startswith(f"{picture.resolve()} (8×6 px)") and image.data == picture.read_bytes()
+
+    with pytest.raises(AgentError, match="give the page"):
+        agent_module.view_page(str(paper), roots)
+    with pytest.raises(AgentError, match="page 3 does not exist"):
+        agent_module.view_page(str(paper), roots, 3)
+    with pytest.raises(AgentError, match="neither a PDF nor a picture"):
+        agent_module.view_page(str(tmp_path / "notes.txt"), roots)
+    with pytest.raises(AgentError, match="outside the workspace"):
+        agent_module.view_page("/etc/hostname", roots)
+
+
+def test_view_page_is_offered_unless_the_model_takes_no_images(ai_config, recorder):
+    def names(agent):
+        return [tool["function"]["name"] for tool in agent.tools]
+
+    assert "view_page" in names(make_agent(ai_config, recorder))
+    assert "view_page" in names(make_agent(ai_config, recorder, vision=True))
+    agent = make_agent(ai_config, recorder, vision=False)
+    assert "view_page" not in names(agent)
+    agent.set_vision(None)
+    assert "view_page" in names(agent)
+    agent.set_auto_run("always")
+    assert "view_page" in names(agent)
+    assert tool_summary("view_page", {"path": "/a/x.pdf", "page": 3, "region": "top"}) == "Looked at page 3 of x.pdf (top)"
+    assert tool_summary("view_page", {"path": "/a/s.png"}) == "Looked at s.png"
