@@ -250,6 +250,24 @@ MCP servers (tools from other programs the user added):
 
 
 # Always appended; the lessons themselves (lessons.py) follow it.
+# Not for headless.py: its conversations have no attachments.
+PAPERS_PROMPT = """
+Papers and pictures the user attaches:
+- `read_file` gives the text of a PDF page by page (each page after a line
+  "--- page n of m ---"); `grep` finds a word in it and names the page.
+- Structures, reaction schemes, figures and the layout of tables are drawings,
+  not text: the text only has names, labels, formulas and m/z. If you have the
+  tool `view_page`, look at the pages with the relevant schemes or figures
+  (grep for "Scheme", "Figure", "Table" or a compound label to find them)
+  before you derive a structure, substitution pattern, regio- or
+  stereochemistry, and check what you see against the formulas, m/z and names
+  in the text. `region` shows a part of a page larger, for small labels.
+- Never present a structure you derived from the text alone as read from the
+  paper: say which structures those are and that the user should check them.
+  Without `view_page` (the model cannot see images) that applies to every
+  structure that is only drawn.
+"""
+
 LESSONS_PROMPT = """
 Lessons (shared by all conversations):
 - When a snippet failed because of a non-obvious behaviour of chemotion_api, a
@@ -283,7 +301,7 @@ def system_prompt(exchange: Path | None = None, developer: bool = False, history
     if history:
         prompt += HISTORY_PROMPT.format(history=history_module.HISTORY_DIR)
     if not headless:
-        prompt += MCP_PROMPT
+        prompt += PAPERS_PROMPT + MCP_PROMPT
     learned = lessons.prompt_section()  # not formatted: lessons may contain braces
     return prompt + ("" if headless else LESSONS_PROMPT) + (LESSONS_HEADER + learned + "\n" if learned else "")
 

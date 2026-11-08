@@ -913,3 +913,13 @@ def test_chat_replay_skips_image_messages(tmp_path):
     items = json.loads(result.stdout)
     assert [item[0] for item in items] == ["user", "note", "assistant"]
     assert items[1][1] == "Looked at page 2 of paper.pdf"
+
+
+def test_the_prompt_says_to_look_at_drawn_structures(workspace):
+    import workspace as workspace_module
+
+    prompt = workspace_module.system_prompt()
+    assert "--- page n of m ---" in prompt and "`view_page`" in prompt
+    assert "Never present a structure you derived from the text alone" in prompt
+    # Headless conversations have no attachments.
+    assert "view_page" not in workspace_module.system_prompt(headless=True)
