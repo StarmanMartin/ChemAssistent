@@ -5,13 +5,16 @@ Only standard endpoints are used: GET <ai_url>/models and POST
 <ai_url>/chat/completions with `stream`, `tools` and `tool_choice`, so the
 KIT KI-Toolbox, OpenAI, Ollama, vLLM, LiteLLM, ... all work.
 
-The model gets exactly four tools: `execute_python` (the app provides it as a
+The model gets exactly five tools: `execute_python` (the app provides it as a
 callback; whether the user must confirm first depends on the auto-run mode:
 "off" always asks, "readonly" runs read-only snippets automatically —
 `looks_read_only()` decides — and "always" runs everything)
-and read-only `read_file`, `grep` and `list_files`, which cannot leave the
-workspace (the API reference and the chemotionapi checkout) and the files
-and folders the user attached. With JupyterLab configured there are also
+and read-only `read_file`, `grep`, `list_files` and `view_page`, which cannot
+leave the workspace (the API reference and the chemotionapi checkout) and the
+files and folders the user attached. PDFs are read as text (documents.py);
+view_page shows the model a PDF page or a picture as an image in a user
+message after the tool answers (left out for a model known to take no
+images). With JupyterLab configured there are also
 `execute_jupyter` (jupyter.py; same callback with target "jupyter"),
 `start_jupyter_job` (a background job in a kernel of its own, jobs.py; same
 callback with target "job", it returns at once and the report arrives later

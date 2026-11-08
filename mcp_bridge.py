@@ -1,7 +1,7 @@
 """The tools of CLI agents (Claude Code, Codex): a stdio MCP server the CLI
 starts (no GTK, standard library only).
 
-It offers the built-in agent's four tools (and in developer mode
+It offers the built-in agent's five tools (and in developer mode
 `report_api_bug`, issues.py) and nothing else (the CLIs' own
 tools are switched off, cli_agent.py): read-only `read_file`, `grep` and
 `list_files` (agent.py's, confined to the workspace and the attachments),
