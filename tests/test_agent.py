@@ -923,3 +923,44 @@ def test_the_prompt_says_to_look_at_drawn_structures(workspace):
     assert "Never present a structure you derived from the text alone" in prompt
     # Headless conversations have no attachments.
     assert "view_page" not in workspace_module.system_prompt(headless=True)
+
+
+def test_a_stopped_round_sends_no_images(fake_ai, ai_config, workspace, recorder, paper):
+    """Stopped while a card waits: the round's images are dropped, the tool
+    calls are answered and stay right after their assistant message."""
+    fake_ai.script_next(
+        {"tool_calls": [view(paper, 1, call_id="c1"),
+                        {"name": "execute_python", "arguments": {"purpose": "p", "code": "x = 1"}, "id": "c2"},
+                        view(paper, 2, call_id="c3")]},
+        {"content": "Next."},
+    )
+    agent = make_agent(ai_config, recorder)
+
+    def stop():
+        agent.cancel()
+        return "Not run."
+
+    recorder.answer = stop
+    agent.send("Look", [str(paper)])
+
+    assert recorder.kinds[-1] == "stopped"
+    assert not image_parts(agent.messages) and agent._pending_images == []
+    assert [m["role"] for m in agent.messages[-4:]] == ["assistant", "tool", "tool", "tool"]
+    recorder.answer = "Output:\n(nothing)"
+    agent.send("Go on")
+    assert recorder.text.endswith("Next.")
+
+
+def test_a_failed_view_page_queues_nothing(fake_ai, ai_config, workspace, recorder, paper, tmp_path):
+    fake_ai.script_next(
+        {"tool_calls": [view(paper, 99), {"name": "view_page", "arguments": {"path": "/etc/hostname"}}]},
+        {"content": "That page does not exist."},
+    )
+    agent = make_agent(ai_config, recorder)
+
+    agent.send("Look at page 99", [str(paper)])
+
+    answers = [m["content"] for m in agent.messages if m.get("role") == "tool"]
+    assert answers[0] == "Error: paper.pdf has 8 pages; page 99 does not exist."
+    assert answers[1].startswith("Error: /etc/hostname is outside the workspace")
+    assert not image_parts(agent.messages) and "image" not in recorder.kinds
