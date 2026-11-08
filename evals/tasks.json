@@ -1,0 +1,41 @@
+{
+  "collection": "/AIExamples/ChemAssistent evals",
+  "tasks": [
+    {
+      "id": "count-samples",
+      "description": "Read: count samples by a label prefix.",
+      "setup": "for n, smiles in enumerate(['CCO', 'CC(C)O', 'CCCO'], 1):\n    s = collection.new_sample_smiles(smiles)\n    s.properties['external_label'] = f'{run}-{n}'\n    s.save()\nresult = {'prefix': run}",
+      "prompt": "How many samples in the collection {collection} have an external label that starts with '{setup.prefix}-'? Answer with the number.",
+      "expect": {
+        "answer_regex": "(?<![\\d.])3(?![\\d.])"
+      }
+    },
+    {
+      "id": "sample-formula",
+      "description": "Read: molecular formula and weight of one sample.",
+      "setup": "s = collection.new_sample_smiles('CN1C=NC2=C1C(=O)N(C(=O)N2C)C')\ns.properties['external_label'] = f'{run}-caf'\ns.save()\nresult = {'label': f'{run}-caf'}",
+      "prompt": "What are the molecular formula and the molecular weight of the sample with the external label '{setup.label}' in the collection {collection}?",
+      "expect": {
+        "answer_contains": ["C8H10N4O2"],
+        "answer_regex": "194[.,][12]"
+      }
+    },
+    {
+      "id": "create-sample",
+      "description": "Write: create a sample from SMILES with an external label.",
+      "prompt": "Create a sample of ethanol (SMILES CCO) in the collection {collection} with the external label '{run}-EtOH'.",
+      "expect": {
+        "check": "found = [s for s in collection.get_samples(per_page=100) if s.properties.get('external_label') == f'{run}-EtOH']\nif len(found) != 1:\n    result = f'{len(found)} samples with that label'\nelse:\n    formula = found[0].molecule['sum_formular']\n    result = True if formula == 'C2H6O' else f'formula {formula}'"
+      }
+    },
+    {
+      "id": "set-amount",
+      "description": "Write: set the amount of an existing sample.",
+      "setup": "s = collection.new_sample_smiles('Cc1ccccc1')\ns.properties['external_label'] = f'{run}-tol'\ns.save()\nresult = {'label': f'{run}-tol', 'id': s.id}",
+      "prompt": "Set the amount of the sample with the external label '{setup.label}' in the collection {collection} to 250 mg.",
+      "expect": {
+        "check": "s = instance.get_sample(setup['id'])\nresult = True if s.gram is not None and abs(s.gram - 0.25) < 1e-6 else f'amount {s.gram} g'"
+      }
+    }
+  ]
+}

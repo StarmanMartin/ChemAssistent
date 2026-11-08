@@ -8,3 +8,5 @@ workspace/
 build/
 dist/
 *.egg-info/
+# Eval output (evals/run_eval.py)
+evals/results/

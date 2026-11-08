@@ -34,6 +34,7 @@ import os
 import re
 import ssl
 import threading
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -708,6 +709,28 @@ def describe_attachment(path: Path) -> str:
     return f"- {path} ({kind}, {size / 1024:.1f} kB)"
 
 
+def usage_entry(model: str, seconds: float, usage: dict | None) -> dict:
+    """One chat completion's cost in OpenAI's usage fields (prompt_tokens =
+    input, completion_tokens = output, which includes reasoning tokens)."""
+    usage = usage or {}
+    prompt_details = usage.get("prompt_tokens_details") or {}
+    completion_details = usage.get("completion_tokens_details") or {}
+    return {"model": model, "seconds": round(seconds, 3),
+            "input_tokens": usage.get("prompt_tokens"), "output_tokens": usage.get("completion_tokens"),
+            "cached_tokens": prompt_details.get("cached_tokens"),
+            "reasoning_tokens": completion_details.get("reasoning_tokens"),
+            "cost": usage.get("cost")}
+
+
+def usage_total(entries: list[dict]) -> dict:
+    """The sum of usage_entry()s; a count is None if no request reported it."""
+    total: dict = {"requests": len(entries), "seconds": round(sum(e["seconds"] for e in entries), 3)}
+    for key in ("input_tokens", "output_tokens", "cached_tokens", "reasoning_tokens", "cost"):
+        values = [e[key] for e in entries if isinstance(e.get(key), (int, float))]
+        total[key] = (round(sum(values), 6) if key == "cost" else sum(values)) if values else None
+    return total
+
+
 # --- the conversation ------------------------------------------------------------
 class Agent:
     """One conversation. send() runs in a worker thread and reports through
@@ -764,6 +787,12 @@ class Agent:
         self._response = None
         self._call_counter = 0
         self._drop_reasoning = False  # set_model(): strip reasoning_content before the next request
+        # One entry per chat completion: model, seconds and the server's token
+        # counts (usage_entry(); None where the server reports none).
+        self.usage: list[dict] = []
+        self._stream_usage = True  # False after a server refused stream_options
+        # Further request fields (evals/run_eval.py: bypass a gateway's response cache).
+        self.extra_body: dict = {}
 
     def set_auto_run(self, mode: str) -> None:
         """Switch the auto-run mode mid-conversation (the header menu); the
@@ -905,11 +934,24 @@ class Agent:
             "tool_choice": "auto",
             "stream": True,
         }
+        body.update(self.extra_body)
+        if self._stream_usage:
+            # The token counts arrive in a last chunk without choices.
+            body["stream_options"] = {"include_usage": True}
         content: list[str] = []
         reasoning: list[str] = []
         calls: dict[int, dict] = {}
         thinking = False
-        response = _request(self.config, "/chat/completions", body)
+        usage = None
+        started = time.monotonic()
+        try:
+            response = _request(self.config, "/chat/completions", body)
+        except AgentError as exc:
+            if not self._stream_usage or "stream_options" not in str(exc):
+                raise
+            self._stream_usage = False  # an older server: no token counts
+            body.pop("stream_options")
+            response = _request(self.config, "/chat/completions", body)
         self._response = response
         try:
             if "text/event-stream" not in (response.headers.get("Content-Type") or ""):
@@ -923,6 +965,8 @@ class Agent:
                 if chunk.get("error"):
                     error = chunk["error"]
                     raise AgentError(error.get("message", str(error)) if isinstance(error, dict) else str(error))
+                if isinstance(chunk.get("usage"), dict):
+                    usage = chunk["usage"]
                 for choice in chunk.get("choices") or []:
                     delta = choice.get("delta") or {}
                     if delta.get("content"):
@@ -943,6 +987,7 @@ class Agent:
         finally:
             self._response = None
             response.close()
+        self.usage.append(usage_entry(self.config.ai_model, time.monotonic() - started, usage))
 
         message: dict = {"role": "assistant", "content": "".join(content) or None}
         tool_calls = []

@@ -14,6 +14,10 @@ A turn is a dict:
     {"content": ..., "plain": True}          one JSON answer, not SSE
     {"status": 500, "message": "..."}        an HTTP error
     {"error": {"message": "..."}}            an error inside the stream
+    {..., "usage": {"prompt_tokens": ...}}   token counts: a last chunk without
+                                             choices (only if the request asks
+                                             with stream_options), or in the
+                                             plain answer
 Everything is sent in several SSE chunks (content in thirds, tool-call names
 and arguments in pieces), which is what real servers do and what the agent's
 delta merging must survive.
@@ -99,14 +103,18 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(404, {"error": "no such endpoint"})
             return
         self.server.requests.append(body)
+        include_usage = bool((body.get("stream_options") or {}).get("include_usage"))
         self.server.headers_seen.append(dict(self.headers))
         turn = self.server.next_turn()
         if turn.get("status"):
             self._json(turn["status"], {"error": {"message": turn.get("message") or "scripted failure"}})
             return
         if turn.get("plain"):
-            self._json(200, {"id": "chatcmpl-test", "object": "chat.completion",
-                             "choices": [{"index": 0, "message": turn_message(turn), "finish_reason": "stop"}]})
+            answer = {"id": "chatcmpl-test", "object": "chat.completion",
+                      "choices": [{"index": 0, "message": turn_message(turn), "finish_reason": "stop"}]}
+            if turn.get("usage"):
+                answer["usage"] = turn["usage"]
+            self._json(200, answer)
             return
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
@@ -117,6 +125,9 @@ class _Handler(BaseHTTPRequestHandler):
             if turn.get("delay"):
                 self.server.sending.set()
                 turn["delay"].wait(10)
+        if turn.get("usage") and include_usage:
+            self._sse(json.dumps({"id": "chatcmpl-test", "object": "chat.completion.chunk", "choices": [],
+                                  "usage": turn["usage"]}))
         self._sse("[DONE]")
         self.wfile.write(b"0\r\n\r\n")
 
