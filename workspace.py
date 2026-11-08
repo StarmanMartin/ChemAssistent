@@ -90,6 +90,9 @@ HEADLESS_TEXT = {
   together with the print() output; the user does not see it. Keep it small
   (only useful fields, no huge JSON blobs). Elements in `result` (samples,
   reactions, ...) come back as small dicts with label, name, id and `url`.
+- The program may pass files or folders with a prompt; the message lists their
+  absolute paths. `read_file`, `grep` and `list_files` accept those paths, and
+  `execute_python` code can open them.
 """,
     "answers": """\
 Answer in the language of the user. Your final text is all the user gets: put
@@ -250,6 +253,23 @@ MCP servers (tools from other programs the user added):
 
 
 # Always appended; the lessons themselves (lessons.py) follow it.
+PAPERS_PROMPT = """
+Papers and pictures the user attaches:
+- `read_file` gives the text of a PDF page by page (each page after a line
+  "--- page n of m ---"); `grep` finds a word in it and names the page.
+- Structures, reaction schemes, figures and the layout of tables are drawings,
+  not text: the text only has names, labels, formulas and m/z. If you have the
+  tool `view_page`, look at the pages with the relevant schemes or figures
+  (grep for "Scheme", "Figure", "Table" or a compound label to find them)
+  before you derive a structure, substitution pattern, regio- or
+  stereochemistry, and check what you see against the formulas, m/z and names
+  in the text. `region` shows a part of a page larger, for small labels.
+- Never present a structure you derived from the text alone as read from the
+  paper: say which structures those are and that the user should check them.
+  Without `view_page` (the model cannot see images) that applies to every
+  structure that is only drawn.
+"""
+
 LESSONS_PROMPT = """
 Lessons (shared by all conversations):
 - When a snippet failed because of a non-obvious behaviour of chemotion_api, a
@@ -282,6 +302,7 @@ def system_prompt(exchange: Path | None = None, developer: bool = False, history
         prompt += DEVELOPER_PROMPT.format(api_version=api_versions.installed_label() or "unknown")
     if history:
         prompt += HISTORY_PROMPT.format(history=history_module.HISTORY_DIR)
+    prompt += PAPERS_PROMPT
     if not headless:
         prompt += MCP_PROMPT
     learned = lessons.prompt_section()  # not formatted: lessons may contain braces

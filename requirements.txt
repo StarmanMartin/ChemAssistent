@@ -1,2 +1,4 @@
 requests>=2.31,<3
 websocket-client>=1.6,<2
+# PDF text and page images for the agent (documents.py); bundles pdfium.
+pypdfium2>=4.30,<6

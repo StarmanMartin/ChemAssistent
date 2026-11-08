@@ -58,6 +58,30 @@ def save_lock_problems(config) -> list[str]:
     return []
 
 
+def pdf_problems() -> list[str]:
+    """pypdfium2 finds pdfium.dll, and documents.py reads and renders a PDF."""
+    import tempfile
+
+    import documents
+
+    try:
+        import pypdfium2
+
+        document = pypdfium2.PdfDocument.new()
+        document.new_page(200, 100).close()
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder, "self-test.pdf")
+            document.save(path)
+            document.close()
+            if documents.pdf_lines(path)[0] != "--- page 1 of 1 ---":
+                return ["documents.pdf_lines() does not read a PDF"]
+            if not documents.render_page(path, 1).data.startswith(b"\x89PNG"):
+                return ["documents.render_page() does not write a PNG"]
+    except Exception as exc:  # noqa: BLE001  (any failure is a broken bundle)
+        return [f"PDF support does not work: {type(exc).__name__}: {exc}"]
+    return []
+
+
 def self_test() -> int:
     """Import everything the app needs and load the data files GTK finds at
     run time (typelibs, the SVG loader, GtkSourceView's language specs)."""
@@ -88,6 +112,7 @@ def self_test() -> int:
         problems.append("the chemotionapi skills are missing")
     problems += keystore_problems(keystore)
     problems += save_lock_problems(config)
+    problems += pdf_problems()
     for problem in problems:
         print(f"Self-test: {problem}", file=sys.stderr)
     if not problems:

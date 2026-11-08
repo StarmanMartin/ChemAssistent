@@ -250,3 +250,27 @@ def test_saved_settings_with_keyring(saved_settings, keyring):
     keyring.secrets.update(password="secret", ai_token="tok")
     assistant = ChemAssistent("")
     assert (assistant.config.password, assistant.config.ai_token) == ("secret", "tok")
+
+
+def test_headless_prompt_with_attachments(fake_ai, config, tmp_path):
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from pdf_maker import make_pdf
+
+    paper = tmp_path / "paper.pdf"
+    paper.write_bytes(make_pdf(["Compound 3b: C8H7BrO2"]))
+    conv = ChemAssistent(config).conversations.new_conversation()
+    fake_ai.script_next({"tool_calls": [{"name": "read_file", "arguments": {"path": str(paper)}}]},
+                        {"content": "3b is C8H7BrO2."})
+
+    assert conv.prompt("What is 3b?", [paper]) == "3b is C8H7BrO2."
+
+    first = fake_ai.requests[0]["messages"][1]["content"]
+    assert f"- {paper.resolve()} (PDF, 1 page, " in first
+    assert "Compound 3b: C8H7BrO2" in fake_ai.requests[1]["messages"][-1]["content"]
+    with pytest.raises(FileNotFoundError):
+        conv.prompt("And this?", [tmp_path / "missing.pdf"])
+    with pytest.raises(TypeError):
+        conv.prompt("And this?", [42])

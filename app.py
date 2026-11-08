@@ -82,8 +82,8 @@ import hotkey  # noqa: E402
 import ipc  # noqa: E402
 import workspace  # noqa: E402
 from agent import (  # noqa: E402
-    ATTACHMENT_NOTE, FAILED_TEXT, MAX_ANSWER_CHARS, RAN_TEXT, STOPPED_NOTE, Agent, AgentError, clip, list_models,
-    looks_read_only, mcp_command, tool_summary,
+    ATTACHMENT_NOTE, FAILED_TEXT, IMAGES_NOTE, MAX_ANSWER_CHARS, RAN_TEXT, STOPPED_NOTE, Agent, AgentError, clip,
+    looks_read_only, message_text, model_infos, without_images, mcp_command, tool_summary,
 )
 from cli_agent import CliAgent, cli_models, command_problem  # noqa: E402
 from mcp_client import McpHub, split_tool_name  # noqa: E402
@@ -131,6 +131,8 @@ HOTKEY_DOUBLE_S = 0.6
 MAX_TABLE_COLUMNS = 12
 # Figures from JupyterLab are scaled down to this width in the result tab.
 MAX_IMAGE_WIDTH = 720
+# What the model looked at with view_page: a thumbnail in the chat.
+THUMBNAIL_SIZE = 240
 MAX_CELL_CHARS = 120
 # Tabs (code + result) kept in the panel; older finished ones are dropped.
 MAX_RESULT_TABS = 10
@@ -752,6 +754,33 @@ def image_widget(data: str) -> Gtk.Widget | None:
     return image
 
 
+def thumbnail_widget(data: bytes, path: str) -> Gtk.Widget | None:
+    """A view_page image (PNG/JPEG/...) at most THUMBNAIL_SIZE large; a click
+    opens the file it shows."""
+    from gi.repository import GdkPixbuf  # type: ignore
+
+    try:
+        loader = GdkPixbuf.PixbufLoader()
+        loader.write(data)
+        loader.close()
+        pixbuf = loader.get_pixbuf()
+    except GLib.Error:
+        return None
+    if pixbuf is None:
+        return None
+    scale = min(1.0, THUMBNAIL_SIZE / max(pixbuf.get_width(), pixbuf.get_height()))
+    if scale < 1.0:
+        pixbuf = pixbuf.scale_simple(max(1, round(pixbuf.get_width() * scale)),
+                                     max(1, round(pixbuf.get_height() * scale)), GdkPixbuf.InterpType.BILINEAR)
+    button = Gtk.Button()
+    button.set_relief(Gtk.ReliefStyle.NONE)
+    button.set_halign(Gtk.Align.START)
+    button.add(Gtk.Image.new_from_pixbuf(pixbuf))
+    button.set_tooltip_text(f"Open {Path(path).name}")
+    button.connect("clicked", lambda *_: open_url(Path(path).as_uri()))
+    return button
+
+
 def link_row(text: str, tooltip: str, target: str) -> Gtk.Widget:
     """A flat button that opens `target` (a URL or file URI) on click."""
     button = Gtk.Button(label=text)
@@ -1368,7 +1397,11 @@ def replay_items(messages: list[dict]) -> list[tuple]:
     items: list[tuple] = []
     for message in messages:
         role, content = message.get("role"), message.get("content")
+        if role == "user" and isinstance(content, list):
+            content = message_text(content)
         if role == "user" and isinstance(content, str):
+            if content.startswith(IMAGES_NOTE):
+                continue  # view_page's images: the tool call has its note
             if content == STOPPED_NOTE:
                 items.append(("note", "Stopped after many tool calls.", "dialog-error-symbolic", "request-error"))
                 continue
@@ -1777,6 +1810,14 @@ class ChatPanel(Gtk.Box):
             self._add(row)
         else:
             self._add(self.note_widget(text, icon, css))
+
+    def add_image(self, summary: str, data: bytes, path: str) -> None:
+        """A note with a thumbnail of what view_page showed the model."""
+        self.add_note(summary, "image-x-generic-symbolic")
+        thumbnail = thumbnail_widget(data, path)
+        if thumbnail is not None:
+            thumbnail.set_margin_start(22)  # under the note's text, past its icon
+            self._add(thumbnail)
 
     def clear_actions(self) -> None:
         """Disable the buttons of the last note: they belong to that moment."""
@@ -2199,7 +2240,10 @@ class AssistantWindow(Gtk.Window):
         return f"· {model_name(model)}" if agent == "api" else f"· {AGENT_SHORT[agent]} · {model_name(model)}"
 
     def models_changed(self) -> None:
-        """(Re)fill the model menu: the app's model list, or why it is missing."""
+        """(Re)fill the model menu: the app's model list, or why it is missing.
+        The built-in agent learns whether its model takes images."""
+        if isinstance(self.agent, Agent) and self.app.models is not None:
+            self.agent.set_vision(self.app.vision(self.agent.config, self.agent.config.ai_model))
         if self.model_button is None or self.agent is None:
             return
         current = self.agent.config.ai_model
@@ -2259,6 +2303,7 @@ class AssistantWindow(Gtk.Window):
                 exchange=self.exchange,
                 jobs=lambda: self.app.jobs.info(conversation_id),
                 mcp=self.mcp,
+                vision=self.app.vision(config, config.ai_model),
             )
         self.conversation_title = str(saved.get("title") or "") if saved else text
         self.auto_run = config.auto_run  # the header menu can change it for this conversation
@@ -2316,7 +2361,8 @@ class AssistantWindow(Gtk.Window):
         """Store the conversation (after every answer and on close)."""
         if self.agent is None or self.conversation_id is None:
             return
-        messages = list(self.agent.messages[1:])  # without the system prompt
+        # Without the system prompt, view_page's images as text notes (no base64 on disk).
+        messages = without_images(self.agent.messages[1:])
         if len(messages) == self.saved_messages or not any(message.get("role") == "user" for message in messages):
             return
         roots = [str(path) for path in self.agent.attachments]  # not the agent's own roots
@@ -2370,6 +2416,9 @@ class AssistantWindow(Gtk.Window):
         elif kind == "tool":
             self.chat.add_note(data)
             self.chat.set_busy(True, "Working…")
+        elif kind == "image":
+            self.chat.add_image(data["summary"], data["data"], data["path"])
+            self.chat.set_busy(True, "Looking…")
         elif kind == "error":
             self.chat.add_note(data, "dialog-error-symbolic", "request-error",
                                (("Retry", self._retry), ("Change model…", self._choose_model)))
@@ -2562,6 +2611,8 @@ class ChemAssistentApp:
         self.models: list[str] | None = None
         self.models_error = ""
         self.models_key: tuple[str, str] | None = None
+        # Whether a model takes images (agent.model_infos()), by id.
+        self.model_vision: dict[str, bool | None] = {}
         # Background jobs (jobs.py); the watcher reports through jobs_changed().
         self.jobs = Jobs(lambda: GLib.idle_add(self.jobs_changed))
         self.menu: Gtk.Menu | None = None
@@ -2660,22 +2711,31 @@ class ChemAssistentApp:
         if key == self.models_key and not (again and self.models_error):
             return  # loaded, or loading
         self.models_key, self.models, self.models_error = key, None, ""
+        self.model_vision = {}
         if self.window is not None:
             self.window.models_changed()
         threading.Thread(target=self._models_worker, args=(config, key), daemon=True).start()
 
+    def vision(self, config: Config, model: str) -> bool | None:
+        """Whether `model` of `config`'s endpoint takes images, None while
+        unknown (the list is loading, failed, or is another endpoint's)."""
+        if self.models is None or self.models_key != (config.ai_url, config.ai_token):
+            return None
+        return self.model_vision.get(model)
+
     def _models_worker(self, config: Config, key: tuple[str, str]) -> None:
         try:
-            models, error = list_models(config), ""
+            models, error = model_infos(config), ""
         except AgentError as exc:
             models, error = None, str(exc)
         except Exception as exc:
             models, error = None, f"{type(exc).__name__}: {exc}"
         GLib.idle_add(self._models_loaded, key, models, error)
 
-    def _models_loaded(self, key: tuple[str, str], models: list[str] | None, error: str) -> bool:
+    def _models_loaded(self, key: tuple[str, str], models: dict[str, dict] | None, error: str) -> bool:
         if key == self.models_key:
-            self.models, self.models_error = models, error
+            self.models, self.models_error = (list(models) if models is not None else None), error
+            self.model_vision = {model: info.get("vision") for model, info in (models or {}).items()}
             if self.window is not None:
                 self.window.models_changed()
         return False

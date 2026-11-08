@@ -5,13 +5,16 @@ Only standard endpoints are used: GET <ai_url>/models and POST
 <ai_url>/chat/completions with `stream`, `tools` and `tool_choice`, so the
 KIT KI-Toolbox, OpenAI, Ollama, vLLM, LiteLLM, ... all work.
 
-The model gets exactly four tools: `execute_python` (the app provides it as a
+The model gets exactly five tools: `execute_python` (the app provides it as a
 callback; whether the user must confirm first depends on the auto-run mode:
 "off" always asks, "readonly" runs read-only snippets automatically —
 `looks_read_only()` decides — and "always" runs everything)
-and read-only `read_file`, `grep` and `list_files`, which cannot leave the
-workspace (the API reference and the chemotionapi checkout) and the files
-and folders the user attached. With JupyterLab configured there are also
+and read-only `read_file`, `grep`, `list_files` and `view_page`, which cannot
+leave the workspace (the API reference and the chemotionapi checkout) and the
+files and folders the user attached. PDFs are read as text (documents.py);
+view_page shows the model a PDF page or a picture as an image in a user
+message after the tool answers (left out for a model known to take no
+images). With JupyterLab configured there are also
 `execute_jupyter` (jupyter.py; same callback with target "jupyter"),
 `start_jupyter_job` (a background job in a kernel of its own, jobs.py; same
 callback with target "job", it returns at once and the report arrives later
@@ -40,9 +43,10 @@ import urllib.request
 from pathlib import Path
 
 if __package__:
-    from . import issues, lessons, history
+    from . import documents, issues, lessons, history
     from .config import AUTO_RUN_MODES, SKILLS_DIR, WORKSPACE_DIR, Config
 else:
+    import documents
     import issues
     import lessons
     import history
@@ -63,12 +67,25 @@ MAX_GREP_MATCHES = 100
 MAX_LIST_ENTRIES = 300
 # Files grep looks at below one directory (an attached folder may be huge).
 MAX_GREP_FILES = 5000
+# PDFs grep parses per call (a folder of papers takes a while).
+MAX_GREP_PDFS = 50
 SKIP_DIRS = {".git", "__pycache__", ".venv", "node_modules"}
 # Appended to a user message with attachments; the history shows the text before it.
 ATTACHMENT_NOTE = ("\n\nAttached by the user (read them with read_file / list_files / grep by these "
                    "absolute paths; execute_python code can open them, e.g. to upload a file to "
                    "Chemotion):\n")
 STOPPED_NOTE = "(Stopped after many tool calls.)"
+# Page images the model sees at once: per tool round, and kept in the
+# messages (older ones become a text note; every request resends them all).
+MAX_INLINE_IMAGES = 4
+# The first text part of the user message that carries view_page's images
+# (OpenAI-style tool messages are text only; the images follow the round's
+# tool answers). message_text() and the chat recognize it.
+IMAGES_NOTE = "(Images requested with view_page, not typed by the user.)"
+# Parts of an error message that mean the model takes no images (LiteLLM/vLLM:
+# "... is not a multimodal model", Ollama, OpenAI, Open WebUI).
+IMAGE_REFUSALS = ("not a multimodal model", "does not support image", "image input", "images are not supported",
+                  "image_url", "vision is not supported", "does not support vision", "multimodal")
 
 
 def execute_python_tool(mode: str, headless: bool = False) -> dict:
@@ -354,16 +371,19 @@ def clip(text: str, limit: int = MAX_ANSWER_CHARS) -> str:
 
 
 def build_tools(mode: str, jupyter: bool = False, developer: bool = False,
-                headless: bool = False) -> list[dict]:
+                headless: bool = False, vision: bool = True) -> list[dict]:
     """The tools with the execute_* descriptions for `mode`; the JupyterLab
     tools only with JupyterLab configured, report_api_bug in developer mode,
     save_lesson except for `headless` (headless.py: no prompt may change the
-    lessons every other conversation reads)."""
+    lessons every other conversation reads), view_page for a model that
+    (perhaps) takes images."""
     if not jupyter:
         tools = [execute_python_tool(mode, headless)] + READ_ONLY_TOOLS
     else:
         tools = ([execute_python_tool(mode), execute_jupyter_tool(mode), start_jupyter_job_tool(mode),
                   JUPYTER_JOBS_TOOL] + READ_ONLY_TOOLS)
+    if vision:
+        tools.append(VIEW_PAGE_TOOL)
     if not headless:
         tools.append(SAVE_LESSON_TOOL)
     return tools + [REPORT_API_BUG_TOOL] if developer else tools
@@ -376,7 +396,8 @@ READ_ONLY_TOOLS = [
         "function": {
             "name": "read_file",
             "description": f"Read a text file of the workspace or one the user attached, with line "
-                           f"numbers, at most {MAX_READ_LINES} lines per call.",
+                           f"numbers, at most {MAX_READ_LINES} lines per call. A PDF gives its text, each "
+                           f"page after a line \"--- page n of m ---\".",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -394,7 +415,8 @@ READ_ONLY_TOOLS = [
         "function": {
             "name": "grep",
             "description": "Search the workspace or an attachment with a regular expression (Python "
-                           "syntax, case-insensitive). Returns path:line: text.",
+                           "syntax, case-insensitive). Returns path:line: text; in a PDF path:line (page n): "
+                           "text, where line is read_file's line number.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -420,6 +442,30 @@ READ_ONLY_TOOLS = [
         },
     },
 ]
+
+
+VIEW_PAGE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "view_page",
+        "description": "Look at a page of a PDF the user attached, or at an attached picture (PNG, JPEG, "
+                       "WEBP, GIF), as an image. The text of a PDF (read_file) has no drawn structures, "
+                       "reaction schemes, figures or the layout of tables: look at them before deriving "
+                       "structures, substitution patterns or stereochemistry. `region` shows a part of the "
+                       f"page larger, for small print. At most {MAX_INLINE_IMAGES} images per step.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Absolute path of the attachment."},
+                "page": {"type": "integer", "description": "Page of a PDF, 1-based (read_file's "
+                                                           "\"--- page n of m ---\" lines)."},
+                "region": {"type": "string", "enum": list(documents.REGIONS),
+                           "description": "Part of the page, default full."},
+            },
+            "required": ["path"],
+        },
+    },
+}
 
 
 class AgentError(Exception):
@@ -452,20 +498,33 @@ def _request(config: Config, path: str, body: dict | None = None):
         raise AgentError(f"Cannot reach {url}: {getattr(exc, 'reason', exc)}") from None
 
 
-def list_models(config: Config) -> list[str]:
-    """The chat model ids the endpoint offers (GET /models), sorted. Models an
-    Open WebUI (KI-Toolbox) marks as hidden, e.g. embeddings, are left out."""
+def model_infos(config: Config) -> dict[str, dict]:
+    """The chat models the endpoint offers (GET /models) by id, sorted, each
+    {"vision": True/False/None}: whether it takes images, from Open WebUI's
+    info.meta.capabilities.vision (the KI-Toolbox); None where the server
+    does not say (OpenAI, Ollama, vLLM). Models an Open WebUI marks as
+    hidden, e.g. embeddings, are left out."""
     with _request(config, "/models") as response:
         try:
             data = json.loads(response.read().decode("utf-8"))
         except ValueError:
             raise AgentError(f"{config.ai_url}/models did not return JSON") from None
-    models = []
+    models = {}
     for item in data.get("data", []) if isinstance(data, dict) else []:
-        meta = ((item.get("info") or {}).get("meta") or {}) if isinstance(item, dict) else {}
-        if isinstance(item, dict) and item.get("id") and not meta.get("hidden"):
-            models.append(str(item["id"]))
-    return sorted(models)
+        if not isinstance(item, dict) or not item.get("id"):
+            continue
+        meta = (item.get("info") or {}).get("meta") or {}
+        meta = meta if isinstance(meta, dict) else {}
+        if meta.get("hidden"):
+            continue
+        vision = (meta.get("capabilities") or {}).get("vision") if isinstance(meta.get("capabilities"), dict) else None
+        models[str(item["id"])] = {"vision": vision if isinstance(vision, bool) else None}
+    return dict(sorted(models.items()))
+
+
+def list_models(config: Config) -> list[str]:
+    """The chat model ids the endpoint offers (model_infos()), sorted."""
+    return list(model_infos(config))
 
 
 # --- tools without the user ----------------------------------------------------
@@ -531,14 +590,24 @@ def _is_binary(path: Path) -> bool:
         return b"\0" in handle.read(8192)
 
 
+def _pdf_lines(path: Path) -> list[str]:
+    try:
+        return documents.pdf_lines(path)
+    except documents.DocumentError as exc:
+        raise AgentError(str(exc)) from None
+
+
 def read_file(path: str, roots: list[Path], offset: int = 1, limit: int = MAX_READ_LINES) -> str:
     target = _resolve(path, roots)
     if target.is_dir():
         raise AgentError(f"{path} is a directory; use list_files.")
-    if _is_binary(target):
+    if documents.is_pdf(target):
+        lines = _pdf_lines(target)
+    elif _is_binary(target):
         return (f"{_shown(target)} is a binary file ({target.stat().st_size} bytes). It cannot be shown "
                 f"as text; execute_python code can open it by its absolute path {target}.")
-    lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
+    else:
+        lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
     start = max(1, int(offset or 1))
     count = max(1, min(int(limit or MAX_READ_LINES), MAX_READ_LINES))
     chunk = [f"{number:6}\t{line}" for number, line in enumerate(lines[start - 1:start - 1 + count], start)]
@@ -559,23 +628,46 @@ def _files(root: Path, glob: str | None):
             yield path
 
 
+# documents.pdf_lines()' page lines.
+PAGE_MARKER = re.compile(r"^--- page (\d+) of \d+ ---$")
+
+
 def grep(pattern: str, roots: list[Path], path: str | None = None, glob: str | None = None) -> str:
     try:
         regex = re.compile(pattern, re.IGNORECASE)
     except re.error as exc:
         raise AgentError(f"Invalid regular expression: {exc}") from None
     matches = []
+    pdfs = 0
     for file in _files(_resolve(path, roots), glob):
-        try:
-            text = file.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, OSError):
-            continue  # binary
-        for number, line in enumerate(text.splitlines(), 1):
+        page = 0
+        pdf = documents.is_pdf(file)
+        if pdf:
+            pdfs += 1
+            if pdfs > MAX_GREP_PDFS:
+                continue
+            try:
+                lines = documents.pdf_lines(file)
+            except (documents.DocumentError, OSError):
+                continue  # unreadable, or no PDF support
+        else:
+            try:
+                lines = file.read_text(encoding="utf-8").splitlines()
+            except (UnicodeDecodeError, OSError):
+                continue  # binary
+        for number, line in enumerate(lines, 1):
+            marker = PAGE_MARKER.match(line) if pdf else None
+            if marker:
+                page = int(marker.group(1))
+                continue
             if regex.search(line):
-                matches.append(f"{_shown(file)}:{number}: {line.strip()[:300]}")
+                where = f" (page {page})" if page else ""
+                matches.append(f"{_shown(file)}:{number}{where}: {line.strip()[:300]}")
                 if len(matches) >= MAX_GREP_MATCHES:
                     return "\n".join(matches) + f"\n... more than {MAX_GREP_MATCHES} matches; narrow the search."
-    return "\n".join(matches) or "No matches."
+    more = (f"\n({pdfs - MAX_GREP_PDFS} more PDFs not searched; give a narrower path or glob.)"
+            if pdfs > MAX_GREP_PDFS else "")
+    return ("\n".join(matches) or "No matches.") + more
 
 
 def list_files(roots: list[Path], path: str | None = None) -> str:
@@ -595,6 +687,11 @@ def tool_summary(name: str, arguments: dict) -> str:
     if name == "grep":
         where = f" in {arguments['path']}" if arguments.get("path") else ""
         return f"Searched “{arguments.get('pattern')}”{where}"
+    if name == "view_page":
+        region = arguments.get("region")
+        part = f" ({region})" if region and region != "full" else ""
+        page = f"page {arguments.get('page')} of " if arguments.get("page") else ""
+        return f"Looked at {page}{Path(str(arguments.get('path') or '')).name}{part}"
     if name == "jupyter_jobs":
         return "Checked the background jobs"
     if name == "save_lesson":
@@ -700,12 +797,81 @@ def looks_read_only(code: str) -> tuple[bool, str]:
     return True, ""
 
 
+def view_page(path: str, roots: list[Path], page=None, region=None) -> tuple[str, "documents.Image", Path]:
+    """The text answer, the image and the file of view_page: a PDF page (or
+    a region of it) or an attached picture, within `roots` like read_file."""
+    target = _resolve(path, roots)
+    region = str(region or "full")
+    part = f", {region}" if region != "full" else ""
+    try:
+        if documents.is_pdf(target):
+            if page is None:
+                raise AgentError(f"{_shown(target)} is a PDF: give the page.")
+            number = int(page)
+            image = documents.render_page(target, number, region)
+            total = documents.page_count(target)
+            where = f"Page {number} of {total} of {_shown(target)}"
+        elif documents.image_type(target):
+            image = documents.load_image(target, region)
+            where = _shown(target)
+        else:
+            raise AgentError(f"{_shown(target)} is neither a PDF nor a picture; read it with read_file.")
+    except documents.DocumentError as exc:
+        raise AgentError(str(exc)) from None
+    return f"{where} ({image.width}×{image.height} px{part}); the image follows in the next message.", image, target
+
+
+def message_text(content) -> str:
+    """The text of a message's content: a string, or the text parts of an
+    OpenAI-style list (view_page's images are left out)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(str(part.get("text") or "") for part in content
+                         if isinstance(part, dict) and part.get("type") == "text")
+    return ""
+
+
+def image_label(source: dict) -> str:
+    """"page 3 of /a/x.pdf (top)" / "/a/s.png" for a view_page image."""
+    region = source.get("region") or "full"
+    part = f" ({region})" if region != "full" else ""
+    page = f"page {source.get('page')} of " if source.get("page") else ""
+    return f"{page}{source.get('path')}{part}"
+
+
+def image_placeholder(source: dict, why: str = "call view_page again to see it") -> dict:
+    """The text part that replaces an image part no longer sent."""
+    return {"type": "text", "text": f"[The image of {image_label(source)} was shown here; {why}.]"}
+
+
+def has_images(messages: list[dict]) -> bool:
+    return any(isinstance(part, dict) and part.get("type") == "image_url"
+               for message in messages if isinstance(message.get("content"), list)
+               for part in message["content"])
+
+
+def without_images(messages: list[dict], why: str = "call view_page again to see it") -> list[dict]:
+    """`messages` with every image replaced by its placeholder, as plain text
+    (the history: no base64 on disk; a model without vision). The originals
+    are not changed."""
+    result = []
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, list):
+            parts = [image_placeholder(p.get("_source") or {}, why)
+                     if isinstance(p, dict) and p.get("type") == "image_url" else p for p in content]
+            message = {**message, "content": message_text(parts)}
+        result.append(message)
+    return result
+
+
 def describe_attachment(path: Path) -> str:
     if path.is_dir():
         count = sum(1 for _ in _files(path, None))
         return f"- {path}{os.sep} (folder, {count}{'+' if count >= MAX_GREP_FILES else ''} files)"
     size = path.stat().st_size
-    kind = "binary file" if _is_binary(path) else "text file"
+    kind = documents.describe(path) or ("binary file" if _is_binary(path) else "text file")
     return f"- {path} ({kind}, {size / 1024:.1f} kB)"
 
 
@@ -738,6 +904,8 @@ class Agent:
         ("text", delta)        streamed answer text
         ("thinking", None)     the model reasons before answering
         ("tool", summary)      a read-only tool ran
+        ("image", {"summary", "data", "mime", "path"})
+                               view_page showed the model an image
         ("done", None)         the answer to this message is complete
         ("error", message)
         ("stopped", None)      cancel() ended the turn
@@ -756,8 +924,11 @@ class Agent:
 
     def __init__(self, config: Config, system_prompt: str, execute, on_event,
                  auto_run: str = "off", exchange: Path | None = None, jobs=None,
-                 headless: bool = False, mcp=None) -> None:
+                 headless: bool = False, mcp=None, vision: bool | None = None) -> None:
         self.config = config
+        # Whether the model takes images (model_infos()); None = unknown,
+        # treated as yes until the server refuses one.
+        self.vision = vision
         # headless.py: no save_lesson, the approval function instead of a panel.
         self.headless = headless
         self.jupyter = exchange is not None
@@ -768,7 +939,7 @@ class Agent:
         self.on_event = on_event
         self.auto_run = auto_run if auto_run in AUTO_RUN_MODES else "off"
         # The tool descriptions depend on the auto-run mode (execute_python).
-        self.tools = build_tools(self.auto_run, self.jupyter, self.config.developer_mode, self.headless)
+        self.tools = self._build_tools()
         self.messages: list[dict] = [{"role": "system", "content": system_prompt}]
         # What the read-only tools may read: base_roots() and every attachment.
         self.roots: list[Path] = base_roots(config.history_access)
@@ -793,12 +964,18 @@ class Agent:
         self._stream_usage = True  # False after a server refused stream_options
         # Further request fields (evals/run_eval.py: bypass a gateway's response cache).
         self.extra_body: dict = {}
+        # view_page's images of the current tool round: {"image", "path", "page", "region"}.
+        self._pending_images: list[dict] = []
 
     def set_auto_run(self, mode: str) -> None:
         """Switch the auto-run mode mid-conversation (the header menu); the
         changed tool description goes out with the next request."""
         self.auto_run = mode if mode in AUTO_RUN_MODES else "off"
-        self.tools = build_tools(self.auto_run, self.jupyter, self.config.developer_mode, self.headless)
+        self.tools = self._build_tools()
+
+    def _build_tools(self) -> list[dict]:
+        return build_tools(self.auto_run, self.jupyter, self.config.developer_mode, self.headless,
+                           self.vision is not False)
 
     def set_model(self, model: str) -> None:
         """Switch the model mid-conversation (the header menu); the next
@@ -807,6 +984,12 @@ class Agent:
         thread drops it (it may be sending the messages right now)."""
         self.config = dataclasses.replace(self.config, ai_model=model)
         self._drop_reasoning = True
+
+    def set_vision(self, vision: bool | None) -> None:
+        """Whether the current model takes images (the app learns it with the
+        model list, possibly after the conversation started)."""
+        self.vision = vision
+        self.tools = self._build_tools()
 
     def restore(self, messages: list[dict], roots: list[str]) -> None:
         """Continue a saved conversation (history.py): its messages after the
@@ -893,6 +1076,7 @@ class Agent:
                     self._run_tool(call)
                 if self.cancelled.is_set():
                     break
+                self._add_images()
             else:
                 self.messages.append({"role": "user", "content": STOPPED_NOTE})
                 self.on_event("error", f"Stopped after {MAX_ROUNDS} tool rounds. Send a message to continue.")
@@ -910,7 +1094,63 @@ class Agent:
             self.on_event("error", f"{type(exc).__name__}: {exc}")
         finally:
             self._response = None
+            self._pending_images = []  # a cancelled round's images go nowhere
             self.busy = False
+
+    def _add_images(self) -> None:
+        """view_page's images of this round as one user message after the
+        tool answers (a message between them would break the tool calls)."""
+        if not self._pending_images:
+            return
+        parts: list[dict] = [{"type": "text", "text": IMAGES_NOTE}]
+        for item in self._pending_images:
+            source = {"path": item["path"], "page": item["page"], "region": item["region"]}
+            parts.append({"type": "text", "text": f"The image of {image_label(source)}:"})
+            parts.append({"type": "image_url", "image_url": {"url": item["image"].data_url()}, "_source": source})
+        self._pending_images = []
+        self.messages.append({"role": "user", "content": parts})
+
+    def _prune_images(self) -> None:
+        """Only the newest MAX_INLINE_IMAGES images stay (none for a model
+        without vision); older ones become a text note."""
+        keep = 0 if self.vision is False else MAX_INLINE_IMAGES
+        for message in reversed(self.messages):
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            for index in range(len(content) - 1, -1, -1):
+                part = content[index]
+                if isinstance(part, dict) and part.get("type") == "image_url":
+                    if keep > 0:
+                        keep -= 1
+                    else:
+                        content[index] = image_placeholder(part.get("_source") or {})
+
+    def request_messages(self) -> list[dict]:
+        """The messages as sent: without the images' private `_source`."""
+        sent = []
+        for message in self.messages:
+            content = message.get("content")
+            if isinstance(content, list):
+                if not has_images([message]):
+                    # Pruned to text: a string, which every server takes.
+                    message = {**message, "content": message_text(content)}
+                else:
+                    message = {**message, "content": [{k: v for k, v in part.items() if k != "_source"}
+                                                      if isinstance(part, dict) else part for part in content]}
+            sent.append(message)
+        return sent
+
+    def _images_refused(self, error: AgentError) -> bool:
+        """The server refused the request because the model takes no images:
+        drop them, switch view_page off for this conversation and say so."""
+        text = str(error).lower()
+        if not has_images(self.messages) or not any(refusal in text for refusal in IMAGE_REFUSALS):
+            return False
+        self.messages[:] = without_images(self.messages, "this model cannot see images")
+        self.set_vision(False)
+        self.on_event("warning", "This model cannot see images; view_page is off for this conversation.")
+        return True
 
     def _close_open_calls(self) -> None:
         """Every tool call needs an answer, or the next request is refused."""
@@ -927,9 +1167,10 @@ class Agent:
             self._drop_reasoning = False
             for message in self.messages:
                 message.pop("reasoning_content", None)
+        self._prune_images()
         body = {
             "model": self.config.ai_model,
-            "messages": self.messages,
+            "messages": self.request_messages(),
             "tools": self.current_tools(),
             "tool_choice": "auto",
             "stream": True,
@@ -947,10 +1188,13 @@ class Agent:
         try:
             response = _request(self.config, "/chat/completions", body)
         except AgentError as exc:
-            if not self._stream_usage or "stream_options" not in str(exc):
+            if self._images_refused(exc):
+                body.update(messages=self.request_messages(), tools=self.current_tools())
+            elif not self._stream_usage or "stream_options" not in str(exc):
                 raise
-            self._stream_usage = False  # an older server: no token counts
-            body.pop("stream_options")
+            else:
+                self._stream_usage = False  # an older server: no token counts
+                body.pop("stream_options")
             response = _request(self.config, "/chat/completions", body)
         self._response = response
         try:
@@ -1100,6 +1344,17 @@ class Agent:
                 self.on_event("tool", tool_summary(name, arguments))
                 return issues.report(self.config, issues.model_label(self.config), str(arguments.get("title") or ""),
                                      str(arguments.get("description") or ""))
+            if name == "view_page" and self.vision is not False:
+                if len(self._pending_images) >= MAX_INLINE_IMAGES:
+                    return (f"Not shown: at most {MAX_INLINE_IMAGES} images per step. Look at the others in "
+                            f"the next step.")
+                text, image, target = view_page(str(arguments.get("path") or ""), self.roots,
+                                                arguments.get("page"), arguments.get("region"))
+                self._pending_images.append({"image": image, "path": str(target), "page": arguments.get("page"),
+                                             "region": arguments.get("region") or "full"})
+                self.on_event("image", {"summary": tool_summary(name, arguments), "data": image.data,
+                                        "mime": image.mime, "path": str(target)})
+                return text
             if name == "read_file":
                 text = read_file(str(arguments.get("path") or ""), self.roots, arguments.get("offset") or 1,
                                  arguments.get("limit") or MAX_READ_LINES)

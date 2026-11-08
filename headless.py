@@ -147,16 +147,29 @@ class Conversation:
             parts.append("result = " + json.dumps(outcome.get("result"), ensure_ascii=False))
         return clip("\n\n".join(parts))
 
-    def prompt(self, text: str) -> str:
+    def prompt(self, text: str, attachments: list | tuple = ()) -> str:
+        """Send `text` and return the final answer. `attachments`: files or
+        folders (paths) the agent may read with this and later prompts
+        (read_file/grep/list_files, a PDF's text, view_page)."""
         if not isinstance(text, str):
             raise TypeError("prompt text must be a string")
+        if isinstance(attachments, (str, os.PathLike)):
+            attachments = [attachments]
+        paths = []
+        for item in attachments:
+            if not isinstance(item, (str, os.PathLike)):
+                raise TypeError("attachments must be paths")
+            path = Path(item).expanduser().resolve()
+            if not path.exists():
+                raise FileNotFoundError(f"attachment not found: {item}")
+            paths.append(str(path))
         if not self._lock.acquire(blocking=False):
             raise RuntimeError("This conversation is already processing a prompt")
         try:
             self._error = ""
             start = len(self._agent.messages)
             try:
-                self._agent.send(text)
+                self._agent.send(text, paths)
             except BaseException:
                 # Agent catches only Exception: after Ctrl+C every tool call
                 # still needs an answer, or the next request is refused.

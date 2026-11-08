@@ -323,3 +323,106 @@ def test_bridge_offers_and_forwards_mcp_tools(monkeypatch):
     assert admin.dispatch("add_mcp_server", {"name": "x", "command": "npx", "args": ["-y", "p"]}) == "answer to mcp-add"
     assert json.loads(sent[-1]["code"]) == {"name": "x", "command": "npx", "args": ["-y", "p"]}
     assert admin.dispatch("remove_mcp_server", {"name": "x"}) == "answer to mcp-remove"
+
+
+# --- documents through the bridge (CLI agents) --------------------------------
+def bridge_call(bridge, name: str, arguments: dict) -> dict:
+    """One tools/call through Bridge._call(); the JSON-RPC result."""
+    written = []
+    bridge.write = written.append
+    bridge._call(1, {"name": name, "arguments": arguments})
+    return written[0]["result"]
+
+
+def test_bridge_reads_and_greps_pdfs(tmp_path):
+    from pdf_maker import make_pdf
+
+    paper = tmp_path / "paper.pdf"
+    paper.write_bytes(make_pdf(["Abstract", "Scheme 1: 8a from 7a"]))
+    bridge = mcp_bridge.Bridge({"session": "s", "roots": [str(tmp_path)]})
+
+    result = bridge_call(bridge, "read_file", {"path": str(paper)})
+    assert not result["isError"]
+    assert "--- page 2 of 2 ---" in result["content"][0]["text"]
+    assert "Scheme 1: 8a from 7a" in result["content"][0]["text"]
+    result = bridge_call(bridge, "grep", {"pattern": "8a", "path": str(tmp_path)})
+    assert "(page 2): Scheme 1: 8a from 7a" in result["content"][0]["text"]
+
+
+def test_bridge_view_page_returns_an_image_block(tmp_path):
+    import base64
+
+    import documents
+    from pdf_maker import make_pdf
+
+    paper = tmp_path / "paper.pdf"
+    paper.write_bytes(make_pdf(["Scheme 1"]))
+    bridge = mcp_bridge.Bridge({"session": "s", "roots": [str(tmp_path)]})
+    listed = {tool["name"]: tool for tool in bridge.tools}
+    assert listed["view_page"]["annotations"] == {"readOnlyHint": True}
+
+    result = bridge_call(bridge, "view_page", {"path": str(paper), "page": 1, "region": "top"})
+    assert not result["isError"]
+    text, image = result["content"]
+    assert text["type"] == "text" and text["text"].startswith("Page 1 of 1 of ") and "the image follows." in text["text"]
+    assert image["type"] == "image" and image["mimeType"] == "image/png"
+    data = base64.b64decode(image["data"])
+    assert documents.image_size(data)[0] == documents.IMAGE_MAX_SIDE
+
+    result = bridge_call(bridge, "view_page", {"path": str(paper), "page": 5})
+    assert result["isError"] and "page 5 does not exist" in result["content"][0]["text"]
+    result = bridge_call(bridge, "view_page", {"path": "/etc/hostname"})
+    assert result["isError"] and "outside the workspace" in result["content"][0]["text"]
+
+    no_vision = mcp_bridge.Bridge({"session": "s", "roots": [str(tmp_path)], "vision": False})
+    assert "view_page" not in [tool["name"] for tool in no_vision.tools]
+    assert bridge_call(no_vision, "view_page", {"path": str(paper), "page": 1})["isError"]
+
+
+def test_cli_agent_notes_view_page(ai_config):
+    from cli_agent import CliAgent
+
+    events = []
+    agent = CliAgent(ai_config, "prompt", lambda kind, data: events.append((kind, data)))
+    agent._parts = []  # set by send()
+    agent._tool("mcp__chemotion__view_page", '{"path": "/a/paper.pdf", "page": 3}')
+    assert events == [("tool", "Looked at page 3 of paper.pdf")]
+
+
+def test_bridge_program_sends_a_page_image_over_stdio(tmp_path):
+    """mcp_bridge.py as the CLIs start it: one JSON-RPC line per message, also
+    a page image of a few hundred kB."""
+    import base64
+    import subprocess
+
+    import documents
+    from pdf_maker import make_pdf
+
+    paper = tmp_path / "paper.pdf"
+    paper.write_bytes(make_pdf(["Scheme 1"]))
+    session = tmp_path / "session.json"
+    session.write_text(json.dumps({"session": "s", "roots": [str(tmp_path)]}), encoding="utf-8")
+    requests = [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+         "params": {"name": "view_page", "arguments": {"path": str(paper), "page": 1}}},
+    ]
+    root = Path(mcp_bridge.__file__).resolve().parent
+    process = subprocess.Popen([sys.executable, str(root / "mcp_bridge.py"), "--session-file", str(session)],
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, cwd=tmp_path)
+    try:
+        for request in requests:
+            process.stdin.write(json.dumps(request) + "\n")
+            process.stdin.flush()
+        answers = {}
+        while len(answers) < 2:
+            line = process.stdout.readline()
+            assert line, "the bridge ended early"
+            answer = json.loads(line)
+            answers[answer["id"]] = answer
+    finally:
+        process.stdin.close()
+        process.wait(timeout=10)
+    content = answers[2]["result"]["content"]
+    assert [block["type"] for block in content] == ["text", "image"]
+    assert documents.image_size(base64.b64decode(content[1]["data"])) is not None

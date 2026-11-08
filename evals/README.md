@@ -56,6 +56,7 @@ a server that reports none gives `–`.
       "description": "…",
       "setup": "Python; result = {'label': …, 'id': …}",
       "prompt": "Set the amount of '{setup.label}' in {collection} to 250 mg.",
+      "attachments": ["assets/file.pdf"],
       "expect": {
         "answer_contains": ["…"], "answer_not_contains": ["…"], "answer_regex": "…",
         "check": "Python; result = True, or a text saying what is wrong"
@@ -67,6 +68,9 @@ a server that reports none gives `–`.
 }
 ```
 
+- `attachments`: files sent with the first prompt (paths relative to the
+  task file), like files the user attaches in the app; `assets/` holds them
+  (`assets/make_regio_paper.py` writes `regio-3b.pdf`).
 - `prompt`: a text, or a list of texts sent one after the other in one
   conversation (the checks see the last answer). Placeholders: `{run}` (a
   random tag per run, e.g. `ev3f9a2c`; use it in names so runs do not see each

@@ -36,7 +36,8 @@ def _package_from_source_tree() -> None:
                                                   submodule_search_locations=[str(root)])
     package = importlib.util.module_from_spec(spec)
     sys.modules["chemassistent"] = package
-    for name in ("keystore", "config", "api_versions", "lessons", "history", "issues", "workspace", "agent"):
+    for name in ("keystore", "config", "api_versions", "lessons", "history", "issues", "workspace", "documents",
+                 "agent"):
         module = __import__(name)
         sys.modules[f"chemassistent.{name}"] = module
         setattr(package, name, module)

@@ -76,6 +76,15 @@ JUPYTER_TEST_BIN=/tmp/jlab/bin/jupyter .venv/bin/python -m pytest tests/
   the system prompt (braces are safe), the agent's `save_lesson` tool and the
   reminder after a fixed failure. Every test gets its own lessons file
   (autouse fixture `lessons_file` in `conftest.py`), never the user's.
+- `test_documents.py`: PDF text per page and as numbered lines with page
+  markers, the text cache, rendering pages and regions to PNG (size limits),
+  broken/encrypted PDFs, pypdfium2 missing, picture types and sizes, and the
+  Windows build's license-file rule. The PDFs come from `pdf_maker.py`
+  (written by hand, no library). The agent's PDF tests in `test_agent.py`:
+  `read_file`/`grep` on PDFs, `view_page` (images after the tool answers,
+  only the newest kept, a model that refuses images, a stopped round, no
+  base64 in the history); `test_mcp.py`: the bridge's `view_page` image
+  block, also through the real program over stdio.
 - `test_config.py`, `test_history.py`, `test_jobs.py`: settings validation
   (private file mode, env overrides, legacy model ids), the conversation files
   (0600, prune, exchange folders go with them) and the job registry

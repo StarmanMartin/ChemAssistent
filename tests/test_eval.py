@@ -233,3 +233,27 @@ def test_main_writes_results(fake_ai, config, runner, tmp_path, monkeypatch):
     assert len(rows) == 4 and rows[0]["input_tokens"] == "1000" and rows[1]["success"] == "False"
     summary = (out / "summary.md").read_text()
     assert "| m1 | hello | 1/2 | 50% |" in summary and "pass@2" in summary
+
+
+def test_task_attachments(tmp_path):
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "assets" / "page.pdf").write_bytes(b"%PDF-1.4")
+    tasks = tmp_path / "tasks.json"
+    tasks.write_text(json.dumps({"tasks": [{"id": "t", "prompt": "p", "attachments": ["assets/page.pdf"]}]}),
+                     encoding="utf-8")
+    _, loaded = run_eval.load_tasks(tasks)
+    assert loaded[0]["attachments"] == [str((tmp_path / "assets" / "page.pdf").resolve())]
+
+    tasks.write_text(json.dumps({"tasks": [{"id": "t", "prompt": "p", "attachments": ["gone.pdf"]}]}),
+                     encoding="utf-8")
+    with pytest.raises(ValueError, match="attachment not found"):
+        run_eval.load_tasks(tasks)
+    tasks.write_text(json.dumps({"tasks": [{"id": "t", "prompt": "p", "attachments": "x.pdf"}]}), encoding="utf-8")
+    with pytest.raises(ValueError, match="list of paths"):
+        run_eval.load_tasks(tasks)
+
+    # The shipped task's PDF is there and its structure is only drawn.
+    _, shipped = run_eval.load_tasks(ROOT / "evals" / "tasks.json", ["paper-structure"])
+    import documents
+    text = "\n".join(documents.pdf_lines(Path(shipped[0]["attachments"][0])))
+    assert "Compound 3b" in text and "C8H8BrO2" in text and "bromo" not in text.lower()

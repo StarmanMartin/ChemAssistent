@@ -31,6 +31,12 @@ for name in sorted(sys.stdlib_module_names):
         stdlib += collect_submodules(name, filter=lambda module: ".test" not in module)
 
 datas, binaries, hiddenimports = collect_all("chemotion_api")
+# documents.py: pypdfium2 and pdfium.dll (pypdfium2_raw), with their version.json files.
+for package in ("pypdfium2", "pypdfium2_raw"):
+    package_datas, package_binaries, package_imports = collect_all(package)
+    datas += package_datas
+    binaries += package_binaries
+    hiddenimports += package_imports
 datas += [
     (str(ROOT / "chem-assistent.svg"), "."),
     (str(ROOT / "chem-assistent-panel.svg"), "."),

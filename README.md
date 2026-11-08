@@ -42,7 +42,11 @@ picture to play it. It is recorded from the real app by `docs/screencast.py`.*
      Short notes show what it read in the documentation. The paperclip button
      (or dropping files on the chat) attaches files or folders to your next
      message: the agent may read them and use them in its code, e.g. to
-     upload a measurement file to a sample;
+     upload a measurement file to a sample. It reads the text of an attached
+     PDF page by page; with a model that can see images it also looks at the
+     pages with reaction schemes and figures, and at attached pictures (PNG,
+     JPEG), before it derives structures from them; a thumbnail in the chat
+     shows what it looked at;
    - **right**: the results. Each time the agent wants to call the Chemotion
      API, a new tab opens with its purpose and the Python code. **Run** executes
      it (Ctrl+Enter in the code also works), **Reject** refuses it; the optional
@@ -190,11 +194,13 @@ shows it for editing and has *Clear lessons*.
 
 ## Safety
 
-- The agent has exactly five tools (eight with JupyterLab): `execute_python`, which waits for your
+- The agent has exactly six tools (nine with JupyterLab): `execute_python`, which waits for your
   confirmation in the result panel and is its only way to reach Chemotion,
-  and `read_file`, `grep` and `list_files`, which only read the API reference
-  and the chemotionapi checkout in its workspace plus the files and folders
-  you attached. It cannot run shell
+  and `read_file`, `grep`, `list_files` and `view_page`, which only read the
+  API reference and the chemotionapi checkout in its workspace plus the files
+  and folders you attached (`view_page` shows the model a page of an attached
+  PDF or an attached picture as an image; it is offered only to models that
+  can see images). It cannot run shell
   commands, edit files or fetch web pages. With JupyterLab configured,
   `execute_jupyter` and `start_jupyter_job` run code there under the same
   confirmation rules, except that *Auto-run read-only code* never applies to
@@ -212,7 +218,7 @@ shows it for editing and has *Clear lessons*.
 - Your prompts, the code and its results are sent to the AI model's
   provider. Choose a local model for sensitive data. With JupyterLab, the
   files in a conversation's exchange folder are copied to that server.
-- Claude Code and Codex get the same four tools and none of their own; see
+- Claude Code and Codex get the same five tools and none of their own; see
   [Agents](#agents).
 
 ## Agents
@@ -242,8 +248,8 @@ Settings → *AI agent* chooses who answers:
   ChemAssistent MCP server, `--permission-mode dontAsk`; Codex: read-only
   sandbox, no shell, web search, browser or apps, `approval_policy=never`).
   Instead they start `mcp_bridge.py`, an MCP server with the built-in agent's
-  four tools: `read_file`, `grep` and `list_files` (workspace and attachments
-  only) and `execute_python`, which goes to the app and becomes the same card
+  five tools: `read_file`, `grep`, `list_files` and `view_page` (workspace and
+  attachments only) and `execute_python`, which goes to the app and becomes the same card
   in the result panel: it waits for Run/Reject, or runs by itself in an
   auto-run mode. Your own CLI settings still apply (e.g. Claude Code's
   `language`, Codex's `config.toml` with its MCP servers), so keep them
@@ -626,7 +632,10 @@ print(p)
 ```
 
 `prompt` blocks until the model finishes and returns its final answer as a
-string; further prompts on `c` share the conversation history. Separate
+string; further prompts on `c` share the conversation history.
+`c.prompt(text, attachments=["paper.pdf"])` lets the agent read files or
+folders like attachments in the app: a PDF's text, and its pages as images
+for a model that can see them (PDFs need the extra: `pip install ".[pdf]"`). Separate
 conversations are independent and in-memory. For a standalone configuration,
 pass `chemassistent.Config(url=..., user=..., password=..., ai_url=...,
 ai_model=..., ai_token=...)` instead of `""`. The headless interface supports
