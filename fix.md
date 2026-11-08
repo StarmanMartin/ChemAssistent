@@ -55,9 +55,11 @@ Linux, Windows bundle and headless package.
   - `is_pdf(path)` (magic `%PDF-`), `page_count(path)`.
   - `pdf_text(path) -> list[str]` (one string per page), cached per
     (path, size, mtime_ns) in memory; `MAX_PDF_PAGES` guard.
-  - `render_page(path, page, zoom=None) -> (png_bytes, width, height)`:
-    scale so the longer side is `IMAGE_MAX_SIDE` (e.g. 1600 px), `zoom`
-    1–3 multiplies for small print, clipped to `MAX_IMAGE_BYTES`.
+  - `render_page(path, page, region="full") -> Image`: scale so the longer
+    side is `IMAGE_MAX_SIDE` (1600 px), shrunk below `MAX_IMAGE_BYTES`.
+    Instead of a `zoom` (a 3× page would be far larger than models read) a
+    `region` ("top", "bottom-left", … `REGIONS`) renders part of the page at
+    the full size: small print gets bigger, the image does not.
   - `load_image(path)` for PNG/JPEG (size, MIME type, optional Pillow scaling).
   - `png_encode(width, height, rgb)` (stdlib).
   - `DocumentError` for broken/encrypted PDFs, page out of range, missing lib.
@@ -120,7 +122,7 @@ Goal: the model looks at schemes and figures before deriving structures.
     parts from the messages, set `vision = False`, rebuild the tools, retry
     once, and emit a `warning` note "This model cannot see images; page
     images are off for this conversation".
-- **WP 3.2 The tool**: `VIEW_PAGE_TOOL` = `view_page(path, page?, zoom?)`;
+- **WP 3.2 The tool**: `VIEW_PAGE_TOOL` = `view_page(path, page?, region?)`;
   `page` required for PDFs, ignored for images; confined to `Agent.roots`
   via `_resolve()` like `read_file`. The tool answer is text ("Page 3 of
   x.pdf, 1600×2070 px; the image follows."); the rendered image is queued in
@@ -130,7 +132,7 @@ Goal: the model looks at schemes and figures before deriving structures.
     `{"role": "user", "content": [{"type": "text", "text": "Images requested
     with view_page:"}, {"type": "image_url", "image_url": {"url":
     "data:image/png;base64,…"}}…]}`; each image part carries a private
-    `"_source": {"path", "page", "zoom"}`, stripped from the request body.
+    `"_source": {"path", "page", "region"}`, stripped from the request body.
   - `_prune_images()` before each request (Decision 4).
   - `_close_open_calls()`/`retry()` keep working with list content.
 - **WP 3.4 Everything that reads `messages`**
