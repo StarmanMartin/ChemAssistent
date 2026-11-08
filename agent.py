@@ -75,6 +75,14 @@ STOPPED_NOTE = "(Stopped after many tool calls.)"
 # Page images the model sees at once: per tool round, and kept in the
 # messages (older ones become a text note; every request resends them all).
 MAX_INLINE_IMAGES = 4
+# The first text part of the user message that carries view_page's images
+# (OpenAI-style tool messages are text only; the images follow the round's
+# tool answers). message_text() and the chat recognize it.
+IMAGES_NOTE = "(Images requested with view_page, not typed by the user.)"
+# Parts of an error message that mean the model takes no images (LiteLLM/vLLM:
+# "... is not a multimodal model", Ollama, OpenAI, Open WebUI).
+IMAGE_REFUSALS = ("not a multimodal model", "does not support image", "image input", "images are not supported",
+                  "image_url", "vision is not supported", "does not support vision", "multimodal")
 
 
 def execute_python_tool(mode: str, headless: bool = False) -> dict:
@@ -810,6 +818,50 @@ def view_page(path: str, roots: list[Path], page=None, region=None) -> tuple[str
     return f"{where} ({image.width}×{image.height} px{part}); the image follows in the next message.", image, target
 
 
+def message_text(content) -> str:
+    """The text of a message's content: a string, or the text parts of an
+    OpenAI-style list (view_page's images are left out)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(str(part.get("text") or "") for part in content
+                         if isinstance(part, dict) and part.get("type") == "text")
+    return ""
+
+
+def image_label(source: dict) -> str:
+    """"page 3 of /a/x.pdf (top)" / "/a/s.png" for a view_page image."""
+    region = source.get("region") or "full"
+    part = f" ({region})" if region != "full" else ""
+    page = f"page {source.get('page')} of " if source.get("page") else ""
+    return f"{page}{source.get('path')}{part}"
+
+
+def image_placeholder(source: dict, why: str = "call view_page again to see it") -> dict:
+    """The text part that replaces an image part no longer sent."""
+    return {"type": "text", "text": f"[The image of {image_label(source)} was shown here; {why}.]"}
+
+
+def has_images(messages: list[dict]) -> bool:
+    return any(isinstance(part, dict) and part.get("type") == "image_url"
+               for message in messages if isinstance(message.get("content"), list)
+               for part in message["content"])
+
+
+def without_images(messages: list[dict], why: str = "call view_page again to see it") -> list[dict]:
+    """`messages` with every image part replaced by its placeholder (the
+    history: no base64 on disk)."""
+    result = []
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, list) and any(isinstance(p, dict) and p.get("type") == "image_url" for p in content):
+            message = {**message, "content": [image_placeholder(p.get("_source") or {}, why)
+                                               if isinstance(p, dict) and p.get("type") == "image_url" else p
+                                               for p in content]}
+        result.append(message)
+    return result
+
+
 def describe_attachment(path: Path) -> str:
     if path.is_dir():
         count = sum(1 for _ in _files(path, None))
@@ -1018,6 +1070,7 @@ class Agent:
                     self._run_tool(call)
                 if self.cancelled.is_set():
                     break
+                self._add_images()
             else:
                 self.messages.append({"role": "user", "content": STOPPED_NOTE})
                 self.on_event("error", f"Stopped after {MAX_ROUNDS} tool rounds. Send a message to continue.")
@@ -1035,7 +1088,59 @@ class Agent:
             self.on_event("error", f"{type(exc).__name__}: {exc}")
         finally:
             self._response = None
+            self._pending_images = []  # a cancelled round's images go nowhere
             self.busy = False
+
+    def _add_images(self) -> None:
+        """view_page's images of this round as one user message after the
+        tool answers (a message between them would break the tool calls)."""
+        if not self._pending_images:
+            return
+        parts: list[dict] = [{"type": "text", "text": IMAGES_NOTE}]
+        for item in self._pending_images:
+            source = {"path": item["path"], "page": item["page"], "region": item["region"]}
+            parts.append({"type": "text", "text": f"The image of {image_label(source)}:"})
+            parts.append({"type": "image_url", "image_url": {"url": item["image"].data_url()}, "_source": source})
+        self._pending_images = []
+        self.messages.append({"role": "user", "content": parts})
+
+    def _prune_images(self) -> None:
+        """Only the newest MAX_INLINE_IMAGES images stay (none for a model
+        without vision); older ones become a text note."""
+        keep = 0 if self.vision is False else MAX_INLINE_IMAGES
+        for message in reversed(self.messages):
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            for index in range(len(content) - 1, -1, -1):
+                part = content[index]
+                if isinstance(part, dict) and part.get("type") == "image_url":
+                    if keep > 0:
+                        keep -= 1
+                    else:
+                        content[index] = image_placeholder(part.get("_source") or {})
+
+    def request_messages(self) -> list[dict]:
+        """The messages as sent: without the images' private `_source`."""
+        sent = []
+        for message in self.messages:
+            content = message.get("content")
+            if isinstance(content, list):
+                message = {**message, "content": [{k: v for k, v in part.items() if k != "_source"}
+                                                  if isinstance(part, dict) else part for part in content]}
+            sent.append(message)
+        return sent
+
+    def _images_refused(self, error: AgentError) -> bool:
+        """The server refused the request because the model takes no images:
+        drop them, switch view_page off for this conversation and say so."""
+        text = str(error).lower()
+        if not has_images(self.messages) or not any(refusal in text for refusal in IMAGE_REFUSALS):
+            return False
+        self.messages[:] = without_images(self.messages, "this model cannot see images")
+        self.set_vision(False)
+        self.on_event("warning", "This model cannot see images; view_page is off for this conversation.")
+        return True
 
     def _close_open_calls(self) -> None:
         """Every tool call needs an answer, or the next request is refused."""
@@ -1052,9 +1157,10 @@ class Agent:
             self._drop_reasoning = False
             for message in self.messages:
                 message.pop("reasoning_content", None)
+        self._prune_images()
         body = {
             "model": self.config.ai_model,
-            "messages": self.messages,
+            "messages": self.request_messages(),
             "tools": self.current_tools(),
             "tool_choice": "auto",
             "stream": True,
@@ -1072,10 +1178,13 @@ class Agent:
         try:
             response = _request(self.config, "/chat/completions", body)
         except AgentError as exc:
-            if not self._stream_usage or "stream_options" not in str(exc):
+            if self._images_refused(exc):
+                body.update(messages=self.request_messages(), tools=self.current_tools())
+            elif not self._stream_usage or "stream_options" not in str(exc):
                 raise
-            self._stream_usage = False  # an older server: no token counts
-            body.pop("stream_options")
+            else:
+                self._stream_usage = False  # an older server: no token counts
+                body.pop("stream_options")
             response = _request(self.config, "/chat/completions", body)
         self._response = response
         try:

@@ -718,3 +718,124 @@ def test_view_page_is_offered_unless_the_model_takes_no_images(ai_config, record
     assert "view_page" in names(agent)
     assert tool_summary("view_page", {"path": "/a/x.pdf", "page": 3, "region": "top"}) == "Looked at page 3 of x.pdf (top)"
     assert tool_summary("view_page", {"path": "/a/s.png"}) == "Looked at s.png"
+
+
+@pytest.fixture
+def paper(tmp_path):
+    from pdf_maker import make_pdf
+
+    path = tmp_path / "paper.pdf"
+    path.write_bytes(make_pdf([f"Page {n}" for n in range(1, 9)]))
+    return path
+
+
+def view(path, page, region=None, call_id=None):
+    call = {"name": "view_page", "arguments": {"path": str(path), "page": page}}
+    if region:
+        call["arguments"]["region"] = region
+    if call_id:
+        call["id"] = call_id
+    return call
+
+
+def image_parts(messages):
+    return [part for message in messages if isinstance(message.get("content"), list)
+            for part in message["content"] if part.get("type") == "image_url"]
+
+
+def test_view_page_images_follow_the_tool_answers(fake_ai, ai_config, workspace, recorder, paper):
+    fake_ai.script_next(
+        {"tool_calls": [view(paper, 1, call_id="c1"), view(paper, 2, "top", call_id="c2"),
+                        {"name": "read_file", "arguments": {"path": str(paper)}, "id": "c3"}]},
+        {"content": "Scheme 1 shows 8a."},
+    )
+    agent = make_agent(ai_config, recorder)
+
+    agent.send("Draw 8a from the paper", [str(paper)])
+
+    sent = fake_ai.requests[1]["messages"]
+    roles = [message["role"] for message in sent]
+    assert roles[-5:] == ["assistant", "tool", "tool", "tool", "user"]  # the tool answers stay together
+    images = sent[-1]["content"]
+    assert images[0] == {"type": "text", "text": agent_module.IMAGES_NOTE}
+    assert images[1]["text"] == f"The image of page 1 of {paper.resolve()}:"
+    assert images[2]["image_url"]["url"].startswith("data:image/png;base64,iVBOR")
+    assert images[3]["text"] == f"The image of page 2 of {paper.resolve()} (top):"
+    assert all("_source" not in part for part in images)  # private
+    assert sent[-4]["content"].startswith("Page 1 of 8 of ")
+    assert ("tool", "Looked at page 2 of paper.pdf (top)") in recorder.events
+    # Kept with its source for pruning and the history.
+    assert image_parts(agent.messages)[1]["_source"] == {"path": str(paper.resolve()), "page": 2, "region": "top"}
+    assert agent_module.message_text(agent.messages[-2]["content"]).startswith(agent_module.IMAGES_NOTE)
+
+
+def test_only_the_newest_images_are_sent(fake_ai, ai_config, workspace, recorder, paper):
+    fake_ai.script_next(
+        {"tool_calls": [view(paper, 1), view(paper, 2), view(paper, 3)]},
+        {"tool_calls": [view(paper, 4), view(paper, 5), view(paper, 6), view(paper, 7), view(paper, 8)]},
+        {"content": "Done."},
+    )
+    agent = make_agent(ai_config, recorder)
+
+    agent.send("Look at every page", [str(paper)])
+
+    assert len(image_parts(fake_ai.requests[1]["messages"])) == 3
+    last = fake_ai.requests[2]["messages"]
+    assert len(image_parts(last)) == agent_module.MAX_INLINE_IMAGES
+    # The fifth view_page of one round is refused; pages 1-3 became text notes.
+    assert "at most 4 images per step" in last[-2]["content"]
+    first_round = next(message for message in last if isinstance(message["content"], list))
+    texts = agent_module.message_text(first_round["content"])
+    assert f"[The image of page 1 of {paper.resolve()} was shown here; call view_page again to see it.]" in texts
+
+
+def test_images_refused_by_the_model(fake_ai, ai_config, workspace, recorder, paper):
+    fake_ai.script_next(
+        {"tool_calls": [view(paper, 1)]},
+        {"status": 400, "message": "litellm.BadRequestError: deepseek-v4-flash is not a multimodal model"},
+        {"content": "From the text alone: 8a."},
+    )
+    agent = make_agent(ai_config, recorder)
+
+    agent.send("What is 8a?", [str(paper)])
+
+    assert recorder.text == "From the text alone: 8a."
+    assert ("warning", "This model cannot see images; view_page is off for this conversation.") in recorder.events
+    retried = fake_ai.requests[2]
+    assert not image_parts(retried["messages"])
+    assert "this model cannot see images" in agent_module.message_text(retried["messages"][-1]["content"])
+    assert "view_page" not in [tool["function"]["name"] for tool in retried["tools"]]
+    assert agent.vision is False
+
+
+def test_other_errors_with_images_stay_errors(fake_ai, ai_config, workspace, recorder, paper):
+    fake_ai.script_next({"tool_calls": [view(paper, 1)]}, {"status": 500, "message": "overloaded"})
+    agent = make_agent(ai_config, recorder)
+
+    agent.send("What is 8a?", [str(paper)])
+
+    assert recorder.kinds[-1] == "error" and agent.vision is None
+    assert image_parts(agent.messages)  # kept for retry()
+
+
+def test_no_images_for_a_model_without_vision(fake_ai, ai_config, workspace, recorder, paper):
+    fake_ai.script_next({"tool_calls": [view(paper, 1)]}, {"content": "Seen."}, {"content": "Text only."})
+    agent = make_agent(ai_config, recorder)
+    agent.send("Look", [str(paper)])
+    agent.set_vision(False)  # switched to a model without vision
+
+    agent.send("And now?")
+
+    assert not image_parts(fake_ai.requests[2]["messages"])
+
+
+def test_message_text_and_without_images():
+    content = [{"type": "text", "text": "a"}, {"type": "image_url", "image_url": {"url": "data:x"},
+                                               "_source": {"path": "/p.pdf", "page": 2, "region": "full"}}]
+    assert agent_module.message_text(content) == "a"
+    assert agent_module.message_text("plain") == "plain" and agent_module.message_text(None) == ""
+    stripped = agent_module.without_images([{"role": "user", "content": content}, {"role": "user", "content": "x"}])
+    assert stripped[0]["content"][1] == {"type": "text", "text": "[The image of page 2 of /p.pdf was shown "
+                                                                 "here; call view_page again to see it.]"}
+    assert content[1]["type"] == "image_url"  # the original is unchanged
+    assert not agent_module.has_images(stripped)
