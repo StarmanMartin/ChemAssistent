@@ -81,7 +81,9 @@ PRELUDE = """\
 import json as _json
 _vars = _json.loads({variables!r})
 run, collection_path, setup, answer = _vars["run"], _vars["collection"], _vars["setup"], _vars["answer"]
-collection = instance.get_root_collection().get_or_create_collection(collection_path)
+_parts = [part for part in collection_path.split("/") if part]
+for _level in range(1, len(_parts) + 1):  # get_or_create_collection() creates the last level only
+    collection = instance.get_root_collection().get_or_create_collection("/" + "/".join(_parts[:_level]))
 
 
 def delete_element(kind, element_id):
