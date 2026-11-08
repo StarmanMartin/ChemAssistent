@@ -387,3 +387,42 @@ def test_cli_agent_notes_view_page(ai_config):
     agent._parts = []  # set by send()
     agent._tool("mcp__chemotion__view_page", '{"path": "/a/paper.pdf", "page": 3}')
     assert events == [("tool", "Looked at page 3 of paper.pdf")]
+
+
+def test_bridge_program_sends_a_page_image_over_stdio(tmp_path):
+    """mcp_bridge.py as the CLIs start it: one JSON-RPC line per message, also
+    a page image of a few hundred kB."""
+    import base64
+    import subprocess
+
+    import documents
+    from pdf_maker import make_pdf
+
+    paper = tmp_path / "paper.pdf"
+    paper.write_bytes(make_pdf(["Scheme 1"]))
+    session = tmp_path / "session.json"
+    session.write_text(json.dumps({"session": "s", "roots": [str(tmp_path)]}), encoding="utf-8")
+    requests = [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+         "params": {"name": "view_page", "arguments": {"path": str(paper), "page": 1}}},
+    ]
+    root = Path(mcp_bridge.__file__).resolve().parent
+    process = subprocess.Popen([sys.executable, str(root / "mcp_bridge.py"), "--session-file", str(session)],
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, cwd=tmp_path)
+    try:
+        for request in requests:
+            process.stdin.write(json.dumps(request) + "\n")
+            process.stdin.flush()
+        answers = {}
+        while len(answers) < 2:
+            line = process.stdout.readline()
+            assert line, "the bridge ended early"
+            answer = json.loads(line)
+            answers[answer["id"]] = answer
+    finally:
+        process.stdin.close()
+        process.wait(timeout=10)
+    content = answers[2]["result"]["content"]
+    assert [block["type"] for block in content] == ["text", "image"]
+    assert documents.image_size(base64.b64decode(content[1]["data"])) is not None
