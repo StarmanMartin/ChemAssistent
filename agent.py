@@ -40,9 +40,10 @@ import urllib.request
 from pathlib import Path
 
 if __package__:
-    from . import issues, lessons, history
+    from . import documents, issues, lessons, history
     from .config import AUTO_RUN_MODES, SKILLS_DIR, WORKSPACE_DIR, Config
 else:
+    import documents
     import issues
     import lessons
     import history
@@ -376,7 +377,8 @@ READ_ONLY_TOOLS = [
         "function": {
             "name": "read_file",
             "description": f"Read a text file of the workspace or one the user attached, with line "
-                           f"numbers, at most {MAX_READ_LINES} lines per call.",
+                           f"numbers, at most {MAX_READ_LINES} lines per call. A PDF gives its text, each "
+                           f"page after a line \"--- page n of m ---\".",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -531,14 +533,24 @@ def _is_binary(path: Path) -> bool:
         return b"\0" in handle.read(8192)
 
 
+def _pdf_lines(path: Path) -> list[str]:
+    try:
+        return documents.pdf_lines(path)
+    except documents.DocumentError as exc:
+        raise AgentError(str(exc)) from None
+
+
 def read_file(path: str, roots: list[Path], offset: int = 1, limit: int = MAX_READ_LINES) -> str:
     target = _resolve(path, roots)
     if target.is_dir():
         raise AgentError(f"{path} is a directory; use list_files.")
-    if _is_binary(target):
+    if documents.is_pdf(target):
+        lines = _pdf_lines(target)
+    elif _is_binary(target):
         return (f"{_shown(target)} is a binary file ({target.stat().st_size} bytes). It cannot be shown "
                 f"as text; execute_python code can open it by its absolute path {target}.")
-    lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
+    else:
+        lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
     start = max(1, int(offset or 1))
     count = max(1, min(int(limit or MAX_READ_LINES), MAX_READ_LINES))
     chunk = [f"{number:6}\t{line}" for number, line in enumerate(lines[start - 1:start - 1 + count], start)]

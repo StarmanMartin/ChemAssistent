@@ -579,3 +579,39 @@ def test_merge_call_without_index():
     call = calls[0]
     assert call["function"]["name"] == "read_file"
     assert json.loads(call["function"]["arguments"]) == {"path": "a.md"}
+
+
+# --- PDFs ---------------------------------------------------------------------
+def test_read_file_gives_the_text_of_a_pdf(tmp_path):
+    from pdf_maker import make_pdf
+
+    paper = tmp_path / "paper.pdf"
+    paper.write_bytes(make_pdf(["Title\nScheme 1", "Results\n" + "\n".join(f"row {n}" for n in range(1, 6))]))
+    roots = [tmp_path.resolve()]
+    text = agent_module.read_file(str(paper), roots)
+    assert f"{paper.resolve()}, lines 1-10 of 10:" in text
+    assert "     1\t--- page 1 of 2 ---" in text and "     4\t--- page 2 of 2 ---" in text
+    assert "     3\tScheme 1" in text
+    # Paged like a text file.
+    page_two = agent_module.read_file(str(paper), roots, offset=4, limit=3)
+    assert "lines 4-6 of 10" in page_two and "row 1" in page_two and "read_file with offset 7" in page_two
+
+    broken = tmp_path / "broken.pdf"
+    broken.write_bytes(b"%PDF-1.4 nothing")
+    with pytest.raises(AgentError, match="cannot be read as a PDF"):
+        agent_module.read_file(str(broken), roots)
+
+
+def test_read_file_pdf_through_the_agent(fake_ai, ai_config, workspace, recorder, tmp_path):
+    from pdf_maker import make_pdf
+
+    paper = tmp_path / "paper.pdf"
+    paper.write_bytes(make_pdf(["Compound 8a: C12H10O2, m/z 186"]))
+    fake_ai.script_next({"tool_calls": [{"name": "read_file", "arguments": {"path": str(paper)}}]},
+                        {"content": "8a is C12H10O2."})
+    agent = make_agent(ai_config, recorder)
+
+    agent.send("What is 8a?", [str(paper)])
+
+    answer = next(m for m in agent.messages if m.get("role") == "tool")
+    assert "Compound 8a: C12H10O2, m/z 186" in answer["content"]
