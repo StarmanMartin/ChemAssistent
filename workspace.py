@@ -90,6 +90,9 @@ HEADLESS_TEXT = {
   together with the print() output; the user does not see it. Keep it small
   (only useful fields, no huge JSON blobs). Elements in `result` (samples,
   reactions, ...) come back as small dicts with label, name, id and `url`.
+- The program may pass files or folders with a prompt; the message lists their
+  absolute paths. `read_file`, `grep` and `list_files` accept those paths, and
+  `execute_python` code can open them.
 """,
     "answers": """\
 Answer in the language of the user. Your final text is all the user gets: put
@@ -250,7 +253,6 @@ MCP servers (tools from other programs the user added):
 
 
 # Always appended; the lessons themselves (lessons.py) follow it.
-# Not for headless.py: its conversations have no attachments.
 PAPERS_PROMPT = """
 Papers and pictures the user attaches:
 - `read_file` gives the text of a PDF page by page (each page after a line
@@ -300,8 +302,9 @@ def system_prompt(exchange: Path | None = None, developer: bool = False, history
         prompt += DEVELOPER_PROMPT.format(api_version=api_versions.installed_label() or "unknown")
     if history:
         prompt += HISTORY_PROMPT.format(history=history_module.HISTORY_DIR)
+    prompt += PAPERS_PROMPT
     if not headless:
-        prompt += PAPERS_PROMPT + MCP_PROMPT
+        prompt += MCP_PROMPT
     learned = lessons.prompt_section()  # not formatted: lessons may contain braces
     return prompt + ("" if headless else LESSONS_PROMPT) + (LESSONS_HEADER + learned + "\n" if learned else "")
 

@@ -921,8 +921,8 @@ def test_the_prompt_says_to_look_at_drawn_structures(workspace):
     prompt = workspace_module.system_prompt()
     assert "--- page n of m ---" in prompt and "`view_page`" in prompt
     assert "Never present a structure you derived from the text alone" in prompt
-    # Headless conversations have no attachments.
-    assert "view_page" not in workspace_module.system_prompt(headless=True)
+    # Headless conversations get attachments too (prompt(text, attachments)).
+    assert "Never present a structure" in workspace_module.system_prompt(headless=True)
 
 
 def test_a_stopped_round_sends_no_images(fake_ai, ai_config, workspace, recorder, paper):

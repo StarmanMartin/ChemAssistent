@@ -126,6 +126,14 @@ def load_tasks(path: Path, only: list[str] | None = None) -> tuple[dict, list[di
         prompts = task["prompt"] if isinstance(task["prompt"], list) else [task["prompt"]]
         if not all(isinstance(text, str) and text for text in prompts):
             raise ValueError(f"{path}: {task['id']}: prompt must be a text or a list of texts")
+        attachments = task.get("attachments") or []
+        if not isinstance(attachments, list) or not all(isinstance(item, str) and item for item in attachments):
+            raise ValueError(f"{path}: {task['id']}: attachments must be a list of paths")
+        # Relative to the task file; they go with the first prompt.
+        task["attachments"] = [str((path.parent / item).resolve()) for item in attachments]
+        missing_files = [item for item in task["attachments"] if not Path(item).exists()]
+        if missing_files:
+            raise ValueError(f"{path}: {task['id']}: attachment not found: {', '.join(missing_files)}")
         unknown = set(task.get("expect") or {}) - {"answer_contains", "answer_regex", "answer_not_contains",
                                                    "check"}
         if unknown:
@@ -311,8 +319,8 @@ def run_task(config: Config, task: dict, model: str, index: int, chemotion: Chem
         timer.start()
         answers = []
         try:
-            for text in prompts:
-                answers.append(conversation.prompt(text))
+            for number, text in enumerate(prompts):
+                answers.append(conversation.prompt(text, (task.get("attachments") or []) if number == 0 else []))
         finally:
             timer.cancel()
         record["answers"] = answers

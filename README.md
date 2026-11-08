@@ -632,7 +632,10 @@ print(p)
 ```
 
 `prompt` blocks until the model finishes and returns its final answer as a
-string; further prompts on `c` share the conversation history. Separate
+string; further prompts on `c` share the conversation history.
+`c.prompt(text, attachments=["paper.pdf"])` lets the agent read files or
+folders like attachments in the app: a PDF's text, and its pages as images
+for a model that can see them (PDFs need the extra: `pip install ".[pdf]"`). Separate
 conversations are independent and in-memory. For a standalone configuration,
 pass `chemassistent.Config(url=..., user=..., password=..., ai_url=...,
 ai_model=..., ai_token=...)` instead of `""`. The headless interface supports

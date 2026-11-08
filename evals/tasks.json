@@ -36,6 +36,24 @@
       "expect": {
         "check": "s = instance.get_sample(setup['id'])\nresult = True if s.gram is not None and abs(s.gram - 0.25) < 1e-6 else f'amount {s.gram} g'"
       }
+    },
+    {
+      "id": "paper-structure",
+      "description": "Read: a structure that is only drawn in an attached PDF (two isomers with the same formula and m/z in the text); Write: create it.",
+      "attachments": ["assets/regio-3b.pdf"],
+      "prompt": "Create a sample of compound 3b from the attached page in the collection {collection} with the external label '{run}-3b'.",
+      "expect": {
+        "check": "found = [s for s in collection.get_samples(per_page=100) if s.properties.get('external_label') == f'{run}-3b']\nif len(found) != 1:\n    result = f'{len(found)} samples with that label'\nelse:\n    key = found[0].molecule.get('inchikey')\n    # 3b = 2-bromo-5-methoxybenzaldehyde; QMPNFQLVIGPNEI is 2b, the common isomer a guess gives\n    result = True if key == 'XNHKTMIWQCNZST-UHFFFAOYSA-N' else f'InChIKey {key}'"
+      }
+    },
+    {
+      "id": "paper-structure-name",
+      "description": "Read: name a structure that is only drawn in an attached PDF (no Chemotion needed; runs with --no-chemotion).",
+      "attachments": ["assets/regio-3b.pdf"],
+      "prompt": "What is compound 3b on the attached page? Give its IUPAC name and SMILES.",
+      "expect": {
+        "answer_regex": "(?i)2-bromo-5-methoxy-?benzaldehyde"
+      }
     }
   ]
 }
