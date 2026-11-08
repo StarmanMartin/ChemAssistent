@@ -7,7 +7,7 @@ from setuptools.command.build_py import build_py
 # headless.py and what it imports (directly or through agent/workspace),
 # plus the runner it starts. New imports of these modules must be added here.
 PACKAGE_MODULES = {
-    "__init__", "headless", "agent", "config", "keystore", "issues", "api_versions",
+    "__init__", "headless", "agent", "config", "documents", "keystore", "issues", "api_versions",
     "lessons", "history", "workspace", "chemotion_runner",
 }
 

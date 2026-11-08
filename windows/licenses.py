@@ -131,6 +131,10 @@ COMPONENTS = (
               ("share/doc/pcre2/COPYING",), dlls=("pcre2-*.dll",), pc="libpcre2-8"),
     Component("libxml2", "MIT", "https://gitlab.gnome.org/GNOME/libxml2", ("vendored:libxml2-Copyright.txt",),
               dlls=("xml2-*.dll", "libxml2*.dll"), pc="libxml-2.0"),
+    Component("PDFium", "BSD-3-Clause AND Apache-2.0 (and the licenses of the libraries built into it)",
+              "https://pdfium.googlesource.com/pdfium/", (), dlls=("pdfium.dll",),
+              note="Comes with the Python package pypdfium2 (pypdfium2_raw); the license texts of PDFium and of "
+                   "the libraries built into it are those listed under pypdfium2."),
     Component("zlib", "Zlib", "https://zlib.net", ("share/doc/zlib/README",), dlls=("zlib1.dll",), pc="zlib"),
     Component("OpenSSL", "Apache-2.0", "https://www.openssl.org", ("vendored:OpenSSL-LICENSE.txt",),
               dlls=("libcrypto-3-x64.dll", "libssl-3-x64.dll"), pc="openssl"),
@@ -254,6 +258,24 @@ def dist_url(dist: importlib.metadata.Distribution) -> str:
     return meta.get("Home-page") or (source or urls or [f"https://pypi.org/project/{meta['Name']}/"])[0]
 
 
+def license_files(dist: importlib.metadata.Distribution) -> list[tuple[str, importlib.metadata.PackagePath]]:
+    """The license texts in a package's dist-info: everything below
+    licenses/ (PEP 639; e.g. pypdfium2's BUILD_LICENSES/pdfium.txt, named by
+    that path: two may share a file name) and files named LICENSE*/COPYING*/
+    NOTICE* elsewhere in it."""
+    found = []
+    for file in dist.files or []:
+        path = str(file).replace("\\", "/")
+        if ".dist-info/" not in path:
+            continue
+        inside = path.split(".dist-info/", 1)[1]
+        if inside.startswith("licenses/"):
+            found.append((inside[len("licenses/"):], file))
+        elif LICENSE_FILE.match(file.name):
+            found.append((file.name, file))
+    return found
+
+
 def python_entries(gtk: Path, missing: list[str]) -> tuple[list[Entry], Entry | None]:
     entries, pyinstaller = [], None
     seen = set()
@@ -262,10 +284,7 @@ def python_entries(gtk: Path, missing: list[str]) -> tuple[list[Entry], Entry | 
         if key in seen or (key in BUILD_ONLY and key != "pyinstaller"):
             continue
         seen.add(key)
-        texts = []
-        for file in dist.files or []:
-            if ".dist-info" in str(file) and LICENSE_FILE.match(file.name):
-                texts.append((file.name, read_text(Path(file.locate()))))
+        texts = [(name, read_text(Path(file.locate()))) for name, file in license_files(dist)]
         name, version = dist.metadata["Name"], dist.version
         if key in GTK_BINDINGS:
             binding = GTK_BINDINGS[key]
