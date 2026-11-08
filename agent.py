@@ -457,20 +457,33 @@ def _request(config: Config, path: str, body: dict | None = None):
         raise AgentError(f"Cannot reach {url}: {getattr(exc, 'reason', exc)}") from None
 
 
-def list_models(config: Config) -> list[str]:
-    """The chat model ids the endpoint offers (GET /models), sorted. Models an
-    Open WebUI (KI-Toolbox) marks as hidden, e.g. embeddings, are left out."""
+def model_infos(config: Config) -> dict[str, dict]:
+    """The chat models the endpoint offers (GET /models) by id, sorted, each
+    {"vision": True/False/None}: whether it takes images, from Open WebUI's
+    info.meta.capabilities.vision (the KI-Toolbox); None where the server
+    does not say (OpenAI, Ollama, vLLM). Models an Open WebUI marks as
+    hidden, e.g. embeddings, are left out."""
     with _request(config, "/models") as response:
         try:
             data = json.loads(response.read().decode("utf-8"))
         except ValueError:
             raise AgentError(f"{config.ai_url}/models did not return JSON") from None
-    models = []
+    models = {}
     for item in data.get("data", []) if isinstance(data, dict) else []:
-        meta = ((item.get("info") or {}).get("meta") or {}) if isinstance(item, dict) else {}
-        if isinstance(item, dict) and item.get("id") and not meta.get("hidden"):
-            models.append(str(item["id"]))
-    return sorted(models)
+        if not isinstance(item, dict) or not item.get("id"):
+            continue
+        meta = (item.get("info") or {}).get("meta") or {}
+        meta = meta if isinstance(meta, dict) else {}
+        if meta.get("hidden"):
+            continue
+        vision = (meta.get("capabilities") or {}).get("vision") if isinstance(meta.get("capabilities"), dict) else None
+        models[str(item["id"])] = {"vision": vision if isinstance(vision, bool) else None}
+    return dict(sorted(models.items()))
+
+
+def list_models(config: Config) -> list[str]:
+    """The chat model ids the endpoint offers (model_infos()), sorted."""
+    return list(model_infos(config))
 
 
 # --- tools without the user ----------------------------------------------------
@@ -794,8 +807,11 @@ class Agent:
 
     def __init__(self, config: Config, system_prompt: str, execute, on_event,
                  auto_run: str = "off", exchange: Path | None = None, jobs=None,
-                 headless: bool = False, mcp=None) -> None:
+                 headless: bool = False, mcp=None, vision: bool | None = None) -> None:
         self.config = config
+        # Whether the model takes images (model_infos()); None = unknown,
+        # treated as yes until the server refuses one.
+        self.vision = vision
         # headless.py: no save_lesson, the approval function instead of a panel.
         self.headless = headless
         self.jupyter = exchange is not None
@@ -845,6 +861,11 @@ class Agent:
         thread drops it (it may be sending the messages right now)."""
         self.config = dataclasses.replace(self.config, ai_model=model)
         self._drop_reasoning = True
+
+    def set_vision(self, vision: bool | None) -> None:
+        """Whether the current model takes images (the app learns it with the
+        model list, possibly after the conversation started)."""
+        self.vision = vision
 
     def restore(self, messages: list[dict], roots: list[str]) -> None:
         """Continue a saved conversation (history.py): its messages after the

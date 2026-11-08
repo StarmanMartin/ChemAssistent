@@ -650,3 +650,27 @@ def test_grep_searches_pdfs_with_pages(tmp_path, monkeypatch):
     monkeypatch.setattr(agent_module, "MAX_GREP_PDFS", 1)
     text = agent_module.grep("scheme", roots, str(tmp_path))
     assert "1 more PDFs not searched" in text
+
+
+def test_model_infos_reads_the_vision_capability(fake_ai, ai_config):
+    fake_ai.models = [
+        {"id": "glm", "info": {"meta": {"capabilities": {"vision": True}}}},
+        {"id": "deepseek", "info": {"meta": {"capabilities": {"vision": False, "file_upload": True}}}},
+        {"id": "plain"},
+        {"id": "odd", "info": {"meta": {"capabilities": "yes"}}},
+        {"id": "hidden", "info": {"meta": {"hidden": True, "capabilities": {"vision": True}}}},
+    ]
+
+    infos = agent_module.model_infos(ai_config)
+    assert list(infos) == ["deepseek", "glm", "odd", "plain"]
+    assert infos["glm"] == {"vision": True}
+    assert infos["deepseek"] == {"vision": False}
+    assert infos["plain"] == {"vision": None} and infos["odd"] == {"vision": None}
+    assert list_models(ai_config) == ["deepseek", "glm", "odd", "plain"]
+
+
+def test_agent_vision_setting(ai_config, recorder):
+    agent = make_agent(ai_config, recorder)
+    assert agent.vision is None
+    agent.set_vision(False)
+    assert agent.vision is False

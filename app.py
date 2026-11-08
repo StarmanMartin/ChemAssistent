@@ -82,8 +82,8 @@ import hotkey  # noqa: E402
 import ipc  # noqa: E402
 import workspace  # noqa: E402
 from agent import (  # noqa: E402
-    ATTACHMENT_NOTE, FAILED_TEXT, MAX_ANSWER_CHARS, RAN_TEXT, STOPPED_NOTE, Agent, AgentError, clip, list_models,
-    looks_read_only, mcp_command, tool_summary,
+    ATTACHMENT_NOTE, FAILED_TEXT, MAX_ANSWER_CHARS, RAN_TEXT, STOPPED_NOTE, Agent, AgentError, clip,
+    looks_read_only, model_infos, mcp_command, tool_summary,
 )
 from cli_agent import CliAgent, cli_models, command_problem  # noqa: E402
 from mcp_client import McpHub, split_tool_name  # noqa: E402
@@ -2199,7 +2199,10 @@ class AssistantWindow(Gtk.Window):
         return f"· {model_name(model)}" if agent == "api" else f"· {AGENT_SHORT[agent]} · {model_name(model)}"
 
     def models_changed(self) -> None:
-        """(Re)fill the model menu: the app's model list, or why it is missing."""
+        """(Re)fill the model menu: the app's model list, or why it is missing.
+        The built-in agent learns whether its model takes images."""
+        if isinstance(self.agent, Agent) and self.app.models is not None:
+            self.agent.set_vision(self.app.vision(self.agent.config, self.agent.config.ai_model))
         if self.model_button is None or self.agent is None:
             return
         current = self.agent.config.ai_model
@@ -2259,6 +2262,7 @@ class AssistantWindow(Gtk.Window):
                 exchange=self.exchange,
                 jobs=lambda: self.app.jobs.info(conversation_id),
                 mcp=self.mcp,
+                vision=self.app.vision(config, config.ai_model),
             )
         self.conversation_title = str(saved.get("title") or "") if saved else text
         self.auto_run = config.auto_run  # the header menu can change it for this conversation
@@ -2562,6 +2566,8 @@ class ChemAssistentApp:
         self.models: list[str] | None = None
         self.models_error = ""
         self.models_key: tuple[str, str] | None = None
+        # Whether a model takes images (agent.model_infos()), by id.
+        self.model_vision: dict[str, bool | None] = {}
         # Background jobs (jobs.py); the watcher reports through jobs_changed().
         self.jobs = Jobs(lambda: GLib.idle_add(self.jobs_changed))
         self.menu: Gtk.Menu | None = None
@@ -2660,22 +2666,31 @@ class ChemAssistentApp:
         if key == self.models_key and not (again and self.models_error):
             return  # loaded, or loading
         self.models_key, self.models, self.models_error = key, None, ""
+        self.model_vision = {}
         if self.window is not None:
             self.window.models_changed()
         threading.Thread(target=self._models_worker, args=(config, key), daemon=True).start()
 
+    def vision(self, config: Config, model: str) -> bool | None:
+        """Whether `model` of `config`'s endpoint takes images, None while
+        unknown (the list is loading, failed, or is another endpoint's)."""
+        if self.models is None or self.models_key != (config.ai_url, config.ai_token):
+            return None
+        return self.model_vision.get(model)
+
     def _models_worker(self, config: Config, key: tuple[str, str]) -> None:
         try:
-            models, error = list_models(config), ""
+            models, error = model_infos(config), ""
         except AgentError as exc:
             models, error = None, str(exc)
         except Exception as exc:
             models, error = None, f"{type(exc).__name__}: {exc}"
         GLib.idle_add(self._models_loaded, key, models, error)
 
-    def _models_loaded(self, key: tuple[str, str], models: list[str] | None, error: str) -> bool:
+    def _models_loaded(self, key: tuple[str, str], models: dict[str, dict] | None, error: str) -> bool:
         if key == self.models_key:
-            self.models, self.models_error = models, error
+            self.models, self.models_error = (list(models) if models is not None else None), error
+            self.model_vision = {model: info.get("vision") for model, info in (models or {}).items()}
             if self.window is not None:
                 self.window.models_changed()
         return False
