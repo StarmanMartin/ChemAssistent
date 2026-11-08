@@ -743,7 +743,7 @@ def describe_attachment(path: Path) -> str:
         count = sum(1 for _ in _files(path, None))
         return f"- {path}{os.sep} (folder, {count}{'+' if count >= MAX_GREP_FILES else ''} files)"
     size = path.stat().st_size
-    kind = "binary file" if _is_binary(path) else "text file"
+    kind = documents.describe(path) or ("binary file" if _is_binary(path) else "text file")
     return f"- {path} ({kind}, {size / 1024:.1f} kB)"
 
 

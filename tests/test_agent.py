@@ -570,6 +570,18 @@ def test_describe_attachment(tmp_path):
     assert "folder, 1 files" in agent_module.describe_attachment(tmp_path)
 
 
+def test_describe_attachment_pdf_and_picture(tmp_path):
+    import documents
+    from pdf_maker import make_pdf
+
+    paper = tmp_path / "paper.pdf"
+    paper.write_bytes(make_pdf(["a", "b"]))
+    assert agent_module.describe_attachment(paper).startswith(f"- {paper} (PDF, 2 pages, ")
+    picture = tmp_path / "scheme.png"
+    picture.write_bytes(documents.png_encode(4, 3, 12, b"\x00" * 36))
+    assert agent_module.describe_attachment(picture).startswith(f"- {picture} (PNG image, 4×3, ")
+
+
 def test_merge_call_without_index():
     """Some servers send whole tool calls without an index."""
     calls: dict[int, dict] = {}
