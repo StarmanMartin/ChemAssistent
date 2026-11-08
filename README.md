@@ -648,8 +648,10 @@ pass an approval function: `ChemAssistent(config, approve=lambda purpose, code:
 Chemotion credentials and Python's permissions; this is not a security sandbox.
 Do not approve untrusted code. Each snippet's output goes to the model clipped
 to 20,000 characters. Headless conversations read the desktop app's lessons
-but cannot save new ones, cannot read its saved conversations and never report
-issues.
+but cannot save new ones and cannot read its saved conversations. They report
+chemotion_api bugs only with `ChemAssistent(..., report_bugs=True)`: the agent
+then has the developer mode's `report_api_bug` and creates public GitHub
+issues with the config's `github_token` (without one it saves drafts).
 
 The package includes a short API reference. To use a full generated workspace,
 set `CHEMASSISTENT_WORKSPACE` to its path before importing the package.

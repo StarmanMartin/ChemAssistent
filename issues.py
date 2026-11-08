@@ -109,9 +109,13 @@ def environment(config: Config, model: str) -> list[tuple[str, str]]:
     ]
 
 
-def compose(description: str, rows: list[tuple[str, str]]) -> str:
+# Who found the bug, in the environment heading (Agent.report_origin).
+DEVELOPER_ORIGIN = "in developer mode"
+
+
+def compose(description: str, rows: list[tuple[str, str]], origin: str = DEVELOPER_ORIGIN) -> str:
     table = "\n".join(f"| {key} | {value.replace('|', '/')} |" for key, value in rows)
-    return (f"{description.strip()}\n\n---\n\n**Environment** (reported by ChemAssistent in developer mode)\n\n"
+    return (f"{description.strip()}\n\n---\n\n**Environment** (reported by ChemAssistent {origin})\n\n"
             f"| | |\n|---|---|\n{table}\n")
 
 
@@ -159,12 +163,13 @@ def new_issue_link(title: str, body: str) -> tuple[str, bool]:
     return f"{NEW_ISSUE_URL}?{urllib.parse.urlencode({'title': title, 'body': body})}", clipped
 
 
-def report(config: Config, model: str, title: str, description: str) -> str:
-    """Save (and with a token create) the issue; the text tells the agent what happened."""
+def report(config: Config, model: str, title: str, description: str, origin: str = DEVELOPER_ORIGIN) -> str:
+    """Save (and with a token create) the issue; the text tells the agent what happened.
+    `origin`: who found it, e.g. "in an eval run (task x)"."""
     title = " ".join(title.split())[:MAX_TITLE_CHARS]
     if not title or not description.strip():
         return "Give a title and a description (what you did, the code, what you expected, what happened)."
-    body = compose(description[:MAX_BODY_CHARS], environment(config, model))
+    body = compose(description[:MAX_BODY_CHARS], environment(config, model), origin)
     draft = save_draft(title, body)
     problem = ""
     if config.github_token:

@@ -964,6 +964,8 @@ class Agent:
         self._stream_usage = True  # False after a server refused stream_options
         # Further request fields (evals/run_eval.py: bypass a gateway's response cache).
         self.extra_body: dict = {}
+        # How a report_api_bug issue names who found the bug (evals/run_eval.py sets its own).
+        self.report_origin = issues.DEVELOPER_ORIGIN
         # view_page's images of the current tool round: {"image", "path", "page", "region"}.
         self._pending_images: list[dict] = []
 
@@ -1343,7 +1345,7 @@ class Agent:
             if name == "report_api_bug" and self.config.developer_mode:
                 self.on_event("tool", tool_summary(name, arguments))
                 return issues.report(self.config, issues.model_label(self.config), str(arguments.get("title") or ""),
-                                     str(arguments.get("description") or ""))
+                                     str(arguments.get("description") or ""), self.report_origin)
             if name == "view_page" and self.vision is not False:
                 if len(self._pending_images) >= MAX_INLINE_IMAGES:
                     return (f"Not shown: at most {MAX_INLINE_IMAGES} images per step. Look at the others in "
