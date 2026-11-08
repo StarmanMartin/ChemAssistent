@@ -131,6 +131,8 @@ HOTKEY_DOUBLE_S = 0.6
 MAX_TABLE_COLUMNS = 12
 # Figures from JupyterLab are scaled down to this width in the result tab.
 MAX_IMAGE_WIDTH = 720
+# What the model looked at with view_page: a thumbnail in the chat.
+THUMBNAIL_SIZE = 240
 MAX_CELL_CHARS = 120
 # Tabs (code + result) kept in the panel; older finished ones are dropped.
 MAX_RESULT_TABS = 10
@@ -750,6 +752,33 @@ def image_widget(data: str) -> Gtk.Widget | None:
     image = Gtk.Image.new_from_pixbuf(pixbuf)
     image.set_halign(Gtk.Align.START)
     return image
+
+
+def thumbnail_widget(data: bytes, path: str) -> Gtk.Widget | None:
+    """A view_page image (PNG/JPEG/...) at most THUMBNAIL_SIZE large; a click
+    opens the file it shows."""
+    from gi.repository import GdkPixbuf  # type: ignore
+
+    try:
+        loader = GdkPixbuf.PixbufLoader()
+        loader.write(data)
+        loader.close()
+        pixbuf = loader.get_pixbuf()
+    except GLib.Error:
+        return None
+    if pixbuf is None:
+        return None
+    scale = min(1.0, THUMBNAIL_SIZE / max(pixbuf.get_width(), pixbuf.get_height()))
+    if scale < 1.0:
+        pixbuf = pixbuf.scale_simple(max(1, round(pixbuf.get_width() * scale)),
+                                     max(1, round(pixbuf.get_height() * scale)), GdkPixbuf.InterpType.BILINEAR)
+    button = Gtk.Button()
+    button.set_relief(Gtk.ReliefStyle.NONE)
+    button.set_halign(Gtk.Align.START)
+    button.add(Gtk.Image.new_from_pixbuf(pixbuf))
+    button.set_tooltip_text(f"Open {Path(path).name}")
+    button.connect("clicked", lambda *_: open_url(Path(path).as_uri()))
+    return button
 
 
 def link_row(text: str, tooltip: str, target: str) -> Gtk.Widget:
@@ -1782,6 +1811,14 @@ class ChatPanel(Gtk.Box):
         else:
             self._add(self.note_widget(text, icon, css))
 
+    def add_image(self, summary: str, data: bytes, path: str) -> None:
+        """A note with a thumbnail of what view_page showed the model."""
+        self.add_note(summary, "image-x-generic-symbolic")
+        thumbnail = thumbnail_widget(data, path)
+        if thumbnail is not None:
+            thumbnail.set_margin_start(22)  # under the note's text, past its icon
+            self._add(thumbnail)
+
     def clear_actions(self) -> None:
         """Disable the buttons of the last note: they belong to that moment."""
         for button in self.actions:
@@ -2379,6 +2416,9 @@ class AssistantWindow(Gtk.Window):
         elif kind == "tool":
             self.chat.add_note(data)
             self.chat.set_busy(True, "Working…")
+        elif kind == "image":
+            self.chat.add_image(data["summary"], data["data"], data["path"])
+            self.chat.set_busy(True, "Looking…")
         elif kind == "error":
             self.chat.add_note(data, "dialog-error-symbolic", "request-error",
                                (("Retry", self._retry), ("Change model…", self._choose_model)))

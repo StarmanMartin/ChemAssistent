@@ -763,7 +763,9 @@ def test_view_page_images_follow_the_tool_answers(fake_ai, ai_config, workspace,
     assert images[3]["text"] == f"The image of page 2 of {paper.resolve()} (top):"
     assert all("_source" not in part for part in images)  # private
     assert sent[-4]["content"].startswith("Page 1 of 8 of ")
-    assert ("tool", "Looked at page 2 of paper.pdf (top)") in recorder.events
+    shown = [data for kind, data in recorder.events if kind == "image"]
+    assert [item["summary"] for item in shown] == ["Looked at page 1 of paper.pdf", "Looked at page 2 of paper.pdf (top)"]
+    assert shown[0]["data"].startswith(b"\x89PNG") and shown[0]["path"] == str(paper.resolve())
     # Kept with its source for pruning and the history.
     assert image_parts(agent.messages)[1]["_source"] == {"path": str(paper.resolve()), "page": 2, "region": "top"}
     assert agent_module.message_text(agent.messages[-2]["content"]).startswith(agent_module.IMAGES_NOTE)

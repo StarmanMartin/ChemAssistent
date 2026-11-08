@@ -901,6 +901,8 @@ class Agent:
         ("text", delta)        streamed answer text
         ("thinking", None)     the model reasons before answering
         ("tool", summary)      a read-only tool ran
+        ("image", {"summary", "data", "mime", "path"})
+                               view_page showed the model an image
         ("done", None)         the answer to this message is complete
         ("error", message)
         ("stopped", None)      cancel() ended the turn
@@ -1347,7 +1349,8 @@ class Agent:
                                                 arguments.get("page"), arguments.get("region"))
                 self._pending_images.append({"image": image, "path": str(target), "page": arguments.get("page"),
                                              "region": arguments.get("region") or "full"})
-                self.on_event("tool", tool_summary(name, arguments))
+                self.on_event("image", {"summary": tool_summary(name, arguments), "data": image.data,
+                                        "mime": image.mime, "path": str(target)})
                 return text
             if name == "read_file":
                 text = read_file(str(arguments.get("path") or ""), self.roots, arguments.get("offset") or 1,
