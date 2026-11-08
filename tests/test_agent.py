@@ -530,6 +530,39 @@ def test_read_file_limits_and_binary(workspace):
         agent_module.read_file("nope.txt", roots)
 
 
+def test_skill_references_resolve_relative_to_the_skill(workspace, skills_dir):
+    """A SKILL.md points to `references/x.md`, relative to its own folder."""
+    api_skill = workspace / "chemotionapi" / "skills" / "chemotion-api"
+    (api_skill / "references").mkdir(parents=True)
+    (api_skill / "SKILL.md").write_text("---\nname: chemotion-api\n---\nRead `references/api.md`.\n",
+                                        encoding="utf-8")
+    (api_skill / "references" / "api.md").write_text("Sample.save()\n", encoding="utf-8")
+    jupyter_skill = skills_dir / "jupyter-calculations"
+    (jupyter_skill / "references").mkdir()
+    (jupyter_skill / "references" / "xtb.md").write_text("GFN2-xTB\n", encoding="utf-8")
+
+    roots = [workspace.resolve()]
+    assert "Sample.save()" in agent_module.read_file("references/api.md", roots)
+    assert "api.md" in agent_module.list_files(roots, "references")
+    # The app's skills only with SKILLS_DIR among the roots (JupyterLab on).
+    with pytest.raises(AgentError):
+        agent_module.read_file("references/xtb.md", roots)
+    roots.append(skills_dir.resolve())
+    assert "GFN2-xTB" in agent_module.read_file("references/xtb.md", roots)
+
+    # Workspace paths win; the same name in two skills is ambiguous; no escape.
+    (workspace / "references").mkdir()
+    (workspace / "references" / "api.md").write_text("workspace copy\n", encoding="utf-8")
+    assert "workspace copy" in agent_module.read_file("references/api.md", roots)
+    (jupyter_skill / "references" / "setup.md").write_text("a\n", encoding="utf-8")
+    (api_skill / "references" / "setup.md").write_text("b\n", encoding="utf-8")
+    with pytest.raises(AgentError, match="ambiguous"):
+        agent_module.read_file("references/setup.md", roots)
+    (skills_dir.parent / "secret.txt").write_text("no\n", encoding="utf-8")
+    with pytest.raises(AgentError):
+        agent_module.read_file("../../secret.txt", roots)
+
+
 def test_describe_attachment(tmp_path):
     file = tmp_path / "a.txt"
     file.write_text("x" * 2048, encoding="utf-8")

@@ -55,6 +55,8 @@ MAX_ANSWER_CHARS = 20000
 # Tool rounds per user message before the agent stops and asks the user.
 MAX_ROUNDS = 40
 MAX_READ_LINES = 400
+# chemotionapi's skills in the workspace (workspace.SOURCE_DIR + "/skills").
+CHEMOTIONAPI_SKILLS = Path("chemotionapi", "skills")
 MAX_TOOL_CHARS = 40000
 MAX_GREP_MATCHES = 100
 MAX_LIST_ENTRIES = 300
@@ -481,8 +483,18 @@ def _allowed(target: Path, roots: list[Path]) -> bool:
     return any(target == root or root in target.parents for root in roots)
 
 
+def _skill_dirs(roots: list[Path]) -> list[Path]:
+    """The folders of the skills workspace.skill_lines() lists (chemotionapi's in
+    the workspace, the app's in SKILLS_DIR) that `roots` allow."""
+    found = (sorted((WORKSPACE_DIR / CHEMOTIONAPI_SKILLS).glob("*/SKILL.md"))
+             + sorted(SKILLS_DIR.glob("*/SKILL.md")))
+    return [skill.parent.resolve() for skill in found if _allowed(skill.parent.resolve(), roots)]
+
+
 def _resolve(path: str | None, roots: list[Path]) -> Path:
-    """An absolute path inside one of `roots`, or a path relative to the workspace."""
+    """An absolute path inside one of `roots`, or a path relative to the workspace.
+    A relative path that is not in the workspace may be relative to a skill's
+    folder: a SKILL.md points to `references/api.md` that way."""
     workspace = WORKSPACE_DIR.resolve()
     text = (path or ".").strip()
     absolute = Path(text).expanduser().is_absolute()
@@ -491,6 +503,13 @@ def _resolve(path: str | None, roots: list[Path]) -> Path:
     else:
         # Relative paths, and "/CHEMOTION_API.md"-style ones, are workspace paths.
         target = (workspace / text.lstrip("/\\")).resolve()
+        if not absolute and not target.exists():
+            in_skills = [found for found in ((skill / text).resolve() for skill in _skill_dirs(roots))
+                         if found.exists() and _allowed(found, roots)]
+            if len(in_skills) > 1:
+                raise AgentError(f"{path} is ambiguous: " + ", ".join(_shown(found) for found in in_skills))
+            if in_skills:
+                return in_skills[0]
         if not _allowed(target, roots) or (absolute and not target.exists()):
             raise AgentError(f"{path} is outside the workspace and the user's attachments.")
     if not target.exists():
