@@ -323,3 +323,27 @@ def test_bridge_offers_and_forwards_mcp_tools(monkeypatch):
     assert admin.dispatch("add_mcp_server", {"name": "x", "command": "npx", "args": ["-y", "p"]}) == "answer to mcp-add"
     assert json.loads(sent[-1]["code"]) == {"name": "x", "command": "npx", "args": ["-y", "p"]}
     assert admin.dispatch("remove_mcp_server", {"name": "x"}) == "answer to mcp-remove"
+
+
+# --- documents through the bridge (CLI agents) --------------------------------
+def bridge_call(bridge, name: str, arguments: dict) -> dict:
+    """One tools/call through Bridge._call(); the JSON-RPC result."""
+    written = []
+    bridge.write = written.append
+    bridge._call(1, {"name": name, "arguments": arguments})
+    return written[0]["result"]
+
+
+def test_bridge_reads_and_greps_pdfs(tmp_path):
+    from pdf_maker import make_pdf
+
+    paper = tmp_path / "paper.pdf"
+    paper.write_bytes(make_pdf(["Abstract", "Scheme 1: 8a from 7a"]))
+    bridge = mcp_bridge.Bridge({"session": "s", "roots": [str(tmp_path)]})
+
+    result = bridge_call(bridge, "read_file", {"path": str(paper)})
+    assert not result["isError"]
+    assert "--- page 2 of 2 ---" in result["content"][0]["text"]
+    assert "Scheme 1: 8a from 7a" in result["content"][0]["text"]
+    result = bridge_call(bridge, "grep", {"pattern": "8a", "path": str(tmp_path)})
+    assert "(page 2): Scheme 1: 8a from 7a" in result["content"][0]["text"]
