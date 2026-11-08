@@ -849,15 +849,16 @@ def has_images(messages: list[dict]) -> bool:
 
 
 def without_images(messages: list[dict], why: str = "call view_page again to see it") -> list[dict]:
-    """`messages` with every image part replaced by its placeholder (the
-    history: no base64 on disk)."""
+    """`messages` with every image replaced by its placeholder, as plain text
+    (the history: no base64 on disk; a model without vision). The originals
+    are not changed."""
     result = []
     for message in messages:
         content = message.get("content")
-        if isinstance(content, list) and any(isinstance(p, dict) and p.get("type") == "image_url" for p in content):
-            message = {**message, "content": [image_placeholder(p.get("_source") or {}, why)
-                                               if isinstance(p, dict) and p.get("type") == "image_url" else p
-                                               for p in content]}
+        if isinstance(content, list):
+            parts = [image_placeholder(p.get("_source") or {}, why)
+                     if isinstance(p, dict) and p.get("type") == "image_url" else p for p in content]
+            message = {**message, "content": message_text(parts)}
         result.append(message)
     return result
 
@@ -1126,8 +1127,12 @@ class Agent:
         for message in self.messages:
             content = message.get("content")
             if isinstance(content, list):
-                message = {**message, "content": [{k: v for k, v in part.items() if k != "_source"}
-                                                  if isinstance(part, dict) else part for part in content]}
+                if not has_images([message]):
+                    # Pruned to text: a string, which every server takes.
+                    message = {**message, "content": message_text(content)}
+                else:
+                    message = {**message, "content": [{k: v for k, v in part.items() if k != "_source"}
+                                                      if isinstance(part, dict) else part for part in content]}
             sent.append(message)
         return sent
 

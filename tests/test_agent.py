@@ -784,8 +784,10 @@ def test_only_the_newest_images_are_sent(fake_ai, ai_config, workspace, recorder
     assert len(image_parts(last)) == agent_module.MAX_INLINE_IMAGES
     # The fifth view_page of one round is refused; pages 1-3 became text notes.
     assert "at most 4 images per step" in last[-2]["content"]
-    first_round = next(message for message in last if isinstance(message["content"], list))
-    texts = agent_module.message_text(first_round["content"])
+    rounds = [message for message in last
+              if agent_module.message_text(message["content"]).startswith(agent_module.IMAGES_NOTE)]
+    assert isinstance(rounds[0]["content"], str)  # all its images pruned: sent as text
+    texts = rounds[0]["content"]
     assert f"[The image of page 1 of {paper.resolve()} was shown here; call view_page again to see it.]" in texts
 
 
@@ -835,7 +837,77 @@ def test_message_text_and_without_images():
     assert agent_module.message_text(content) == "a"
     assert agent_module.message_text("plain") == "plain" and agent_module.message_text(None) == ""
     stripped = agent_module.without_images([{"role": "user", "content": content}, {"role": "user", "content": "x"}])
-    assert stripped[0]["content"][1] == {"type": "text", "text": "[The image of page 2 of /p.pdf was shown "
-                                                                 "here; call view_page again to see it.]"}
+    assert stripped[0]["content"] == "a\n[The image of page 2 of /p.pdf was shown here; call view_page again to see it.]"
     assert content[1]["type"] == "image_url"  # the original is unchanged
     assert not agent_module.has_images(stripped)
+
+
+def test_a_saved_conversation_keeps_no_images(fake_ai, ai_config, workspace, recorder, paper, state_dir):
+    """The app saves without_images(messages); restore() and the CLI agents'
+    transcript get text notes, the chat replay skips them."""
+    import json as json_module
+
+    import history
+    from cli_agent import CliAgent
+
+    fake_ai.script_next({"tool_calls": [view(paper, 1)]}, {"content": "Seen."}, {"content": "Again."})
+    agent = make_agent(ai_config, recorder)
+    agent.send("Look", [str(paper)])
+    history.save("20261108-120000-abcdef", "Look", "test-model", agent_module.without_images(agent.messages[1:]),
+                 [str(paper)])
+    text = (state_dir / "history" / "20261108-120000-abcdef.json").read_text(encoding="utf-8")
+    assert "base64" not in text
+    saved = json_module.loads(text)["messages"]
+    note = saved[-2]["content"]
+    assert note.startswith(agent_module.IMAGES_NOTE) and "was shown here; call view_page again" in note
+
+    restored = make_agent(ai_config, recorder)
+    restored.restore(saved, [str(paper)])
+    restored.send("And now?")
+    assert not image_parts(fake_ai.requests[-1]["messages"])
+
+    cli = CliAgent(ai_config, "You are ChemAssistent.", recorder.on_event)
+    cli.restore(saved, [str(paper)])
+    assert "Look" in cli._context and "Seen." in cli._context
+    assert agent_module.IMAGES_NOTE not in cli._context
+
+
+def test_pruned_messages_are_sent_as_text(fake_ai, ai_config, workspace, recorder, paper):
+    fake_ai.script_next({"tool_calls": [view(paper, 1)]}, {"content": "Seen."}, {"content": "Fine."})
+    agent = make_agent(ai_config, recorder)
+    agent.send("Look", [str(paper)])
+    agent.set_vision(False)
+    agent.send("More")
+    images = [message for message in fake_ai.requests[-1]["messages"]
+              if agent_module.message_text(message["content"]).startswith(agent_module.IMAGES_NOTE)]
+    assert len(images) == 1 and isinstance(images[0]["content"], str)
+
+
+def test_chat_replay_skips_image_messages(tmp_path):
+    """app.replay_items() (GTK; in a subprocess, as the app sets up its display)."""
+    import subprocess
+    import sys
+
+    pytest.importorskip("gi")
+    root = agent_module.Path(agent_module.__file__).resolve().parent
+    code = (
+        "import json, sys, app, agent\n"
+        "messages = json.loads(sys.stdin.read())\n"
+        "print(json.dumps(app.replay_items(messages)))\n"
+    )
+    messages = [
+        {"role": "user", "content": "Look at the scheme"},
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "c1", "type": "function", "function": {
+            "name": "view_page", "arguments": json.dumps({"path": "/a/paper.pdf", "page": 2})}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "Page 2 of 3 ..."},
+        {"role": "user", "content": [{"type": "text", "text": agent_module.IMAGES_NOTE},
+                                     {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA"}}]},
+        {"role": "user", "content": agent_module.IMAGES_NOTE + "\n[The image of page 2 of /a/paper.pdf was shown]"},
+        {"role": "assistant", "content": "It shows 8a."},
+    ]
+    result = subprocess.run([sys.executable, "-c", code], input=json.dumps(messages), capture_output=True, text=True,
+                            cwd=root, timeout=60)
+    assert result.returncode == 0, result.stderr
+    items = json.loads(result.stdout)
+    assert [item[0] for item in items] == ["user", "note", "assistant"]
+    assert items[1][1] == "Looked at page 2 of paper.pdf"

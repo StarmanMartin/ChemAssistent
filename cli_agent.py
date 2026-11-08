@@ -34,7 +34,8 @@ from pathlib import Path
 
 import issues
 import workspace
-from agent import ATTACHMENT_NOTE, MCP_ADMIN_NAMES, AgentError, base_roots, describe_attachment, tool_summary
+from agent import (ATTACHMENT_NOTE, IMAGES_NOTE, MCP_ADMIN_NAMES, AgentError, base_roots, describe_attachment,
+                   message_text, tool_summary)
 from config import AGENT_LABELS, AUTO_RUN_MODES, CLI_MODELS, STATE_DIR, WINDOWS, WORKSPACE_DIR, Config, write_private_json
 
 
@@ -187,8 +188,10 @@ class CliAgent:
         if not session:
             lines = []
             for message in self.messages[1:]:
-                content = message.get("content")
-                if message.get("role") in ("user", "assistant") and isinstance(content, str) and content.strip():
+                content = message_text(message.get("content"))
+                if content.startswith(IMAGES_NOTE):
+                    continue  # the built-in agent's view_page images
+                if message.get("role") in ("user", "assistant") and content.strip():
                     lines.append(f"{message['role'].capitalize()}: {content.strip()}")
             self._context = "\n\n".join(lines)[-MAX_CONTEXT_CHARS:]
 

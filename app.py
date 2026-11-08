@@ -82,8 +82,8 @@ import hotkey  # noqa: E402
 import ipc  # noqa: E402
 import workspace  # noqa: E402
 from agent import (  # noqa: E402
-    ATTACHMENT_NOTE, FAILED_TEXT, MAX_ANSWER_CHARS, RAN_TEXT, STOPPED_NOTE, Agent, AgentError, clip,
-    looks_read_only, model_infos, mcp_command, tool_summary,
+    ATTACHMENT_NOTE, FAILED_TEXT, IMAGES_NOTE, MAX_ANSWER_CHARS, RAN_TEXT, STOPPED_NOTE, Agent, AgentError, clip,
+    looks_read_only, message_text, model_infos, without_images, mcp_command, tool_summary,
 )
 from cli_agent import CliAgent, cli_models, command_problem  # noqa: E402
 from mcp_client import McpHub, split_tool_name  # noqa: E402
@@ -1368,7 +1368,11 @@ def replay_items(messages: list[dict]) -> list[tuple]:
     items: list[tuple] = []
     for message in messages:
         role, content = message.get("role"), message.get("content")
+        if role == "user" and isinstance(content, list):
+            content = message_text(content)
         if role == "user" and isinstance(content, str):
+            if content.startswith(IMAGES_NOTE):
+                continue  # view_page's images: the tool call has its note
             if content == STOPPED_NOTE:
                 items.append(("note", "Stopped after many tool calls.", "dialog-error-symbolic", "request-error"))
                 continue
@@ -2320,7 +2324,8 @@ class AssistantWindow(Gtk.Window):
         """Store the conversation (after every answer and on close)."""
         if self.agent is None or self.conversation_id is None:
             return
-        messages = list(self.agent.messages[1:])  # without the system prompt
+        # Without the system prompt, view_page's images as text notes (no base64 on disk).
+        messages = without_images(self.agent.messages[1:])
         if len(messages) == self.saved_messages or not any(message.get("role") == "user" for message in messages):
             return
         roots = [str(path) for path in self.agent.attachments]  # not the agent's own roots

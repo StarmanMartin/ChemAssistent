@@ -360,7 +360,7 @@ def run_task(config: Config, task: dict, model: str, index: int, chemotion: Chem
                 cleanup["problems"] = [str(exc)]
         record["cleanup"] = cleanup
     if options.transcripts:
-        record["transcript"] = messages
+        record["transcript"] = agent_module.without_images(messages)  # no base64 page images
     return record
 
 
