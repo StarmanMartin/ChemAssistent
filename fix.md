@@ -217,3 +217,39 @@ and could be merged first.
 Proper structure recognition (OCSR: DECIMER, MolScribe) in JupyterLab as a
 `skills/` entry: extract structure images of a page, return checked SMILES
 through the exchange folder.
+
+## Status (2026-11-08)
+
+All work packages are done; one commit per WP on this branch.
+
+Live checks:
+
+- Image pass-through on the KI-Toolbox (tool call, tool answer, then a user
+  message with the image): `alias.complex-gpt`, `alias.complex-claude`,
+  `google.gemini-3.5-flash` and `alias.simple-local` (Mistral) read a number
+  from a rendered page; `alias.medium-local` (DeepSeek) refuses with
+  "deepseek-v4-flash is not a multimodal model" (the text the fallback
+  matches, `IMAGE_REFUSALS`). The GLM models (`alias.complex-local`) answered
+  every request, also without images, with 504 that evening.
+- CLI agents (WP 4.2): Claude Code 2.1.319 and codex-cli 0.167.0 both read a
+  number that exists only as a picture in a PDF through the bridge's image
+  block.
+- Eval `paper-structure-name` (2 runs each, `--no-chemotion`): GPT 2/2 and
+  Claude 2/2, both call view_page and name 3b correctly (Claude says it took
+  the structure from the drawing); Mistral 0/2 (once it did not look and said
+  it cannot tell, once it looked and still answered wrong: the small model's
+  limit); DeepSeek 504 (the gateway). `paper-structure` (creates 3b in
+  Chemotion) could not run: the test instance runs ELN 3.1.2, the installed
+  chemotionapi (branch `chemotion/main`) only supports ELN v4.
+- Window (WP 5.3; a real AssistantWindow with `alias.complex-gpt`): PDF
+  attached on the prompt page, notes "Read …" and "Looked at page 1 of
+  regio-3b.pdf" with the thumbnail, correct answer; the saved conversation has
+  no base64 (3 kB) and continues from the history without image messages in
+  the chat.
+
+Open:
+
+- The Windows bundle (pdfium.dll in the license check, the PDF part of
+  `--self-test`) is only checked by the GitHub workflow after a push.
+- `paper-structure` against a Chemotion whose ELN version matches the
+  installed chemotionapi.
