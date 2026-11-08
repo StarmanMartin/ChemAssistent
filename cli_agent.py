@@ -42,7 +42,7 @@ from config import AGENT_LABELS, AUTO_RUN_MODES, CLI_MODELS, STATE_DIR, WINDOWS,
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 # The bridge's MCP server name: Claude calls its tools mcp__chemotion__<tool>.
 SERVER = "chemotion"
-READ_TOOLS = ("read_file", "grep", "list_files")
+READ_TOOLS = ("read_file", "grep", "list_files", "view_page")
 # execute_python waits for the user; the CLIs' MCP timeouts must not end it.
 TOOL_TIMEOUT_S = 86400
 # The bridge's tools/list waits for the user's MCP servers (npx may download).

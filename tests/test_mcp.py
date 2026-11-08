@@ -377,3 +377,13 @@ def test_bridge_view_page_returns_an_image_block(tmp_path):
     no_vision = mcp_bridge.Bridge({"session": "s", "roots": [str(tmp_path)], "vision": False})
     assert "view_page" not in [tool["name"] for tool in no_vision.tools]
     assert bridge_call(no_vision, "view_page", {"path": str(paper), "page": 1})["isError"]
+
+
+def test_cli_agent_notes_view_page(ai_config):
+    from cli_agent import CliAgent
+
+    events = []
+    agent = CliAgent(ai_config, "prompt", lambda kind, data: events.append((kind, data)))
+    agent._parts = []  # set by send()
+    agent._tool("mcp__chemotion__view_page", '{"path": "/a/paper.pdf", "page": 3}')
+    assert events == [("tool", "Looked at page 3 of paper.pdf")]
