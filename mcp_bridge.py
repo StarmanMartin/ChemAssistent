@@ -4,7 +4,9 @@ starts (no GTK, standard library only).
 It offers the built-in agent's four tools (and in developer mode
 `report_api_bug`, issues.py) and nothing else (the CLIs' own
 tools are switched off, cli_agent.py): read-only `read_file`, `grep` and
-`list_files` (agent.py's, confined to the workspace and the attachments), and
+`list_files` (agent.py's, confined to the workspace and the attachments),
+`view_page` (a PDF page or picture as an MCP image block; off with
+`vision: false` in the session file), and
 `execute_python`, which goes over ipc.py to the running app as
 {"type": "execute", "session", "purpose", "code"}. The app shows it as a card
 in the result panel like a call of the built-in agent (auto-run mode
@@ -26,10 +28,12 @@ The session file (written by cli_agent.py for every turn, mode 0600) holds
 the app's ipc `address` and `token`, the conversation's `session` token,
 which the app checks, its `auto_run` mode for the tool description, the
 `roots` the read-only tools may read, and `developer` and `model` for
-report_api_bug, `mcp_admin` for the MCP admin tools.
+report_api_bug, `mcp_admin` for the MCP admin tools, `vision` (default
+true) for view_page.
 """
 from __future__ import annotations
 
+import base64
 import json
 import sys
 import threading
@@ -38,8 +42,8 @@ from pathlib import Path
 import ipc
 import issues
 from agent import (MAX_READ_LINES, MCP_ADMIN_NAMES, MCP_ADMIN_TOOLS, MCP_TOOL_PREFIX, READ_ONLY_TOOLS,
-                   REPORT_API_BUG_TOOL, AgentError, execute_python_tool, grep, list_files, mcp_server_entry,
-                   read_file, tool_summary)
+                   REPORT_API_BUG_TOOL, VIEW_PAGE_TOOL, AgentError, execute_python_tool, grep, list_files,
+                   mcp_server_entry, read_file, tool_summary, view_page)
 from config import load_config
 
 
@@ -63,6 +67,10 @@ class Bridge:
         self.roots = [Path(root) for root in data.get("roots") or []]
         self.tools = ([mcp_tool(execute_python_tool(str(data.get("auto_run") or "off")), False)]
                       + [mcp_tool(tool, True) for tool in READ_ONLY_TOOLS])
+        # view_page answers with an MCP image block, which Claude Code shows its model.
+        self.vision = data.get("vision", True) is not False
+        if self.vision:
+            self.tools.append(mcp_tool(VIEW_PAGE_TOOL, True))
         self.developer = bool(data.get("developer"))
         self.model = str(data.get("model") or "")
         if self.developer:
@@ -118,13 +126,20 @@ class Bridge:
     def _call(self, request_id, params: dict) -> None:
         arguments = params.get("arguments") or {}
         try:
-            text, error = self.dispatch(str(params.get("name") or ""), arguments), False
+            answer, error = self.dispatch(str(params.get("name") or ""), arguments), False
         except (AgentError, OSError, TypeError, ValueError) as exc:
-            text, error = f"Error: {exc}", True
-        self.write({"jsonrpc": "2.0", "id": request_id,
-                    "result": {"content": [{"type": "text", "text": text}], "isError": error}})
+            answer, error = f"Error: {exc}", True
+        content = answer if isinstance(answer, list) else [{"type": "text", "text": answer}]
+        self.write({"jsonrpc": "2.0", "id": request_id, "result": {"content": content, "isError": error}})
 
-    def dispatch(self, name: str, arguments: dict) -> str:
+    def dispatch(self, name: str, arguments: dict) -> str | list[dict]:
+        """The text answer of a tool, or a list of MCP content blocks (view_page)."""
+        if name == "view_page" and self.vision:
+            text, image, _ = view_page(str(arguments.get("path") or ""), self.roots, arguments.get("page"),
+                                       arguments.get("region"))
+            return [{"type": "text", "text": text.replace("follows in the next message", "follows")},
+                    {"type": "image", "data": base64.b64encode(image.data).decode("ascii"),
+                     "mimeType": image.mime}]
         if name == "execute_python":
             code = str(arguments.get("code") or "")
             if not code.strip():

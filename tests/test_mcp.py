@@ -347,3 +347,33 @@ def test_bridge_reads_and_greps_pdfs(tmp_path):
     assert "Scheme 1: 8a from 7a" in result["content"][0]["text"]
     result = bridge_call(bridge, "grep", {"pattern": "8a", "path": str(tmp_path)})
     assert "(page 2): Scheme 1: 8a from 7a" in result["content"][0]["text"]
+
+
+def test_bridge_view_page_returns_an_image_block(tmp_path):
+    import base64
+
+    import documents
+    from pdf_maker import make_pdf
+
+    paper = tmp_path / "paper.pdf"
+    paper.write_bytes(make_pdf(["Scheme 1"]))
+    bridge = mcp_bridge.Bridge({"session": "s", "roots": [str(tmp_path)]})
+    listed = {tool["name"]: tool for tool in bridge.tools}
+    assert listed["view_page"]["annotations"] == {"readOnlyHint": True}
+
+    result = bridge_call(bridge, "view_page", {"path": str(paper), "page": 1, "region": "top"})
+    assert not result["isError"]
+    text, image = result["content"]
+    assert text["type"] == "text" and text["text"].startswith("Page 1 of 1 of ") and "the image follows." in text["text"]
+    assert image["type"] == "image" and image["mimeType"] == "image/png"
+    data = base64.b64decode(image["data"])
+    assert documents.image_size(data)[0] == documents.IMAGE_MAX_SIDE
+
+    result = bridge_call(bridge, "view_page", {"path": str(paper), "page": 5})
+    assert result["isError"] and "page 5 does not exist" in result["content"][0]["text"]
+    result = bridge_call(bridge, "view_page", {"path": "/etc/hostname"})
+    assert result["isError"] and "outside the workspace" in result["content"][0]["text"]
+
+    no_vision = mcp_bridge.Bridge({"session": "s", "roots": [str(tmp_path)], "vision": False})
+    assert "view_page" not in [tool["name"] for tool in no_vision.tools]
+    assert bridge_call(no_vision, "view_page", {"path": str(paper), "page": 1})["isError"]
