@@ -615,3 +615,26 @@ def test_read_file_pdf_through_the_agent(fake_ai, ai_config, workspace, recorder
 
     answer = next(m for m in agent.messages if m.get("role") == "tool")
     assert "Compound 8a: C12H10O2, m/z 186" in answer["content"]
+
+
+def test_grep_searches_pdfs_with_pages(tmp_path, monkeypatch):
+    from pdf_maker import make_pdf
+
+    (tmp_path / "paper.pdf").write_bytes(make_pdf(["Introduction", "Scheme 2: cyclisation of 7a\nScheme 3"]))
+    (tmp_path / "notes.txt").write_text("see Scheme 2\n", encoding="utf-8")
+    (tmp_path / "broken.pdf").write_bytes(b"%PDF-1.4 broken")
+    roots = [tmp_path.resolve()]
+    paper = (tmp_path / "paper.pdf").resolve()
+
+    text = agent_module.grep("scheme", roots, str(tmp_path))
+    assert f"{paper}:4 (page 2): Scheme 2: cyclisation of 7a" in text
+    assert f"{paper}:5 (page 2): Scheme 3" in text
+    assert f"{(tmp_path / 'notes.txt').resolve()}:1: see Scheme 2" in text
+    # The line number is read_file's: offset 4 starts at that line.
+    assert "4\tScheme 2" in agent_module.read_file(str(paper), roots, offset=4, limit=1)
+    # Page markers themselves are no matches.
+    assert "--- page" not in agent_module.grep("page", roots, str(paper)).replace("No matches.", "")
+
+    monkeypatch.setattr(agent_module, "MAX_GREP_PDFS", 1)
+    text = agent_module.grep("scheme", roots, str(tmp_path))
+    assert "1 more PDFs not searched" in text

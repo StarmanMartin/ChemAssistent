@@ -64,6 +64,8 @@ MAX_GREP_MATCHES = 100
 MAX_LIST_ENTRIES = 300
 # Files grep looks at below one directory (an attached folder may be huge).
 MAX_GREP_FILES = 5000
+# PDFs grep parses per call (a folder of papers takes a while).
+MAX_GREP_PDFS = 50
 SKIP_DIRS = {".git", "__pycache__", ".venv", "node_modules"}
 # Appended to a user message with attachments; the history shows the text before it.
 ATTACHMENT_NOTE = ("\n\nAttached by the user (read them with read_file / list_files / grep by these "
@@ -396,7 +398,8 @@ READ_ONLY_TOOLS = [
         "function": {
             "name": "grep",
             "description": "Search the workspace or an attachment with a regular expression (Python "
-                           "syntax, case-insensitive). Returns path:line: text.",
+                           "syntax, case-insensitive). Returns path:line: text; in a PDF path:line (page n): "
+                           "text, where line is read_file's line number.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -571,23 +574,46 @@ def _files(root: Path, glob: str | None):
             yield path
 
 
+# documents.pdf_lines()' page lines.
+PAGE_MARKER = re.compile(r"^--- page (\d+) of \d+ ---$")
+
+
 def grep(pattern: str, roots: list[Path], path: str | None = None, glob: str | None = None) -> str:
     try:
         regex = re.compile(pattern, re.IGNORECASE)
     except re.error as exc:
         raise AgentError(f"Invalid regular expression: {exc}") from None
     matches = []
+    pdfs = 0
     for file in _files(_resolve(path, roots), glob):
-        try:
-            text = file.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, OSError):
-            continue  # binary
-        for number, line in enumerate(text.splitlines(), 1):
+        page = 0
+        pdf = documents.is_pdf(file)
+        if pdf:
+            pdfs += 1
+            if pdfs > MAX_GREP_PDFS:
+                continue
+            try:
+                lines = documents.pdf_lines(file)
+            except (documents.DocumentError, OSError):
+                continue  # unreadable, or no PDF support
+        else:
+            try:
+                lines = file.read_text(encoding="utf-8").splitlines()
+            except (UnicodeDecodeError, OSError):
+                continue  # binary
+        for number, line in enumerate(lines, 1):
+            marker = PAGE_MARKER.match(line) if pdf else None
+            if marker:
+                page = int(marker.group(1))
+                continue
             if regex.search(line):
-                matches.append(f"{_shown(file)}:{number}: {line.strip()[:300]}")
+                where = f" (page {page})" if page else ""
+                matches.append(f"{_shown(file)}:{number}{where}: {line.strip()[:300]}")
                 if len(matches) >= MAX_GREP_MATCHES:
                     return "\n".join(matches) + f"\n... more than {MAX_GREP_MATCHES} matches; narrow the search."
-    return "\n".join(matches) or "No matches."
+    more = (f"\n({pdfs - MAX_GREP_PDFS} more PDFs not searched; give a narrower path or glob.)"
+            if pdfs > MAX_GREP_PDFS else "")
+    return ("\n".join(matches) or "No matches.") + more
 
 
 def list_files(roots: list[Path], path: str | None = None) -> str:
