@@ -74,11 +74,30 @@ DESKTOP_TEXT = {
 - The user may attach files or folders; the message lists their absolute paths.
   `read_file`, `grep` and `list_files` accept those paths, and `execute_python`
   code can open them (e.g. to upload a measurement file to an element).
+- The result panel has an Explorer tab where the user browses and selects
+  collections and elements. A message may end with "Selected in the Explorer:"
+  and a list of them (type, label, name, id, collection). Unless the message
+  says otherwise, they are what it is about: "this sample", "these", "here" or
+  a request naming no element or collection means the selection. Work on them
+  directly instead of asking which ones; load them by their id and type (an
+  element's type is the word before "id", e.g. `sample` or a generic type
+  such as `wrk`). The note comes with every message while something is
+  selected; a message without it means nothing is selected now.
 """,
     "answers": """\
 Answer in the language of the user. Keep chat answers short: the data is in the
 result panel, so summarize instead of repeating it. You may use Markdown.""",
 }
+# The selection of the Explorer tab, appended to a user message (app.py's
+# _send(); replay_items() splits it off again for the chat).
+SELECTION_NOTE = "\n\nSelected in the Explorer:\n"
+
+
+def selection_note(texts: list[str]) -> str:
+    """The note for the selected elements/collections (explorer.mention_text())."""
+    return SELECTION_NOTE + "\n".join(f"- {text}" for text in texts) if texts else ""
+
+
 HEADLESS_TEXT = {
     "intro": ("A Python program sends you the user's prompts (the headless interface): there is no "
               "window and no result panel. The program receives only your final text answer."),

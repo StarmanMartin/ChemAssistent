@@ -56,11 +56,26 @@ picture to play it. It is recorded from the real app by `docs/screencast.py`.*
      waits for you, runs, ran or failed.
 4. The output appears in the same tab below the code (the latest ten tabs are
    kept; code that waits or runs is never dropped): tables for lists and dicts,
-   text otherwise, the error traceback when it fails. The first tab, **Links**,
+   text otherwise, the error traceback when it fails. The **Links** tab
    collects every link the conversation showed: Chemotion elements, the
    JupyterLab notebooks (also of background jobs) and files in the exchange
    folder. Chemotion elements (samples, reactions, …) are rows you can click to
    open the element in the browser. “Copy JSON” copies the result.
+5. The first tab, **Explorer**, shows your Chemotion like a file explorer:
+   the collections are folders (“All”, your own, then “Shared with me”), the
+   elements are the files. Opening a collection loads its elements, grouped
+   by type, 10 per type; **More…** at the end of a type loads the next 10.
+   **Types** chooses the element types shown (also the generic ones; kept
+   for the next start). Double-click opens an element in the browser; the
+   right-click menu also copies its link or puts a mention of it (type,
+   label, id, collection) into your message, so you can point the assistant
+   at it. Nothing runs through the assistant here: the Explorer only reads,
+   with your Chemotion login.
+   **Selecting** elements or collections (several with Ctrl or Shift) shows
+   them as a tag above the chat input; they go with each message you send,
+   and the assistant works on them unless you say otherwise (“what is its
+   formula?”, “move these to …”). The ✕ on the tag leaves them out until
+   you select something else.
 
 The header buttons start a new conversation, open the settings, minimize the
 window (the top-bar icon brings it back) or end the conversation. The model
@@ -555,6 +570,10 @@ keyring.
   "env"}` (a program speaking MCP on stdio) or `{"name", "url", "headers"}`
   (Streamable HTTP), each with `"enabled"`. The values of `env` and `headers`
   (e.g. API keys) stay in config.json, not in the keyring.
+- `explorer_types`: the element types the Explorer tab shows (type names
+  such as `sample`, `research_plan` or a generic type's name); set by its
+  **Types** menu. Without it: samples, reactions, wellplates, screens and
+  research plans.
 
 Changes apply to the next conversation; no restart needed.
 
