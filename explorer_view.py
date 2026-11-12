@@ -12,7 +12,10 @@ between store and view), so showing it again needs no request; a type never
 loaded in an opened collection is loaded when it is turned on.
 
 Right click (or the Menu key): open in Chemotion, copy the link, mention the
-element or collection in the chat input. Refresh keeps the opened
+element or collection in the chat input. The selection (several rows with
+Ctrl/Shift; only elements and collections can be selected) goes to
+`on_select` as [{text, label, icon}]: the chat shows it above the input and
+sends it with each message. Refresh keeps the opened
 collections open and reloads as many pages per type as were shown.
 
 Rows of one collection, in this order: its subcollections, then per type
@@ -81,11 +84,13 @@ class ExplorerPanel(Gtk.Box):
     def __init__(self, open_url: Callable[[str], None], open_settings: Callable[[], None],
                  source: ExplorerSource | None = None,
                  deliver: Callable[[Callable[[], None]], object] | None = None,
-                 mention: Callable[[str], None] | None = None) -> None:
+                 mention: Callable[[str], None] | None = None,
+                 on_select: Callable[[list[dict]], None] | None = None) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.open_url = open_url
         self.open_settings = open_settings
         self.mention = mention  # puts a text into the chat input; None: no "Mention" entry
+        self.on_select = on_select  # gets the selection (selection_items()) when it changes
         self.deliver = deliver or GLib.idle_add
         self.worker = ExplorerWorker(source or ExplorerSource(), self.deliver)
         self.types: list[dict] = []  # ExplorerSource.types()
@@ -161,6 +166,10 @@ class ExplorerPanel(Gtk.Box):
         self.view.connect("row-activated", self._on_activated)
         self.view.connect("button-release-event", self._on_click)
         self.view.connect("button-press-event", self._on_press)
+        selection = self.view.get_selection()
+        selection.set_mode(Gtk.SelectionMode.MULTIPLE)
+        selection.set_select_function(self._selectable)
+        selection.connect("changed", lambda *_: self._selection_changed())
         self.view.connect("popup-menu", self._on_popup_menu)
         scroller = Gtk.ScrolledWindow()
         scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
@@ -525,7 +534,8 @@ class ExplorerPanel(Gtk.Box):
         hit = view.get_path_at_pos(int(event.x), int(event.y))
         if hit is None:
             return False
-        view.set_cursor(hit[0], None, False)
+        if not view.get_selection().path_is_selected(hit[0]):  # keep a selection the click is in
+            view.set_cursor(hit[0], None, False)
         x, y = view.convert_bin_window_to_widget_coords(int(event.x), int(event.y))
         return self._menu(self._store_row(hit[0]), x, y)
 
@@ -539,18 +549,40 @@ class ExplorerPanel(Gtk.Box):
         x, y = view.convert_bin_window_to_widget_coords(area.x + 24, area.y + area.height)
         return self._menu(self._store_row(path), x, y)
 
-    def menu_entries(self, row: Gtk.TreeIter) -> list[tuple[str, Callable[[], None]]]:
-        """(label, action) of the context menu of a store row; [] for none."""
+    def describe(self, row: Gtk.TreeIter) -> dict | None:
+        """An element or collection row as {text (mention_text()), label,
+        icon, url}; None for other rows."""
         kind, data = self.store[row][KIND], self.store[row][DATA]
         if kind == ELEMENT:
-            parent = self.store.iter_parent(row)
-            collection = self.store[parent][DATA]
-            text = mention_text(self._type_label(data["type"]), data, collection)
-            url = data["url"]
-        elif kind == COLLECTION:
-            collection, text, url = data, mention_text("", None, data), data.get("url")
-        else:
+            collection = self.store[self.store.iter_parent(row)][DATA]
+            label = " ".join(part for part in (data["short_label"], data["name"]) if part) or f"#{data['id']}"
+            return {"text": mention_text(self._type_label(data["type"]), data, collection), "label": label,
+                    "icon": self.store[row][ICON], "url": data["url"]}
+        if kind == COLLECTION:
+            return {"text": mention_text("", None, data), "label": data["path"], "icon": self.store[row][ICON],
+                    "url": data.get("url")}
+        return None
+
+    def _selectable(self, _selection, model, path, selected) -> bool:
+        """Only elements and collections (a click on "More…" keeps the selection)."""
+        return selected or model[path][KIND] in (ELEMENT, COLLECTION)
+
+    def selection_items(self) -> list[dict]:
+        """The selected elements and collections (describe()), top to bottom."""
+        _model, paths = self.view.get_selection().get_selected_rows()
+        items = [self.describe(self._store_row(path)) for path in paths]
+        return [item for item in items if item is not None]
+
+    def _selection_changed(self) -> None:
+        if self.on_select is not None and not self.closed:
+            self.on_select(self.selection_items())
+
+    def menu_entries(self, row: Gtk.TreeIter) -> list[tuple[str, Callable[[], None]]]:
+        """(label, action) of the context menu of a store row; [] for none."""
+        described = self.describe(row)
+        if described is None:
             return []
+        text, url = described["text"], described["url"]
         entries: list[tuple[str, Callable[[], None]]] = []
         if url:
             entries += [("Open in Chemotion", lambda: self.open_url(url)),

@@ -1147,7 +1147,7 @@ class ResultsPanel(Gtk.Box):
     JupyterLab notebooks, exchanged files); it appears with the first link and
     is never dropped."""
 
-    def __init__(self, mention=None) -> None:
+    def __init__(self, mention=None, select=None) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.cards: list[RequestCard] = []
         self.count = 0
@@ -1182,7 +1182,7 @@ class ResultsPanel(Gtk.Box):
         self.tabs = Gtk.Notebook()
         self.tabs.set_scrollable(True)
         self.pack_start(self.tabs, True, True, 0)
-        self.explorer = ExplorerPanel(open_url, open_settings, mention=mention)
+        self.explorer = ExplorerPanel(open_url, open_settings, mention=mention, on_select=select)
         tab = Gtk.Box(spacing=4)
         tab.pack_start(Gtk.Image.new_from_icon_name("folder-symbolic", Gtk.IconSize.MENU), False, False, 0)
         tab.pack_start(label("Explorer", wrap=False), False, False, 0)
@@ -1401,7 +1401,8 @@ def clip_answer(text: str, limit: int | None = None) -> str | None:
 
 
 def replay_items(messages: list[dict]) -> list[tuple]:
-    """What ChatPanel.replay() shows for Agent.messages: ("user", text, paths),
+    """What ChatPanel.replay() shows for Agent.messages: ("user", text, paths,
+    selected) (selected: the Explorer selection sent with it),
     ("assistant", text) and ("note", text, icon, css), oldest first."""
     items: list[tuple] = []
     for message in messages:
@@ -1424,7 +1425,9 @@ def replay_items(messages: list[dict]) -> list[tuple]:
             # "- /path (text file, 1.2 kB)" lines; the paths contain no " (".
             paths = [line[2:].split(" (", 1)[0].rstrip("/\\") for line in listed.splitlines()
                      if line.startswith("- ")]
-            items.append(("user", text, paths))
+            text, _, selection = text.partition(workspace.SELECTION_NOTE)
+            selected = [line[2:] for line in selection.splitlines() if line.startswith("- ")]
+            items.append(("user", text, paths, selected))
         elif role == "assistant":
             if isinstance(content, str) and content.strip():
                 items.append(("assistant", content))
@@ -1619,6 +1622,19 @@ class ChatPanel(Gtk.Box):
         status_row.pack_start(self.status, True, True, 0)
         self.pack_start(status_row, False, False, 0)
 
+        # The Explorer's selection (set_selection()): sent with each message
+        # while shown; its close button leaves it out until the selection changes.
+        self.selection: list[dict] = []
+        self.selection_left_out = False
+        self.selection_chip = Gtk.Box(spacing=4)
+        self.selection_chip.get_style_context().add_class("attachment-chip")
+        self.selection_chip.set_halign(Gtk.Align.START)
+        self.selection_chip.set_margin_start(10)
+        self.selection_chip.set_margin_end(10)
+        self.selection_chip.set_margin_bottom(4)
+        self.selection_chip.set_no_show_all(True)
+        self.pack_start(self.selection_chip, False, False, 0)
+
         self.chips = Attachments(self.focus_input)
         self.chips.set_margin_start(10)
         self.chips.set_margin_end(10)
@@ -1666,6 +1682,44 @@ class ChatPanel(Gtk.Box):
     def focus_input(self) -> None:
         self.input.grab_focus()
 
+    def set_selection(self, items: list[dict]) -> None:
+        """The Explorer's selection changed: [{text, label, icon}] (ExplorerPanel.describe())."""
+        self.selection = list(items)
+        self.selection_left_out = False
+        self._update_selection_chip()
+
+    def selected_texts(self) -> list[str]:
+        """What goes with the next message (mention texts); [] when left out."""
+        return [] if self.selection_left_out else [item["text"] for item in self.selection]
+
+    def _leave_out_selection(self) -> None:
+        self.selection_left_out = True
+        self._update_selection_chip()
+        self.focus_input()
+
+    def _update_selection_chip(self) -> None:
+        chip = self.selection_chip
+        for child in chip.get_children():
+            chip.remove(child)
+        if not self.selected_texts():
+            chip.hide()
+            return
+        first = self.selection[0]
+        icon = first["icon"] if len(self.selection) == 1 else "edit-select-all-symbolic"
+        chip.pack_start(Gtk.Image.new_from_icon_name(icon or "folder-symbolic", Gtk.IconSize.MENU), False, False, 0)
+        text = first["label"] if len(self.selection) == 1 else f"{len(self.selection)} selected in the Explorer"
+        name = label(text, wrap=False)
+        name.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
+        name.set_max_width_chars(48)
+        chip.pack_start(name, False, False, 0)
+        chip.pack_start(icon_button("window-close-symbolic", "Leave it out of the next messages",
+                                    self._leave_out_selection), False, False, 0)
+        chip.set_tooltip_text("Goes with your messages: the assistant works on it unless you say otherwise.\n\n"
+                              + "\n".join(item["text"] for item in self.selection))
+        for child in chip.get_children():  # show_all() skips a no_show_all widget itself
+            child.show_all()
+        chip.show()
+
     def insert_mention(self, text: str) -> None:
         """The Explorer's "Mention in message": `text` at the cursor, set off
         from the words around it by spaces."""
@@ -1699,11 +1753,18 @@ class ChatPanel(Gtk.Box):
         widget.show_all()
 
     @staticmethod
-    def user_widgets(text: str, attachments: list[str] | tuple[str, ...] = ()) -> list[Gtk.Widget]:
+    def user_widgets(text: str, attachments: list[str] | tuple[str, ...] = (),
+                     selected: list[str] | tuple[str, ...] = ()) -> list[Gtk.Widget]:
         bubble = label(text, "chat-user", selectable=True)
         bubble.set_halign(Gtk.Align.END)
         bubble.set_margin_start(60)
         widgets: list[Gtk.Widget] = [bubble]
+        if selected:
+            note = label("Selected: " + "; ".join(selected), "dim", selectable=True)
+            note.set_halign(Gtk.Align.END)
+            note.set_margin_start(60)
+            note.set_xalign(1)
+            widgets.append(note)
         if attachments:
             names = ", ".join(os.path.basename(path.rstrip("/\\")) + ("/" if os.path.isdir(path) else "")
                               for path in attachments)
@@ -1726,11 +1787,12 @@ class ChatPanel(Gtk.Box):
         row.pack_start(label(text, css, selectable=True), True, True, 0)
         return row
 
-    def add_user(self, text: str, attachments: list[str] | tuple[str, ...] = ()) -> None:
+    def add_user(self, text: str, attachments: list[str] | tuple[str, ...] = (),
+                 selected: list[str] | tuple[str, ...] = ()) -> None:
         self.answer = None
         self.clear_actions()
         self.follower.active = True
-        for widget in self.user_widgets(text, attachments):
+        for widget in self.user_widgets(text, attachments, selected):
             self._add(widget)
 
     def append_text(self, delta: str) -> None:
@@ -1787,7 +1849,7 @@ class ChatPanel(Gtk.Box):
     def _replay_widgets(self, item: tuple) -> list[Gtk.Widget]:
         kind = item[0]
         if kind == "user":
-            return self.user_widgets(item[1], item[2])
+            return self.user_widgets(item[1], item[2], item[3] if len(item) > 3 else ())
         if kind == "note":
             return [self.note_widget(item[1], item[2], item[3])]
         text = item[1]
@@ -2099,7 +2161,7 @@ class AssistantWindow(Gtk.Window):
         main.pack_start(handle, False, False, 0)
 
         self.chat = ChatPanel(self._send, self._stop)
-        self.results = ResultsPanel(mention=self.chat.insert_mention)
+        self.results = ResultsPanel(mention=self.chat.insert_mention, select=self.chat.set_selection)
         self._add_job_links()
         self.paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         self.paned.set_wide_handle(True)
@@ -2417,8 +2479,11 @@ class AssistantWindow(Gtk.Window):
             return
         # Reports the agent has not had yet (e.g. cancelled jobs) go first.
         reports = self._reports()
-        message = self._take_reports(reports) + USER_TEXT + text if reports else text
-        self.chat.add_user(text, attachments)
+        # The Explorer's selection: what the message is about unless it says otherwise.
+        selected = self.chat.selected_texts()
+        typed = text + workspace.selection_note(selected)
+        message = self._take_reports(reports) + USER_TEXT + typed if reports else typed
+        self.chat.add_user(text, attachments, selected)
         self.chat.set_busy(True, "Working…")
         self.agent.busy = True  # before the thread starts: no second send meanwhile
         # "/mcp ...": this turn may list, add and remove MCP servers.

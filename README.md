@@ -71,6 +71,11 @@ picture to play it. It is recorded from the real app by `docs/screencast.py`.*
    label, id, collection) into your message, so you can point the assistant
    at it. Nothing runs through the assistant here: the Explorer only reads,
    with your Chemotion login.
+   **Selecting** elements or collections (several with Ctrl or Shift) shows
+   them as a tag above the chat input; they go with each message you send,
+   and the assistant works on them unless you say otherwise (“what is its
+   formula?”, “move these to …”). The ✕ on the tag leaves them out until
+   you select something else.
 
 The header buttons start a new conversation, open the settings, minimize the
 window (the top-bar icon brings it back) or end the conversation. The model

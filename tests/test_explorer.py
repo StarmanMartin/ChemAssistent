@@ -415,3 +415,44 @@ def test_icons_are_in_adwaita():
     assert len(names) > 10
     missing = [name for name in sorted(names) if not any(adwaita.rglob(f"{name}.*"))]
     assert missing == []
+
+
+def test_the_selection_goes_with_the_message_and_back_out_of_the_history():
+    """workspace.selection_note() is appended to the typed text (app's _send());
+    app.replay_items() shows it as a note again (GTK: in a subprocess)."""
+    import json
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    import workspace
+
+    pytest.importorskip("gi")
+    selected = ['sample API-12 "Benzaldehyde" (sample id 345 in collection "A/B")', 'collection "A" (id 3)']
+    note = workspace.selection_note(selected)
+    assert note == ("\n\nSelected in the Explorer:\n"
+                    '- sample API-12 "Benzaldehyde" (sample id 345 in collection "A/B")\n- collection "A" (id 3)')
+    assert workspace.selection_note([]) == ""
+
+    import agent
+
+    messages = [
+        {"role": "user", "content": "Compare these" + note + agent.ATTACHMENT_NOTE + "- /tmp/x.csv (text file, 1 kB)"},
+        {"role": "assistant", "content": "Done."},
+        {"role": "user", "content": "Thanks"},
+    ]
+    code = "import json, sys, app\nprint(json.dumps(app.replay_items(json.loads(sys.stdin.read()))))\n"
+    root = Path(explorer.__file__).resolve().parent
+    result = subprocess.run([sys.executable, "-c", code], input=json.dumps(messages), capture_output=True,
+                            text=True, cwd=root, timeout=60)
+    assert result.returncode == 0, result.stderr
+    items = json.loads(result.stdout)
+    assert items[0] == ["user", "Compare these", ["/tmp/x.csv"], selected]
+    assert items[2] == ["user", "Thanks", [], []]
+
+
+def test_only_the_desktop_prompt_explains_the_selection(workspace):
+    import workspace as workspace_module
+
+    assert 'A message may end with "Selected in the Explorer:"' in workspace_module.system_prompt()
+    assert "Selected in the Explorer" not in workspace_module.system_prompt(headless=True)
