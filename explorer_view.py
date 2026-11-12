@@ -52,10 +52,13 @@ TYPE_ICONS = {
     "wellplate": "view-grid-symbolic",
     "screen": "view-app-grid-symbolic",
     "research_plan": "x-office-document-symbolic",
-    "cell_line": "emblem-shared-symbolic",
+    "cell_line": "emoji-nature-symbolic",
     "device_description": "applications-engineering-symbolic",
+    "sequence_based_macromolecule_sample": "emoji-body-symbolic",
 }
-GENERIC_ICON = "text-x-generic-symbolic"
+GENERIC_ICON = "application-x-addon-symbolic"  # the generic (LabIMotion) types
+# Every icon here must be in Adwaita: the Windows bundle has only Adwaita and
+# hicolor (tests/test_explorer.py checks).
 STATE_ICONS = {"loading": "content-loading-symbolic", "more": "view-more-horizontal-symbolic",
                "error": "dialog-warning-symbolic"}
 

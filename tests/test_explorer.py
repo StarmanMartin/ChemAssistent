@@ -398,3 +398,20 @@ def test_pages_against_the_test_instance(chemotion, test_collection, cleanup_sam
     item = next(item for item in source.page(node, "sample")["items"] if item["id"] in cleanup_samples)
     assert item["name"] == "ethanol"  # no name: the ELN shows the molecule
     assert item["url"].endswith(f"/mydb/collection/{node['id']}/sample/{item['id']}")
+
+
+def test_icons_are_in_adwaita():
+    """The Windows bundle ships only the Adwaita and hicolor icon themes.
+    The names are read from the source: importing GTK 3 here may clash with
+    a GTK 4 another test loaded."""
+    import re
+    from pathlib import Path
+
+    adwaita = Path("/usr/share/icons/Adwaita")
+    if not adwaita.is_dir():
+        pytest.skip("no Adwaita icon theme here")
+    source = (Path(explorer.__file__).parent / "explorer_view.py").read_text(encoding="utf-8")
+    names = set(re.findall(r'"([a-z0-9-]+-symbolic)"', source))
+    assert len(names) > 10
+    missing = [name for name in sorted(names) if not any(adwaita.rglob(f"{name}.*"))]
+    assert missing == []
