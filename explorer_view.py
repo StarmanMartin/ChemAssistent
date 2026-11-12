@@ -24,6 +24,7 @@ order whatever order the pages arrive in.
 """
 from __future__ import annotations
 
+import threading
 from typing import Callable
 
 import gi
@@ -31,7 +32,7 @@ import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gdk, GLib, GObject, Gtk, Pango  # type: ignore  # noqa: E402
 
-from explorer import PER_PAGE, ExplorerSource, ExplorerWorker, mention_text  # noqa: E402
+from explorer import PER_PAGE, ExplorerError, ExplorerSource, ExplorerWorker, mention_text  # noqa: E402
 
 # TreeStore columns.
 ICON, TEXT, TOOLTIP, KIND, DATA = range(5)
@@ -85,7 +86,8 @@ class ExplorerPanel(Gtk.Box):
         self.open_url = open_url
         self.open_settings = open_settings
         self.mention = mention  # puts a text into the chat input; None: no "Mention" entry
-        self.worker = ExplorerWorker(source or ExplorerSource(), deliver or GLib.idle_add)
+        self.deliver = deliver or GLib.idle_add
+        self.worker = ExplorerWorker(source or ExplorerSource(), self.deliver)
         self.types: list[dict] = []  # ExplorerSource.types()
         self.enabled: list[str] = []  # the type names shown, in the order of self.types
         # Opened collections (collection_key()): their row and the types requested there.
@@ -252,8 +254,18 @@ class ExplorerPanel(Gtk.Box):
         if not self.types_changed:
             return
         self.types_changed = False
-        self.worker.request("save_types", (list(self.enabled), [entry["name"] for entry in self.types]),
-                            lambda _result: None, self._save_failed)
+        shown, known = list(self.enabled), [entry["name"] for entry in self.types]
+
+        def save() -> None:
+            # Its own thread, not the worker's: saving may wait for the keyring
+            # (an unlock prompt), and the pages queued behind it would wait too.
+            try:
+                self.worker.source.save_types(shown, known)
+            except ExplorerError as exc:
+                message = str(exc)
+                self.deliver(lambda: self._save_failed(message) and False)
+
+        threading.Thread(target=save, name="explorer-save", daemon=True).start()
 
     def _save_failed(self, message: str) -> None:
         self.status.set_text(message)
