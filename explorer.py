@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import inspect
 import queue
+from dataclasses import replace
 import threading
 from typing import Any, Callable
 
@@ -94,10 +95,15 @@ class ExplorerSource:
     again after a 401 or when URL, user, password or TLS setting changed."""
 
     def __init__(self, load_config: Callable[[], Any] | None = None,
-                 instance_factory: Callable[..., Any] | None = None) -> None:
+                 instance_factory: Callable[..., Any] | None = None,
+                 save_setting: Callable[[str, Any], None] | None = None) -> None:
         if load_config is None:
             from config import load_config
+        if save_setting is None:
+            from config import save_setting
         self._load_config = load_config
+        self._save_setting = save_setting
+        self._config = None
         self._instance_factory = instance_factory
         self._instance = None
         self._login_key: tuple | None = None
@@ -118,6 +124,7 @@ class ExplorerSource:
             config = self._load_config()
         except ValueError as exc:
             raise ExplorerError(f"{NOT_CONFIGURED} ({exc})") from None
+        self._config = config
         key = (config.url, config.user, config.password, config.verify_tls)
         if self._instance is not None and key == self._login_key and not force:
             return self._instance
@@ -184,8 +191,9 @@ class ExplorerSource:
         return self._classes
 
     def types(self) -> list[dict]:
-        """[{name, label, generic}]: the ELN's types in its order ("place"),
-        then the generic ones by label; inactive ones left out."""
+        """[{name, label, generic, shown}]: the ELN's types in its order
+        ("place"), then the generic ones by label; inactive ones left out.
+        `shown`: chosen in the config (explorer_types), else DEFAULT_TYPES."""
 
         def work(instance):
             found = []
@@ -197,10 +205,27 @@ class ExplorerSource:
                 found.append((generic, place if isinstance(place, (int, float)) else 1000,
                               str(klass.get("label") or name).lower(), name, klass))
             found.sort(key=lambda entry: entry[:3])
-            return [{"name": name, "label": klass.get("label") or name, "generic": generic}
+            chosen = getattr(self._config, "explorer_types", None)
+            shown = DEFAULT_TYPES if chosen is None else chosen
+            return [{"name": name, "label": klass.get("label") or name, "generic": generic, "shown": name in shown}
                     for generic, _place, _label, name, klass in found]
 
         return self._call(work)
+
+    def save_types(self, shown: list[str], known: list[str]) -> None:
+        """Save the choice: `shown` of the `known` types of this server; saved
+        names of types this server does not have stay as they were."""
+        chosen = getattr(self._config, "explorer_types", None)
+        others = [name for name in (DEFAULT_TYPES if chosen is None else chosen) if name not in known]
+        try:
+            self._save_setting("explorer_types", list(shown) + others)
+        except OSError as exc:
+            raise ExplorerError(f"The choice of types was not saved: {exc}") from None
+        if self._config is not None:
+            try:
+                self._config = replace(self._config, explorer_types=tuple(shown) + tuple(others))
+            except TypeError:  # not a dataclass (tests)
+                self._config.explorer_types = tuple(shown) + tuple(others)
 
     def page(self, collection: dict, type_name: str, page: int = 1, per_page: int = PER_PAGE) -> dict:
         """One page of one type in one collection:

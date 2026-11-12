@@ -6,6 +6,11 @@ opened: per element type the first PER_PAGE, then a "More…" row while the
 type has more. All requests go through explorer.ExplorerWorker (one thread);
 its answers come back on the main loop.
 
+The "Types" dropdown chooses the element types shown (saved as the config's
+explorer_types). Hiding a type only filters its rows (a Gtk.TreeModelFilter
+between store and view), so showing it again needs no request; a type never
+loaded in an opened collection is loaded when it is turned on.
+
 Rows of one collection, in this order: its subcollections, then per type
 (in the order of `types`) its elements. Every type of an opened collection
 has one "anchor" row: "Loading…" while a page is on its way, "More…" when
@@ -22,7 +27,7 @@ import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import GLib, GObject, Gtk, Pango  # type: ignore  # noqa: E402
 
-from explorer import DEFAULT_TYPES, PER_PAGE, ExplorerSource, ExplorerWorker  # noqa: E402
+from explorer import PER_PAGE, ExplorerSource, ExplorerWorker  # noqa: E402
 
 # TreeStore columns.
 ICON, TEXT, TOOLTIP, KIND, DATA = range(5)
@@ -69,6 +74,10 @@ class ExplorerPanel(Gtk.Box):
         self.worker = ExplorerWorker(source or ExplorerSource(), deliver or GLib.idle_add)
         self.types: list[dict] = []  # ExplorerSource.types()
         self.enabled: list[str] = []  # the type names shown, in the order of self.types
+        # Opened collections (by id): their row and the types requested there.
+        self.opened: dict[int, tuple[Gtk.TreeRowReference, set[str]]] = {}
+        self.types_changed = False  # save the choice when the popover closes
+        self.checks: dict[str, Gtk.CheckButton] = {}  # the popover's, per type
         self.started = False
         self.closed = False
 
@@ -77,6 +86,16 @@ class ExplorerPanel(Gtk.Box):
         self.status.get_style_context().add_class("dim")
         self.status.set_ellipsize(Pango.EllipsizeMode.END)
         toolbar.pack_start(self.status, True, True, 0)
+        self.types_button = Gtk.MenuButton()
+        self.types_button.set_relief(Gtk.ReliefStyle.NONE)
+        self.types_button.set_tooltip_text("Choose the element types to show")
+        self.types_label = Gtk.Label(label="Types")
+        content = Gtk.Box(spacing=4)
+        content.pack_start(self.types_label, False, False, 0)
+        content.pack_start(Gtk.Image.new_from_icon_name("pan-down-symbolic", Gtk.IconSize.BUTTON), False, False, 0)
+        self.types_button.add(content)
+        self.types_button.set_sensitive(False)  # until the types are known
+        toolbar.pack_end(self.types_button, False, False, 0)
         refresh = Gtk.Button.new_from_icon_name("view-refresh-symbolic", Gtk.IconSize.BUTTON)
         refresh.set_relief(Gtk.ReliefStyle.NONE)
         refresh.set_tooltip_text("Load the collections again")
@@ -102,7 +121,9 @@ class ExplorerPanel(Gtk.Box):
         self.pack_start(self.problem, False, False, 0)
 
         self.store = Gtk.TreeStore(str, str, str, str, GObject.TYPE_PYOBJECT)
-        self.view = Gtk.TreeView(model=self.store)
+        self.filter = self.store.filter_new(None)
+        self.filter.set_visible_func(self._visible)
+        self.view = Gtk.TreeView(model=self.filter)
         self.view.set_headers_visible(False)
         self.view.set_enable_search(True)
         self.view.set_search_column(TEXT)
@@ -140,14 +161,86 @@ class ExplorerPanel(Gtk.Box):
         self.started = True
         self.worker.reset()
         self.store.clear()
+        self.opened.clear()
         self._show_problem(None)
         self.status.set_text("Loading the collections…")
         self.worker.request("types", (), self._got_types, self._failed)
 
     def _got_types(self, types: list[dict]) -> None:
         self.types = types
-        self.enabled = [entry["name"] for entry in types if entry["name"] in DEFAULT_TYPES]
+        self.enabled = [entry["name"] for entry in types if entry["shown"]]
+        self._build_types_popover()
+        self.filter.refilter()
         self.worker.request("collections", (), self._got_collections, self._failed)
+
+    # -- the types dropdown ---------------------------------------------------------
+
+    def _build_types_popover(self) -> None:
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, border_width=8)
+        generic_heading = False
+        self.checks = {}
+        for entry in self.types:
+            if entry["generic"] and not generic_heading:
+                generic_heading = True
+                box.pack_start(Gtk.Separator(margin_top=4, margin_bottom=4), False, False, 0)
+                heading = Gtk.Label(label="Generic elements", xalign=0)
+                heading.get_style_context().add_class("dim")
+                box.pack_start(heading, False, False, 0)
+            check = Gtk.CheckButton(label=entry["label"])
+            check.set_active(entry["name"] in self.enabled)
+            check.connect("toggled", lambda button, name=entry["name"]: self.set_shown(name, button.get_active()))
+            self.checks[entry["name"]] = check
+            box.pack_start(check, False, False, 0)
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_propagate_natural_height(True)
+        scroller.set_max_content_height(420)
+        scroller.add(box)
+        scroller.show_all()
+        popover = Gtk.Popover(relative_to=self.types_button)
+        popover.add(scroller)
+        popover.connect("closed", lambda *_: self._save_types())
+        self.types_button.set_popover(popover)
+        self.types_button.set_sensitive(True)
+        self._update_types_label()
+
+    def _update_types_label(self) -> None:
+        self.types_label.set_text(f"Types ({len(self.enabled)} of {len(self.types)})")
+
+    def set_shown(self, type_name: str, shown: bool) -> None:
+        """Show or hide one type; a type turned on is loaded in every opened
+        collection that has not requested it yet."""
+        if shown == (type_name in self.enabled):
+            return
+        order = [entry["name"] for entry in self.types]
+        names = set(self.enabled) | {type_name} if shown else set(self.enabled) - {type_name}
+        self.enabled = [name for name in order if name in names]
+        self.types_changed = True
+        if type_name in self.checks:
+            self.checks[type_name].set_active(shown)  # its "toggled" comes back here and returns
+        self._update_types_label()
+        self.filter.refilter()
+        if shown:
+            for reference, requested in list(self.opened.values()):
+                row = self._row(reference)
+                if row is not None and type_name not in requested:
+                    self._add_type(row, type_name, requested)
+
+    def _save_types(self) -> None:
+        if not self.types_changed:
+            return
+        self.types_changed = False
+        self.worker.request("save_types", (list(self.enabled), [entry["name"] for entry in self.types]),
+                            lambda _result: None, self._save_failed)
+
+    def _save_failed(self, message: str) -> None:
+        self.status.set_text(message)
+
+    def _visible(self, model, row, _data) -> bool:
+        kind = model.get_value(row, KIND)
+        if kind in (ELEMENT, ANCHOR):
+            return model.get_value(row, DATA)["type"] in self.enabled
+        return True
 
     def _got_collections(self, nodes: list[dict]) -> None:
         self.store.clear()
@@ -185,21 +278,47 @@ class ExplorerPanel(Gtk.Box):
 
     # -- elements -----------------------------------------------------------------
 
-    def _on_expanded(self, _view, row: Gtk.TreeIter, _path) -> None:
+    def _on_expanded(self, _view, view_row: Gtk.TreeIter, _path) -> None:
+        row = self.filter.convert_iter_to_child_iter(view_row)
         if self.store[row][KIND] != COLLECTION:
             return
         pending = self._child_of_kind(row, PENDING)
         if pending is None:
             return  # opened before
         node = self.store[row][DATA]
-        if not self.enabled:
+        requested: set[str] = set()
+        self.opened[node["id"]] = (self._reference(row), requested)
+        for type_name in self.enabled:
+            self._add_type(row, type_name, requested)
+        if self.enabled:
+            self.store.remove(pending)  # after the anchors: a row without children would collapse
+        else:
             self.store.set(pending, [TEXT, KIND], ["<i>No element types chosen</i>", NOTE])
-            return
-        anchors = [self._reference(self.store.append(row, ["", "", None, ANCHOR, {
-            "collection": node, "type": type_name, "page": 1, "state": ""}])) for type_name in self.enabled]
-        self.store.remove(pending)  # after the anchors: a row without children would collapse
-        for anchor in anchors:
-            self._load_page(anchor)
+
+    def _add_type(self, collection: Gtk.TreeIter, type_name: str, requested: set[str]) -> None:
+        """The anchor of `type_name` in an opened collection, in the place of
+        its type (before the rows of the types after it), and its first page."""
+        requested.add(type_name)
+        order = [entry["name"] for entry in self.types]
+        rank = order.index(type_name) if type_name in order else len(order)
+        before, notes = None, []
+        child = self.store.iter_children(collection)
+        while child is not None:
+            kind = self.store[child][KIND]
+            if kind == NOTE:  # "Empty", "No element types chosen"
+                notes.append(self._reference(child))
+            elif kind in (ELEMENT, ANCHOR) and before is None:
+                other = self.store[child][DATA]["type"]
+                if (order.index(other) if other in order else len(order)) > rank:
+                    before = child
+            child = self.store.iter_next(child)
+        values = ["", "", None, ANCHOR, {"collection": self.store[collection][DATA], "type": type_name,
+                                         "page": 1, "state": ""}]
+        anchor = self._reference(self.store.insert_before(collection, before, values) if before is not None
+                                 else self.store.append(collection, values))
+        for note in notes:  # after the anchor: a row without children would collapse
+            self.store.remove(self._row(note))
+        self._load_page(anchor)
 
     def _child_of_kind(self, row: Gtk.TreeIter, kind: str) -> Gtk.TreeIter | None:
         child = self.store.iter_children(row)
@@ -281,14 +400,19 @@ class ExplorerPanel(Gtk.Box):
         elif kind == ANCHOR and self.store[row][DATA]["state"] in ("more", "error"):
             self._load_page(self._reference(row))
         elif kind in (COLLECTION, GROUP):
-            path = self.store.get_path(row)
+            path = self.filter.convert_child_path_to_path(self.store.get_path(row))
+            if path is None:
+                return
             if self.view.row_expanded(path):
                 self.view.collapse_row(path)
             else:
                 self.view.expand_row(path, False)
 
+    def _store_row(self, view_path) -> Gtk.TreeIter:
+        return self.filter.convert_iter_to_child_iter(self.filter.get_iter(view_path))
+
     def _on_activated(self, _view, path, _column) -> None:
-        self._activate(self.store.get_iter(path))
+        self._activate(self._store_row(path))
 
     def _on_click(self, _view, event) -> bool:
         """A single click is enough for "More…" and "try again" (an element
@@ -298,7 +422,7 @@ class ExplorerPanel(Gtk.Box):
         hit = self.view.get_path_at_pos(int(event.x), int(event.y))
         if hit is None:
             return False
-        row = self.store.get_iter(hit[0])
+        row = self._store_row(hit[0])
         if self.store[row][KIND] == ANCHOR and self.store[row][DATA]["state"] in ("more", "error"):
             self._activate(row)
             return True

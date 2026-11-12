@@ -164,6 +164,28 @@ def test_types_in_the_elns_order(server):
         ("alpha", "Alpha", True), ("wrk", "Workflow", True)]
 
 
+def test_shown_types_and_saving_the_choice(server):
+    source, current = source_for(server)
+    assert [t["name"] for t in source.types() if t["shown"]] == ["sample", "reaction"]  # DEFAULT_TYPES
+
+    current["config"] = config(explorer_types=("wrk", "elsewhere"))
+    assert [t["name"] for t in source.types() if t["shown"]] == ["wrk"]
+
+    saved = []
+    source._save_setting = lambda key, value: saved.append((key, value))
+    source.save_types(["sample", "alpha"], ["sample", "reaction", "alpha", "wrk"])
+    # "elsewhere" is no type of this server: kept for the server that has it.
+    assert saved == [("explorer_types", ["sample", "alpha", "elsewhere"])]
+    assert source._config.explorer_types == ("sample", "alpha", "elsewhere")
+
+    def refuse(key, value):
+        raise OSError("the settings cannot be saved now: locked")
+
+    source._save_setting = refuse
+    with pytest.raises(ExplorerError, match="not saved: the settings cannot be saved now"):
+        source.save_types([], ["sample"])
+
+
 def test_pages_of_ten_with_more(server):
     server.elements[(10, "sample")] = samples(12)
     source, _ = source_for(server)
