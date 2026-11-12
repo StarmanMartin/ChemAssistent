@@ -291,6 +291,31 @@ def test_config_is_hashable():
     assert {("conversation", config): 1}[("conversation", config)] == 1
 
 
+def test_explorer_types(tmp_path, monkeypatch, keyring):
+    """The Explorer's type choice: absent = its defaults, saved without
+    touching the secrets, refused while the keyring does not give them."""
+    use_config_file(tmp_path, monkeypatch)
+    save_raw_config(SETTINGS)
+    assert load_config().explorer_types is None
+    assert app_config.explorer_types({"explorer_types": ["sample", " wrk ", "sample", 3, ""]}) == ["sample", "wrk"]
+    assert app_config.explorer_types({"explorer_types": "sample"}) is None
+
+    app_config.save_setting("explorer_types", ["reaction", "wrk"])
+    loaded = load_config()
+    assert loaded.explorer_types == ("reaction", "wrk")
+    assert loaded.password == "p" and keyring.secrets["password"] == "p"
+    app_config.save_setting("explorer_types", [])
+    assert load_config().explorer_types == ()  # everything hidden is a choice too
+
+    path = app_config.CONFIG_FILE
+    write_private_json(path, {**json.loads(path.read_text()), "user": "v"})  # no cached secrets
+    keyring.fail = True
+    with pytest.raises(OSError, match="cannot be saved now"):
+        app_config.save_setting("explorer_types", ["sample"])
+    keyring.fail = False
+    assert keyring.secrets["password"] == "p"
+
+
 def test_setup_ai_moves_the_secrets_into_the_keyring(tmp_path, monkeypatch, keyring, capsys):
     import setup_ai
 

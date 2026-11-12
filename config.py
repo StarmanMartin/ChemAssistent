@@ -200,6 +200,8 @@ class Config:
     # MCP servers the user added (settings, or the agent after "/mcp"):
     # normalized dicts (mcp_servers()), the disabled ones included.
     mcp_servers: tuple = ()
+    # The element types the Explorer tab shows (explorer_types()); None = its defaults.
+    explorer_types: tuple | None = None
 
     @property
     def jupyter(self) -> bool:
@@ -405,6 +407,32 @@ def mcp_servers(data: dict) -> list[dict]:
             names.add(spec["name"])
             servers.append(normalize_mcp_server(spec))
     return servers
+
+
+def explorer_types(data: dict) -> list[str] | None:
+    """The element types the Explorer shows (names, as the user chose them;
+    names this server does not know are kept: another server may have them),
+    or None while nothing was chosen (the Explorer's defaults)."""
+    names = data.get("explorer_types")
+    if not isinstance(names, list):
+        return None
+    chosen: list[str] = []
+    for name in names:
+        if isinstance(name, str) and name.strip() and name.strip() not in chosen:
+            chosen.append(name.strip())
+    return chosen
+
+
+def save_setting(key: str, value) -> None:
+    """Change one key of the saved config (a UI choice like explorer_types).
+    Raises OSError, also while the keyring does not give the secrets: saving
+    then would delete them (RawConfig)."""
+    data = read_raw_config(retry=True)
+    if data.keyring_problem:
+        raise OSError(f"the settings cannot be saved now: the system keyring did not give the "
+                      f"passwords and tokens ({data.keyring_problem})")
+    data[key] = value
+    save_raw_config(data)
 
 
 def write_private_json(path: Path, data: object) -> None:
@@ -716,4 +744,5 @@ def load_config(keyring_required: bool = True) -> Config:
         github_token=str(data.get("github_token") or "").strip(),
         history_access=bool(data.get("history_access", False)),
         mcp_servers=tuple(mcp_servers(data)),
+        explorer_types=None if (types := explorer_types(data)) is None else tuple(types),
     )
