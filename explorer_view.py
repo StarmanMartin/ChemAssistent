@@ -165,8 +165,10 @@ class ExplorerPanel(Gtk.Box):
             self.problem.hide()
             return
         self.problem_text.set_text(message)
+        for child in self.problem.get_children():  # show_all() skips a no_show_all widget itself
+            child.show_all()
         self.settings_button.set_visible("settings" in message)
-        self.problem.show_all()
+        self.problem.show()
 
     def _add_collection(self, parent: Gtk.TreeIter | None, node: dict) -> None:
         if node["id"] is None:  # "Shared with me"

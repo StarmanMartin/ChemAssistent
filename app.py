@@ -86,6 +86,7 @@ from agent import (  # noqa: E402
     looks_read_only, message_text, model_infos, without_images, mcp_command, tool_summary,
 )
 from cli_agent import CliAgent, cli_models, command_problem  # noqa: E402
+from explorer_view import ExplorerPanel  # noqa: E402
 from mcp_client import McpHub, split_tool_name  # noqa: E402
 from jobs import ACTIVE, FINISHED, REPORT_HEADER, USER_TEXT, Jobs, duration  # noqa: E402
 from jupyter import JupyterBridge, JupyterError  # noqa: E402
@@ -1140,9 +1141,11 @@ class BottomFollower:
 class ResultsPanel(Gtk.Box):
     """One tab per snippet: its code to confirm on top and, once it ran, its
     output below. Tabs of waiting or running code stay; at most
-    MAX_RESULT_TABS are kept. The first tab, "Links", collects every link the
-    conversation showed (Chemotion elements, JupyterLab notebooks, exchanged
-    files); it appears with the first link and is never dropped."""
+    MAX_RESULT_TABS are kept. The first tab, "Explorer", is always there: the
+    Chemotion collections and their elements (explorer_view.py). The second,
+    "Links", collects every link the conversation showed (Chemotion elements,
+    JupyterLab notebooks, exchanged files); it appears with the first link and
+    is never dropped."""
 
     def __init__(self) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
@@ -1167,19 +1170,26 @@ class ResultsPanel(Gtk.Box):
             "You can read and edit it, then Run or Reject it. Nothing runs without your confirmation.",
             "dim",
         )
-        self.empty.set_margin_top(20)
         self.empty.set_margin_start(10)
         self.empty.set_margin_end(10)
-        # Hidden with the first tab; a show_all() of the window (when a
-        # conversation is continued, with Links already there) must not bring it back.
+        self.empty.set_margin_bottom(8)
+        # Hidden with the first code tab; a show_all() of the window (when a
+        # conversation is continued) must not bring it back.
         self.empty.set_no_show_all(True)
         self.empty.show()
         self.pack_start(self.empty, False, False, 0)
 
         self.tabs = Gtk.Notebook()
         self.tabs.set_scrollable(True)
-        self.tabs.set_no_show_all(True)  # shown with the first card
         self.pack_start(self.tabs, True, True, 0)
+        self.explorer = ExplorerPanel(open_url, open_settings)
+        tab = Gtk.Box(spacing=4)
+        tab.pack_start(Gtk.Image.new_from_icon_name("folder-symbolic", Gtk.IconSize.MENU), False, False, 0)
+        tab.pack_start(label("Explorer", wrap=False), False, False, 0)
+        tab.set_tooltip_text("The Chemotion collections and their elements")
+        tab.show_all()
+        self.explorer.show_all()
+        self.tabs.append_page(self.explorer, tab)
 
     def add_request(self, pending: PendingRequest) -> RequestCard:
         self.empty.hide()
@@ -1247,11 +1257,9 @@ class ResultsPanel(Gtk.Box):
         scroller.show_all()
         self.links_page = scroller
         current = self.tabs.get_nth_page(self.tabs.get_current_page())
-        self.tabs.insert_page(scroller, tab, 0)
+        self.tabs.insert_page(scroller, tab, 1)  # after the Explorer
         if current is not None:
             self.tabs.set_current_page(self.tabs.page_num(current))
-        self.empty.hide()
-        self.tabs.show()
 
     def _collect_links(self, card: RequestCard) -> None:
         """The links one run showed, into the Links tab."""
@@ -1303,8 +1311,7 @@ class ResultsPanel(Gtk.Box):
             self.tabs.remove_page(self.tabs.page_num(page))
         if card in self.cards:
             self.cards.remove(card)
-        if not self.tabs.get_n_pages():  # the Links tab stays once it exists
-            self.tabs.hide()
+        if not self.cards:
             self.empty.show()
 
     def _prune(self) -> None:
@@ -1340,6 +1347,7 @@ class ResultsPanel(Gtk.Box):
             window.set_urgency_hint(bool(count) and not window.is_active())
 
     def close(self) -> None:
+        self.explorer.close()
         for card in self.cards:
             card.close()
 
