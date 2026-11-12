@@ -20,6 +20,7 @@ with an image fails in the listing, v312) and the Explorer needs only labels.
 from __future__ import annotations
 
 import inspect
+import json
 import queue
 from dataclasses import replace
 import threading
@@ -171,16 +172,29 @@ class ExplorerSource:
     def collections(self) -> list[dict]:
         """The tree: "All", the own collections, then "Shared with me" (only
         when something is shared). Nodes are
-        {id, label, path, shared, children}; "Shared with me" has id None."""
+        {id, label, path, shared, url, children}; "Shared with me" has id
+        and url None."""
 
         def work(instance):
             root = self._root_of(instance, reload=True)
-            nodes = [{"id": root.id, "label": ALL_LABEL, "path": ALL_LABEL, "shared": False, "children": []}]
-            nodes += [_node(child, "", False) for child in root.children]
-            shared = [_node(child, "", True) for child in root.sync_root.children]
+            host = instance.host_url.rstrip("/")
+            shared_route = "scollection" if _uses_sync_ids(listing_class()) else "collection"
+
+            def node(collection, parent_path: str, shared: bool) -> dict:
+                label = str(collection.label or "")
+                path = f"{parent_path}/{label}" if parent_path else label
+                route = shared_route if shared else "collection"
+                return {"id": collection.id, "label": label, "path": path, "shared": shared,
+                        "url": f"{host}/mydb/{route}/{collection.id}",
+                        "children": [node(child, path, shared) for child in collection.children]}
+
+            nodes = [{"id": root.id, "label": ALL_LABEL, "path": ALL_LABEL, "shared": False,
+                      "url": f"{host}/mydb/collection/{root.id}", "children": []}]
+            nodes += [node(child, "", False) for child in root.children]
+            shared = [node(child, "", True) for child in root.sync_root.children]
             if shared:
                 nodes.append({"id": None, "label": SHARED_LABEL, "path": SHARED_LABEL, "shared": True,
-                              "children": shared})
+                              "url": None, "children": shared})
             return nodes
 
         return self._call(work)
@@ -277,11 +291,20 @@ class ExplorerSource:
         return self._call(work)
 
 
-def _node(collection, parent_path: str, shared: bool) -> dict:
-    label = str(collection.label or "")
-    path = f"{parent_path}/{label}" if parent_path else label
-    return {"id": collection.id, "label": label, "path": path, "shared": shared,
-            "children": [_node(child, path, shared) for child in collection.children]}
+def mention_text(type_label: str, item: dict | None, collection: dict) -> str:
+    """What "Mention in message" puts into the chat input: enough for the
+    agent to find the element (type name and id) or the collection (path, id).
+    `item` None: the collection itself."""
+    where = "shared collection" if collection.get("shared") else "collection"
+    path = json.dumps(collection.get("path") or "", ensure_ascii=False)
+    if item is None:
+        return f"{where} {path} (id {collection.get('id')})"
+    words = [type_label.lower()]
+    if item.get("short_label"):
+        words.append(item["short_label"])
+    if item.get("name"):
+        words.append(json.dumps(item["name"], ensure_ascii=False))
+    return f"{' '.join(words)} ({item['type']} id {item['id']} in {where} {path})"
 
 
 class ExplorerWorker:

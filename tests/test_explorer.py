@@ -145,13 +145,18 @@ def test_collection_tree(server):
     source, _ = source_for(server)
     nodes = source.collections()
     assert [node["label"] for node in nodes] == ["All", "Project", "Other", "Shared with me"]
-    assert nodes[0] == {"id": 9, "label": "All", "path": "All", "shared": False, "children": []}
-    assert nodes[1]["children"][0] == {"id": 12, "label": "Step 1", "path": "Project/Step 1",
-                                       "shared": False, "children": []}
+    assert nodes[0] == {"id": 9, "label": "All", "path": "All", "shared": False,
+                        "url": "https://eln.example/mydb/collection/9", "children": []}
+    assert nodes[1]["children"][0] == {"id": 12, "label": "Step 1", "path": "Project/Step 1", "shared": False,
+                                       "url": "https://eln.example/mydb/collection/12", "children": []}
     shared = nodes[3]
-    assert shared["id"] is None and shared["shared"]
+    assert shared["id"] is None and shared["shared"] and shared["url"] is None
     assert shared["children"][0]["children"][0]["path"] == "From Bob/Spectra"
     assert shared["children"][0]["shared"]
+    assert shared["children"][0]["url"] == "https://eln.example/mydb/collection/50"  # v4
+
+    explorer._listing_class = make_listing(sync_parameter=True)  # v312: the web client's own route
+    assert source.collections()[3]["children"][0]["url"] == "https://eln.example/mydb/scollection/50"
 
     server.shared = []
     assert [node["label"] for node in source.collections()] == ["All", "Project", "Other"]
@@ -222,6 +227,17 @@ def test_page_without_total_uses_the_page_count(server, monkeypatch):
     source, _ = source_for(server)
     assert source.page({"id": 10}, "sample")["more"]
     assert not source.page({"id": 10}, "sample", 2)["more"]
+
+
+def test_mention_text():
+    collection = {"id": 10, "path": "Project/Step \"1\"", "shared": False}
+    item = {"id": 345, "type": "sample", "short_label": "API-12", "name": "Benzaldehyde"}
+    assert explorer.mention_text("Sample", item, collection) == (
+        'sample API-12 "Benzaldehyde" (sample id 345 in collection "Project/Step \\"1\\"")')
+    plan = {"id": 1, "type": "research_plan", "short_label": "", "name": ""}
+    assert explorer.mention_text("Research Plan", plan, {"id": 51, "path": "Bob/Spectra", "shared": True}) == (
+        'research plan (research_plan id 1 in shared collection "Bob/Spectra")')
+    assert explorer.mention_text("", None, collection) == 'collection "Project/Step \\"1\\"" (id 10)'
 
 
 def test_element_names_fall_back_to_the_molecule():

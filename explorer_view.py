@@ -11,6 +11,10 @@ explorer_types). Hiding a type only filters its rows (a Gtk.TreeModelFilter
 between store and view), so showing it again needs no request; a type never
 loaded in an opened collection is loaded when it is turned on.
 
+Right click (or the Menu key): open in Chemotion, copy the link, mention the
+element or collection in the chat input. Refresh keeps the opened
+collections open and reloads as many pages per type as were shown.
+
 Rows of one collection, in this order: its subcollections, then per type
 (in the order of `types`) its elements. Every type of an opened collection
 has one "anchor" row: "Loading…" while a page is on its way, "More…" when
@@ -25,9 +29,9 @@ from typing import Callable
 import gi
 
 gi.require_version("Gtk", "3.0")
-from gi.repository import GLib, GObject, Gtk, Pango  # type: ignore  # noqa: E402
+from gi.repository import Gdk, GLib, GObject, Gtk, Pango  # type: ignore  # noqa: E402
 
-from explorer import PER_PAGE, ExplorerSource, ExplorerWorker  # noqa: E402
+from explorer import PER_PAGE, ExplorerSource, ExplorerWorker, mention_text  # noqa: E402
 
 # TreeStore columns.
 ICON, TEXT, TOOLTIP, KIND, DATA = range(5)
@@ -56,6 +60,11 @@ STATE_ICONS = {"loading": "content-loading-symbolic", "more": "view-more-horizon
                "error": "dialog-warning-symbolic"}
 
 
+def collection_key(node: dict) -> tuple:
+    """Own and shared collections may share ids (v312: separate tables)."""
+    return (bool(node.get("shared")), node.get("id"))
+
+
 def plural(label: str) -> str:
     return label if label.endswith("s") else label + "s"
 
@@ -67,15 +76,21 @@ class ExplorerPanel(Gtk.Box):
 
     def __init__(self, open_url: Callable[[str], None], open_settings: Callable[[], None],
                  source: ExplorerSource | None = None,
-                 deliver: Callable[[Callable[[], None]], object] | None = None) -> None:
+                 deliver: Callable[[Callable[[], None]], object] | None = None,
+                 mention: Callable[[str], None] | None = None) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.open_url = open_url
         self.open_settings = open_settings
+        self.mention = mention  # puts a text into the chat input; None: no "Mention" entry
         self.worker = ExplorerWorker(source or ExplorerSource(), deliver or GLib.idle_add)
         self.types: list[dict] = []  # ExplorerSource.types()
         self.enabled: list[str] = []  # the type names shown, in the order of self.types
-        # Opened collections (by id): their row and the types requested there.
-        self.opened: dict[int, tuple[Gtk.TreeRowReference, set[str]]] = {}
+        # Opened collections (collection_key()): their row and the types requested there.
+        self.opened: dict[tuple, tuple[Gtk.TreeRowReference, set[str]]] = {}
+        # What refresh() brings back: the expanded rows (collection_key(), or
+        # "shared" for the group) and the pages per (collection key, type).
+        self.restore_expanded: set = set()
+        self.restore_pages: dict[tuple, int] = {}
         self.types_changed = False  # save the choice when the popover closes
         self.checks: dict[str, Gtk.CheckButton] = {}  # the popover's, per type
         self.started = False
@@ -140,6 +155,8 @@ class ExplorerPanel(Gtk.Box):
         self.view.connect("row-expanded", self._on_expanded)
         self.view.connect("row-activated", self._on_activated)
         self.view.connect("button-release-event", self._on_click)
+        self.view.connect("button-press-event", self._on_press)
+        self.view.connect("popup-menu", self._on_popup_menu)
         scroller = Gtk.ScrolledWindow()
         scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         scroller.add(self.view)
@@ -157,8 +174,10 @@ class ExplorerPanel(Gtk.Box):
         self.refresh()
 
     def refresh(self) -> None:
-        """Everything again: types, collections; opened collections are closed."""
+        """Everything again: types, collections; the opened collections are
+        opened again with as many pages per type as they showed."""
         self.started = True
+        self._remember()
         self.worker.reset()
         self.store.clear()
         self.opened.clear()
@@ -247,6 +266,56 @@ class ExplorerPanel(Gtk.Box):
         for node in nodes:
             self._add_collection(None, node)
         self.status.set_text("Open a collection to see its elements.")
+        self._restore()
+
+    def _remember(self) -> None:
+        """What is open now, for _restore() after the reload."""
+        if not len(self.store):
+            return  # nothing loaded (yet): keep what an earlier refresh remembered
+        expanded: set = set()
+
+        def note(_view, path) -> None:
+            row = self._store_row(path)
+            if self.store[row][KIND] == GROUP:
+                expanded.add("shared")
+            elif self.store[row][KIND] == COLLECTION:
+                expanded.add(collection_key(self.store[row][DATA]))
+
+        self.view.map_expanded_rows(note)
+        pages: dict[tuple, int] = {}
+        for key, (reference, _requested) in self.opened.items():
+            row = self._row(reference)
+            counts: dict[str, int] = {}
+            child = self.store.iter_children(row) if row is not None else None
+            while child is not None:
+                if self.store[child][KIND] == ELEMENT:
+                    type_name = self.store[child][DATA]["type"]
+                    counts[type_name] = counts.get(type_name, 0) + 1
+                child = self.store.iter_next(child)
+            for type_name, count in counts.items():
+                pages[(key, type_name)] = -(-count // PER_PAGE)
+        self.restore_expanded, self.restore_pages = expanded, pages
+
+    def _restore(self) -> None:
+        """Expand what was expanded before refresh() (parents first: the
+        store is walked top-down); _got_page() loads the further pages."""
+        if not self.restore_expanded:
+            return
+        expanded, self.restore_expanded = self.restore_expanded, set()
+
+        def walk(parent) -> None:
+            row = self.store.iter_children(parent)
+            while row is not None:
+                kind, data = self.store[row][KIND], self.store[row][DATA]
+                key = "shared" if kind == GROUP else collection_key(data) if kind == COLLECTION else None
+                if key in expanded:
+                    path = self.filter.convert_child_path_to_path(self.store.get_path(row))
+                    if path is not None:
+                        self.view.expand_row(path, False)
+                    walk(row)
+                row = self.store.iter_next(row)
+
+        walk(None)
 
     def _failed(self, message: str) -> None:
         self.store.clear()
@@ -287,7 +356,7 @@ class ExplorerPanel(Gtk.Box):
             return  # opened before
         node = self.store[row][DATA]
         requested: set[str] = set()
-        self.opened[node["id"]] = (self._reference(row), requested)
+        self.opened[collection_key(node)] = (self._reference(row), requested)
         for type_name in self.enabled:
             self._add_type(row, type_name, requested)
         if self.enabled:
@@ -374,8 +443,13 @@ class ExplorerPanel(Gtk.Box):
             label = GLib.markup_escape_text(plural(self._type_label(anchor["type"])).lower())
             self._set_anchor(row, "more", f"<i>More {label}… ({loaded} of {page['total']})</i>",
                              f"Load the next {PER_PAGE}")
+            wanted = (collection_key(anchor["collection"]), anchor["type"])
+            if self.restore_pages.get(wanted, 0) >= anchor["page"]:  # refresh(): as many pages as before
+                self._load_page(reference)
+            else:
+                self.restore_pages.pop(wanted, None)
         else:
-            row = self._row(reference)
+            self.restore_pages.pop((collection_key(anchor["collection"]), anchor["type"]), None)
             self.store.remove(row)
             self._mark_empty(parent)
 
@@ -427,6 +501,76 @@ class ExplorerPanel(Gtk.Box):
             self._activate(row)
             return True
         return False
+
+    # -- the context menu -------------------------------------------------------------
+
+    def _on_press(self, view, event) -> bool:
+        if event.type != Gdk.EventType.BUTTON_PRESS or event.button != 3:
+            return False
+        hit = view.get_path_at_pos(int(event.x), int(event.y))
+        if hit is None:
+            return False
+        view.set_cursor(hit[0], None, False)
+        x, y = view.convert_bin_window_to_widget_coords(int(event.x), int(event.y))
+        return self._menu(self._store_row(hit[0]), x, y)
+
+    def _on_popup_menu(self, view) -> bool:
+        """The Menu key or Shift+F10: the menu of the selected row."""
+        model, view_row = view.get_selection().get_selected()
+        if view_row is None:
+            return False
+        path = model.get_path(view_row)
+        area = view.get_cell_area(path, view.get_column(0))
+        x, y = view.convert_bin_window_to_widget_coords(area.x + 24, area.y + area.height)
+        return self._menu(self._store_row(path), x, y)
+
+    def menu_entries(self, row: Gtk.TreeIter) -> list[tuple[str, Callable[[], None]]]:
+        """(label, action) of the context menu of a store row; [] for none."""
+        kind, data = self.store[row][KIND], self.store[row][DATA]
+        if kind == ELEMENT:
+            parent = self.store.iter_parent(row)
+            collection = self.store[parent][DATA]
+            text = mention_text(self._type_label(data["type"]), data, collection)
+            url = data["url"]
+        elif kind == COLLECTION:
+            collection, text, url = data, mention_text("", None, data), data.get("url")
+        else:
+            return []
+        entries: list[tuple[str, Callable[[], None]]] = []
+        if url:
+            entries += [("Open in Chemotion", lambda: self.open_url(url)),
+                        ("Copy link", lambda: self.copy(url))]
+        if self.mention is not None:
+            entries.append(("Mention in message", lambda: self.mention(text)))
+        return entries
+
+    def _menu(self, row: Gtk.TreeIter, x: int, y: int) -> bool:
+        entries = self.menu_entries(row)
+        if not entries:
+            return False
+        popover = Gtk.Popover(relative_to=self.view)
+        rect = Gdk.Rectangle()
+        rect.x, rect.y, rect.width, rect.height = x, y, 1, 1
+        popover.set_pointing_to(rect)
+        popover.set_position(Gtk.PositionType.BOTTOM)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, border_width=6)
+        for text, action in entries:
+            item = Gtk.ModelButton(text=text)
+            item.connect("clicked", lambda _item, action=action: self._chosen(popover, action))
+            box.pack_start(item, False, False, 0)
+        box.show_all()
+        popover.add(box)
+        popover.popup()
+        return True
+
+    @staticmethod
+    def _chosen(popover: Gtk.Popover, action: Callable[[], None]) -> None:
+        popover.popdown()
+        GLib.idle_add(lambda: action() and False)
+
+    def copy(self, url: str) -> None:
+        Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).set_text(url, -1)
+        self.status.set_text("Link copied.")
 
     def _search_equal(self, model, _column, key: str, row) -> bool:
         """Type-ahead over the visible rows: False = a match (GTK's convention)."""

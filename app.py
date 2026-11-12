@@ -1147,7 +1147,7 @@ class ResultsPanel(Gtk.Box):
     JupyterLab notebooks, exchanged files); it appears with the first link and
     is never dropped."""
 
-    def __init__(self) -> None:
+    def __init__(self, mention=None) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.cards: list[RequestCard] = []
         self.count = 0
@@ -1182,7 +1182,7 @@ class ResultsPanel(Gtk.Box):
         self.tabs = Gtk.Notebook()
         self.tabs.set_scrollable(True)
         self.pack_start(self.tabs, True, True, 0)
-        self.explorer = ExplorerPanel(open_url, open_settings)
+        self.explorer = ExplorerPanel(open_url, open_settings, mention=mention)
         tab = Gtk.Box(spacing=4)
         tab.pack_start(Gtk.Image.new_from_icon_name("folder-symbolic", Gtk.IconSize.MENU), False, False, 0)
         tab.pack_start(label("Explorer", wrap=False), False, False, 0)
@@ -1666,6 +1666,19 @@ class ChatPanel(Gtk.Box):
     def focus_input(self) -> None:
         self.input.grab_focus()
 
+    def insert_mention(self, text: str) -> None:
+        """The Explorer's "Mention in message": `text` at the cursor, set off
+        from the words around it by spaces."""
+        buffer = self.input.get_buffer()
+        cursor = buffer.get_iter_at_mark(buffer.get_insert())
+        before = cursor.copy()
+        if before.backward_char() and not before.get_char().isspace():
+            text = " " + text
+        if not cursor.is_end() and not cursor.get_char().isspace():
+            text += " "
+        buffer.insert_at_cursor(text + (" " if cursor.is_end() else ""))
+        self.focus_input()
+
     def _on_input_key(self, _widget, event) -> bool:
         if event.keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter) and not event.state & Gdk.ModifierType.SHIFT_MASK:
             self._send()
@@ -2086,7 +2099,7 @@ class AssistantWindow(Gtk.Window):
         main.pack_start(handle, False, False, 0)
 
         self.chat = ChatPanel(self._send, self._stop)
-        self.results = ResultsPanel()
+        self.results = ResultsPanel(mention=self.chat.insert_mention)
         self._add_job_links()
         self.paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         self.paned.set_wide_handle(True)
