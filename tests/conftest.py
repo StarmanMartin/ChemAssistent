@@ -113,7 +113,9 @@ def instance(chemotion):
 @pytest.fixture
 def test_collection(instance):
     """The collection the Chemotion tests write into (created once, kept)."""
-    instance.get_root_collection().get_or_create_collection(TEST_COLLECTION)
+    parts = TEST_COLLECTION.strip("/").split("/")
+    for level in range(1, len(parts) + 1):  # get_or_create_collection() creates the last level only
+        instance.get_root_collection().get_or_create_collection("/" + "/".join(parts[:level]))
     return TEST_COLLECTION
 
 
