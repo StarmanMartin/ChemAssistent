@@ -34,6 +34,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
 import app  # noqa: E402  (sets GDK_BACKEND=x11 before Gtk)
+import dock_layout  # noqa: E402
 from app import Gdk, GLib, Gtk  # noqa: E402
 
 import gi  # noqa: E402
@@ -333,11 +334,17 @@ class Stage:
         if alpha <= 0:
             return
         size, line_height = 22, 31
-        chat = STAGE_W * app.CHAT_SHARE
+        # Default layout: conversation along the bottom, explorer left, details
+        # in the middle, results right (dock_layout.DEFAULT_SIZES).
+        sizes = dock_layout.DEFAULT_SIZES
+        above_chat = STAGE_H * sizes["bottom"] + 24  # just above the conversation
+        results_w = STAGE_W * sizes["right"]
         if self.expanded and self.caption_place == "results":  # the empty lower part of the results
-            center, max_width, bottom = chat + (STAGE_W - chat) / 2, STAGE_W - chat - 80, 120
-        elif self.expanded:  # in the chat column above the input
-            center, max_width, bottom = chat / 2, chat - 80, 120
+            center, max_width, bottom = STAGE_W - results_w / 2, results_w - 60, above_chat
+        elif self.expanded:  # the middle, above the conversation
+            left_w = STAGE_W * sizes["left"]
+            middle = STAGE_W - left_w - results_w
+            center, max_width, bottom = left_w + middle / 2, middle - 60, above_chat
         else:
             center, max_width, bottom = STAGE_W / 2, STAGE_W - 200, 34
         lines = []
@@ -640,7 +647,7 @@ class Demo:
         self.say("The agent looks up the Chemotion API and writes Python for it.")
         yield 1.0
         yield from self.model_turn(
-            "The code shows up on the right. <b>Nothing runs before you click Run</b>;\n"
+            "The code shows up in the Results panel on the right. <b>Nothing runs before you click Run</b>;\n"
             "you can edit it first, or Reject it with a reason.",
             "Every further step needs your OK as well.",
         )
@@ -694,6 +701,9 @@ def main() -> None:
     # Keep the video's 16:9 stage: no maximizing to the real (wide) work area.
     app.AssistantWindow.maximize = lambda self: None
     app.history.save = lambda *args, **kwargs: None
+    # The default layout, whatever the user saved, and nothing written back.
+    app.normalize_layout = lambda saved, panels: dock_layout.default_layout(panels)
+    app.AssistantWindow._save_layout = staticmethod(lambda layout: None)
     app.history.entries = lambda *args, **kwargs: []  # the prompt shows no real conversations
     load_config = app.load_config
     # Cards wait for a click; no JupyterLab or developer prompt in the demo.

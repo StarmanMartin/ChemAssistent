@@ -111,3 +111,23 @@ def fractions_from_positions(positions: dict, width: float, height: float) -> di
         "right": _clamp((width - positions["top"] - positions["inner"]) / width),
         "bottom": _clamp(1 - positions["outer"] / height),
     }
+
+
+def measurable_sizes(shown: dict[str, bool]) -> set[str]:
+    """The `sizes` keys that live pane positions can tell, from which zones are shown.
+
+    A size is only a position of a handle when both sides of that pane are on
+    screen: bottom needs the top part (any of left/center/right) and the bottom
+    zone, left needs the left zone and one of center/right, right needs both
+    center and right. The others keep their saved value.
+    """
+    left, center, right, bottom = (bool(shown.get(zone)) for zone in ZONES)
+    inner = center or right
+    keys: set[str] = set()
+    if (left or inner) and bottom:
+        keys.add("bottom")
+    if left and inner:
+        keys.add("left")
+    if center and right:
+        keys.add("right")
+    return keys
