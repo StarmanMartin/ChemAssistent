@@ -551,16 +551,24 @@ class ExplorerPanel(Gtk.Box):
 
     def describe(self, row: Gtk.TreeIter) -> dict | None:
         """An element or collection row as {text (mention_text()), label,
-        icon, url}; None for other rows."""
+        icon, url} plus the fields the Details panel shows (kind, id, type,
+        type_label, short_label, name, collection = the collection's path,
+        shared); None for other rows."""
         kind, data = self.store[row][KIND], self.store[row][DATA]
         if kind == ELEMENT:
             collection = self.store[self.store.iter_parent(row)][DATA]
             label = " ".join(part for part in (data["short_label"], data["name"]) if part) or f"#{data['id']}"
-            return {"text": mention_text(self._type_label(data["type"]), data, collection), "label": label,
-                    "icon": self.store[row][ICON], "url": data["url"]}
+            type_label = self._type_label(data["type"])
+            return {"text": mention_text(type_label, data, collection), "label": label,
+                    "icon": self.store[row][ICON], "url": data["url"], "kind": ELEMENT, "id": data["id"],
+                    "type": data["type"], "type_label": type_label, "short_label": data.get("short_label") or "",
+                    "name": data.get("name") or "", "collection": collection.get("path") or "",
+                    "shared": bool(collection.get("shared"))}
         if kind == COLLECTION:
             return {"text": mention_text("", None, data), "label": data["path"], "icon": self.store[row][ICON],
-                    "url": data.get("url")}
+                    "url": data.get("url"), "kind": COLLECTION, "id": data.get("id"), "type": "",
+                    "type_label": "Collection", "short_label": "", "name": data.get("label") or "",
+                    "collection": data.get("path") or "", "shared": bool(data.get("shared"))}
         return None
 
     def _selectable(self, _selection, model, path, selected) -> bool:
