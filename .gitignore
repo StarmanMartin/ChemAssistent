@@ -10,3 +10,5 @@ dist/
 *.egg-info/
 # Eval output (evals/run_eval.py)
 evals/results/
+# Milestone design docs and worker reports (milestone-development skill)
+dev/
