@@ -679,8 +679,16 @@ for a model that can see them (PDFs need the extra: `pip install ".[pdf]"`). Sep
 conversations are independent and in-memory. For a standalone configuration,
 pass `chemassistent.Config(url=..., user=..., password=..., ai_url=...,
 ai_model=..., ai_token=...)` instead of `""`. The headless interface supports
-OpenAI-compatible API and Ollama agents; it does not run Jupyter jobs or CLI
-agents. AI errors raise `chemassistent.AgentError`.
+OpenAI-compatible API and Ollama agents, not CLI agents. AI errors raise
+`chemassistent.AgentError`.
+
+`ChemAssistent(config, approve=..., jupyter=True)` also gives the agent
+`execute_jupyter` in the config's JupyterLab (`pip install ".[jupyter]"`):
+each conversation gets its own notebook and kernel and a local exchange
+folder below `exchange_dir` (default: a new temporary folder that is kept),
+`c.exchange`, where figures and files from JupyterLab arrive. `c.close()`
+shuts the kernel down. Background jobs (`start_jupyter_job`) exist only in
+the app. The approval function decides about Jupyter code too.
 
 Generated Python is **not executed by default**. To permit specific snippets,
 pass an approval function: `ChemAssistent(config, approve=lambda purpose, code:

@@ -308,3 +308,40 @@ def dataclasses_replace(config, **changes):
     import dataclasses
 
     return dataclasses.replace(config, **changes)
+
+
+def test_file_checks(tmp_path):
+    (tmp_path / "figure_1.png").write_bytes(b"x")
+    checks = run_eval.file_checks({"files": ["*.png", "inventory.csv"]}, str(tmp_path))
+    assert [(c["check"], c["ok"], c["detail"]) for c in checks] == [
+        ("exchange has *.png", True, "figure_1.png"), ("exchange has inventory.csv", False, "")]
+    assert not run_eval.file_checks({"files": ["*.png"]}, "")[0]["ok"]  # no exchange folder
+
+
+def test_jupyter_tasks_need_jupyter(fake_ai, config, runner, tmp_path, monkeypatch):
+    """Without --jupyter the tasks marked "jupyter" are skipped; run_task
+    refuses them without an exchange folder."""
+    tasks = tmp_path / "tasks.json"
+    tasks.write_text(json.dumps({"tasks": [
+        {"id": "plain", "prompt": "Say hi.", "expect": {"answer_contains": ["hi"]}},
+        {"id": "jl", "jupyter": True, "prompt": "Plot.", "expect": {"files": ["*.png"]}}]}))
+    fake_ai.script_next({"content": "hi"})
+    monkeypatch.setattr(run_eval, "build_config", lambda args: config)
+    monkeypatch.setattr(run_eval, "_git_commit", lambda: "abc123")
+    out = tmp_path / "out"
+    assert run_eval.main(["--model", "m", "--tasks", str(tasks), "--out", str(out), "--no-chemotion"]) == 0
+    assert [r["task"] for r in json.loads((out / "results.json").read_text())["runs"]] == ["plain"]
+    record = run_eval.run_task(config, {"id": "jl", "jupyter": True, "prompt": "Plot.", "expect": {}}, "m", 1,
+                               None, run_eval.Options())
+    assert "needs JupyterLab" in record["error"]
+
+
+def test_jupyter_option(monkeypatch):
+    base = Config(url="", user="", password="", jupyter_url="http://saved:8888", jupyter_token="s")
+    assert run_eval._with_jupyter(base, None).jupyter_url == ""
+    assert run_eval._with_jupyter(base, "saved").jupyter_url == "http://saved:8888"
+    chosen = run_eval._with_jupyter(base, "http://host:8899/lab?token=abc")
+    assert (chosen.jupyter_url, chosen.jupyter_token) == ("http://host:8899", "abc")
+    monkeypatch.delenv("JUPYTER_TOKEN", raising=False)
+    with pytest.raises(SystemExit):
+        run_eval._with_jupyter(base, "http://host:8899")

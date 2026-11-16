@@ -20,7 +20,7 @@ Format of a milestone:
 - <question>
 ```
 
-## M1 – Prompt distillation
+## M1– Prompt distillation
 **Status:** planned (draft – owner to confirm)
 **Goal:** extract teaching data from saved conversations for fine-tuning a small model (#21).
 **Work packages:**

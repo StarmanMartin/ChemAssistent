@@ -144,10 +144,14 @@ def execute_python_tool(mode: str, headless: bool = False) -> dict:
     }
 
 
-def execute_jupyter_tool(mode: str) -> dict:
+def execute_jupyter_tool(mode: str, headless: bool = False) -> dict:
     """The execute_jupyter tool for one auto-run mode: only "always" runs it
-    without confirmation (looks_read_only() knows only Chemotion code)."""
-    if mode == "always":
+    without confirmation (looks_read_only() knows only Chemotion code).
+    `headless`: headless.py's approval function decides."""
+    if headless:
+        confirm = ("The calling program's approval function decides whether the code runs; it may "
+                   "reject it.")
+    elif mode == "always":
         confirm = "The code runs automatically; the user still sees it in the result panel."
     else:
         confirm = ("The user sees the code in the result panel and must confirm it before it runs; "
@@ -379,6 +383,8 @@ def build_tools(mode: str, jupyter: bool = False, developer: bool = False,
     (perhaps) takes images."""
     if not jupyter:
         tools = [execute_python_tool(mode, headless)] + READ_ONLY_TOOLS
+    elif headless:  # no background jobs: nothing would deliver their reports
+        tools = [execute_python_tool(mode, headless), execute_jupyter_tool(mode, headless)] + READ_ONLY_TOOLS
     else:
         tools = ([execute_python_tool(mode), execute_jupyter_tool(mode), start_jupyter_job_tool(mode),
                   JUPYTER_JOBS_TOOL] + READ_ONLY_TOOLS)

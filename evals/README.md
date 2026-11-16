@@ -14,6 +14,7 @@ path); `--saved-chemotion` uses the app's saved Chemotion instead.
 
 The AI endpoint and token come from the saved settings (`--ai-url`,
 `KI_TOOLBOX_API_KEY`). Options: `--tasks FILE`, `--only ID`, `--out DIR`,
+`--jupyter URL|saved` (see below),
 `--approve all|readonly|none`, `--timeout S` (per run), `--keep` (no cleanup),
 `--with-lessons` (default: the agent gets no saved lessons, so runs are
 comparable), `--no-transcripts`, `--no-chemotion`, `--server-cache`.
@@ -67,8 +68,10 @@ a server that reports none gives `–`.
       "setup": "Python; result = {'label': …, 'id': …}",
       "prompt": "Set the amount of '{setup.label}' in {collection} to 250 mg.",
       "attachments": ["assets/file.pdf"],
+      "jupyter": false,
       "expect": {
         "answer_contains": ["…"], "answer_not_contains": ["…"], "answer_regex": "…",
+        "files": ["*.png"],
         "check": "Python; result = True, or a text saying what is wrong"
       },
       "cleanup": "Python",
@@ -89,12 +92,27 @@ a server that reports none gives `–`.
 - `setup`, `expect.check` and `cleanup` run like the agent's snippets
   (`chemotion_runner.py`, logged-in `instance`) with `run`, `collection_path`,
   `collection` (the task collection, created if missing), `setup` (the setup
-  result), `answer` (the last answer) and `delete_element(kind, id)` (REST
+  result), `answer` (the last answer), `exchange` (the run's exchange folder
+  as a `Path`, None without JupyterLab) and `delete_element(kind, id)` (REST
   delete, kind e.g. `"samples"`) predefined.
+- `jupyter: true`: the agent also gets `execute_jupyter` (the headless
+  `ChemAssistent(jupyter=True)`: its own notebook and kernel per run, no
+  background jobs) in the JupyterLab of `--jupyter`: a URL as Jupyter prints
+  it (`http://host:8888/lab?token=…`, or the token in `JUPYTER_TOKEN`), or
+  `saved` for the app's. Without `--jupyter` these tasks are skipped. The
+  run's exchange folder is kept in `<out>/exchange/<task>_<run tag>/<id>`
+  (figures, CSV files, `chemotion_result_<n>.json`); `results.json` names it
+  and the notebook. The kernel is shut down after the run. The kernel needs
+  RDKit, pandas, NumPy/SciPy and matplotlib for the shipped tasks.
+- `expect.files`: glob patterns that must each match a file in the exchange
+  folder (`figure_<n>.png` is a figure the agent showed).
 - A run passes if it ended without error or timeout and every check holds.
   Answer checks compare NFKC-normalized (C₈H₁₀N₄O₂ = C8H10N4O2), case-folded
   text; `answer_regex` is a pattern or a list (case-insensitive).
 - Cleanup, after the checks: first the task's own `cleanup`, then
   everything that is new in the task collection since the run started
-  (samples, reactions, research plans, wellplates) is deleted. Elements the
-  agent created elsewhere are not found.
+  (samples, reactions, research plans, wellplates) is deleted, the way the
+  ELN's "delete selection" does it (`DELETE /api/v1/ui_state`, which also
+  removes the material samples of a deleted reaction; ELN 3.1 has no REST
+  DELETE for research plans). Elements the agent created elsewhere are not
+  found.

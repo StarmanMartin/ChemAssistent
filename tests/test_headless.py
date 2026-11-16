@@ -27,6 +27,7 @@ def config(fake_ai):
 class FakeRunner:
     """subprocess.Popen for the runner: answers with `stdout`/`stderr`."""
     calls: list = []
+    inputs: list = []  # what each runner got on stdin
     stdout = '{"ok": true, "result": 42}'
     stderr = ""
     returncode = 0
@@ -37,6 +38,7 @@ class FakeRunner:
         self.pid = 0
 
     def communicate(self, data, timeout=None):
+        FakeRunner.inputs.append(data)
         if FakeRunner.raise_on_communicate is not None:
             raise FakeRunner.raise_on_communicate
         return FakeRunner.stdout, FakeRunner.stderr
@@ -48,6 +50,7 @@ class FakeRunner:
 @pytest.fixture
 def runner(monkeypatch):
     monkeypatch.setattr(FakeRunner, "calls", [])
+    monkeypatch.setattr(FakeRunner, "inputs", [])
     monkeypatch.setattr(headless.subprocess, "Popen", FakeRunner)
     return FakeRunner
 
@@ -274,3 +277,21 @@ def test_headless_prompt_with_attachments(fake_ai, config, tmp_path):
         conv.prompt("And this?", [tmp_path / "missing.pdf"])
     with pytest.raises(TypeError):
         conv.prompt("And this?", [42])
+
+
+def test_jupyter_needs_a_jupyterlab(config):
+    with pytest.raises(ValueError, match="JupyterLab"):
+        ChemAssistent(config, jupyter=True)
+
+
+def test_jupyter_conversation_shares_the_exchange_folder(fake_ai, config, runner, tmp_path):
+    """execute_python gets the exchange folder, and its result is saved
+    there for execute_jupyter (the JupyterLab is not contacted)."""
+    config = dataclasses.replace(config, jupyter_url="http://jupyter.invalid", jupyter_token="t")
+    conv = ChemAssistent(config, approve=lambda p, c: True, jupyter=True,
+                         exchange_dir=tmp_path).conversations.new_conversation()
+    assert conv.notebook_url.startswith("http://jupyter.invalid/lab/tree/")
+    run_snippet(fake_ai, conv)
+    assert json.loads(runner.inputs[0])["exchange"] == str(conv.exchange)
+    assert (conv.exchange / "chemotion_result_1.json").read_text(encoding="utf-8").strip() == "42"
+    assert "chemotion_result_1.json" in tool_answers(conv)[0]

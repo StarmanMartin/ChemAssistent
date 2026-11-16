@@ -8,7 +8,7 @@ from setuptools.command.build_py import build_py
 # plus the runner it starts. New imports of these modules must be added here.
 PACKAGE_MODULES = {
     "__init__", "headless", "agent", "config", "documents", "keystore", "issues", "api_versions",
-    "lessons", "history", "workspace", "chemotion_runner",
+    "lessons", "history", "workspace", "chemotion_runner", "jupyter",
 }
 
 

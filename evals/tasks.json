@@ -54,6 +54,162 @@
       "expect": {
         "answer_regex": "(?i)2-bromo-5-methoxy-?benzaldehyde"
       }
+    },
+    {
+      "id": "sample-mmol",
+      "description": "Read + calculate: the amount of substance of a sample given in grams.",
+      "setup": "s = collection.new_sample_smiles('Cc1ccccc1')\ns.properties['external_label'] = f'{run}-tol'\ns.properties['target_amount'] = {'value': 0.5, 'unit': 'g'}\ns.save()\nresult = {'label': f'{run}-tol'}",
+      "prompt": "How many mmol of compound are in the sample with the external label '{setup.label}' in the collection {collection}?",
+      "expect": {
+        "answer_regex": "(?<![\\d.])5[.,]4[23]"
+      }
+    },
+    {
+      "id": "weigh-with-purity",
+      "description": "Read + calculate: how much to weigh out for a given amount of substance, corrected for the purity stored in Chemotion.",
+      "setup": "s = collection.new_sample_smiles('OC(=O)c1ccccc1')\ns.properties['external_label'] = f'{run}-bza'\ns.properties['target_amount'] = {'value': 5, 'unit': 'g'}\ns.properties['purity'] = 0.95\ns.save()\nresult = {'label': f'{run}-bza'}",
+      "prompt": "I need 2.5 mmol of the compound in the sample '{setup.label}' (collection {collection}). Taking the purity recorded for that sample into account, how many mg do I have to weigh out?",
+      "expect": {
+        "answer_regex": "(?<![\\d.])321(?:[.,]\\d+)?\\s*mg"
+      }
+    },
+    {
+      "id": "solution-prep",
+      "description": "Read + calculate: mass of a sample for a solution of given volume and concentration.",
+      "setup": "s = collection.new_sample_smiles('OC[C@H]1OC(O)[C@H](O)[C@@H](O)[C@@H]1O')\ns.properties['external_label'] = f'{run}-glc'\ns.properties['target_amount'] = {'value': 20, 'unit': 'g'}\ns.save()\nresult = {'label': f'{run}-glc'}",
+      "prompt": "I want to prepare 250 mL of a 0.2 M solution from the sample '{setup.label}' in the collection {collection}. How much of it do I have to weigh out?",
+      "expect": {
+        "answer_regex": "(?<![\\d.])(?:9[.,]0[01]?\\d*\\s*g|900\\d(?:[.,]\\d+)?\\s*mg)"
+      }
+    },
+    {
+      "id": "theoretical-yield",
+      "description": "Read + calculate: theoretical yield of a planned reaction from the amount of the starting material in Chemotion.",
+      "setup": "s = collection.new_sample_smiles('OC(=O)c1ccccc1')\ns.properties['external_label'] = f'{run}-bza'\ns.properties['target_amount'] = {'value': 1.22, 'unit': 'g'}\ns.save()\nresult = {'label': f'{run}-bza'}",
+      "prompt": "I will esterify all of the sample '{setup.label}' (collection {collection}) with ethanol to ethyl benzoate. What is the theoretical yield in grams?",
+      "expect": {
+        "answer_regex": "(?<![\\d.])1[.,]50?(?!\\d)\\s*g"
+      }
+    },
+    {
+      "id": "low-stock",
+      "description": "Read + filter: which samples are running low (amount below a threshold).",
+      "setup": "a = collection.new_sample_smiles('CC(C)=O')\na.properties['external_label'] = f'{run}-acetone'\na.properties['target_amount'] = {'value': 0.05, 'unit': 'g'}\na.save()\nb = collection.new_sample_smiles('CCCCCC')\nb.properties['external_label'] = f'{run}-hexane'\nb.properties['target_amount'] = {'value': 2, 'unit': 'g'}\nb.save()\nc = collection.new_sample_smiles('CCOC(C)=O')\nc.properties['external_label'] = f'{run}-etoac'\nc.properties['target_amount'] = {'value': 0.02, 'unit': 'g'}\nc.save()\nresult = {'prefix': run}",
+      "prompt": "Which samples in the collection {collection} with an external label starting with '{setup.prefix}-' have less than 100 mg left? Give their external labels.",
+      "expect": {
+        "check": "text = answer.lower()\nmissing = [l for l in (f'{run}-acetone', f'{run}-etoac') if l.lower() not in text]\nwrong = f'{run}-hexane'.lower() in text\nresult = True if not missing and not wrong else f'missing {missing}, hexane named: {wrong}'"
+      }
+    },
+    {
+      "id": "find-duplicates",
+      "description": "Read: find two samples of the same compound entered with different SMILES.",
+      "setup": "a = collection.new_sample_smiles('CCO')\na.properties['external_label'] = f'{run}-d1'\na.save()\nb = collection.new_sample_smiles('CCCO')\nb.properties['external_label'] = f'{run}-d2'\nb.save()\nc = collection.new_sample_smiles('OCC')\nc.properties['external_label'] = f'{run}-d3'\nc.save()\nd = collection.new_sample_smiles('CC(C)O')\nd.properties['external_label'] = f'{run}-d4'\nd.save()\nresult = {'prefix': run}",
+      "prompt": "Two of the samples in the collection {collection} whose external label starts with '{setup.prefix}-d' are the same compound. Which two, and what compound is it?",
+      "expect": {
+        "answer_regex": "(?i)ethanol",
+        "check": "text = answer.lower()\nmissing = [l for l in (f'{run}-d1', f'{run}-d3') if l.lower() not in text]\nresult = True if not missing else f'missing {missing}'"
+      }
+    },
+    {
+      "id": "set-location",
+      "description": "Write: record where a sample is stored.",
+      "setup": "s = collection.new_sample_smiles('c1ccccc1O')\ns.properties['external_label'] = f'{run}-phenol'\ns.save()\nresult = {'label': f'{run}-phenol', 'id': s.id}",
+      "prompt": "The sample '{setup.label}' in the collection {collection} has been moved to fridge 2, shelf B. Record its new storage location in Chemotion.",
+      "expect": {
+        "check": "location = (instance.get_sample(setup['id']).properties.get('location') or '').lower()\nresult = True if 'fridge 2' in location and 'shelf b' in location else f'location {location!r}'"
+      }
+    },
+    {
+      "id": "register-delivery",
+      "description": "Write: register several delivered chemicals by name (no SMILES given) with their amounts.",
+      "prompt": "We received three chemicals. Register each as a sample in the collection {collection} with the external label and amount given:\n\n| External label | Compound | Amount |\n|---|---|---|\n| {run}-P1 | acetanilide | 1.5 g |\n| {run}-P2 | benzophenone | 750 mg |\n| {run}-P3 | 4-nitrophenol | 200 mg |",
+      "expect": {
+        "check": "expected = {f'{run}-P1': ('FZERHIULMFGESH-UHFFFAOYSA-N', 1.5), f'{run}-P2': ('RWCCWEUUXYIKHB-UHFFFAOYSA-N', 0.75), f'{run}-P3': ('BTJIUGUIPKRLHP-UHFFFAOYSA-N', 0.2)}\nproblems = []\nsamples = collection.get_samples(per_page=100)\nfor label, (key, grams) in expected.items():\n    found = [s for s in samples if s.properties.get('external_label') == label]\n    if len(found) != 1:\n        problems.append(f'{label}: {len(found)} samples')\n        continue\n    s = found[0]\n    if s.molecule.get('inchikey') != key:\n        problems.append(f\"{label}: InChIKey {s.molecule.get('inchikey')}\")\n    if s.gram is None or abs(s.gram - grams) > 1e-6:\n        problems.append(f'{label}: {s.gram} g')\nresult = True if not problems else '; '.join(problems)"
+      }
+    },
+    {
+      "id": "follow-up-edit",
+      "description": "Write, two messages: create a sample by name, then change it referring to it only as 'it'.",
+      "prompt": [
+        "Create a sample of aspirin in the collection {collection} with the external label '{run}-ASA'.",
+        "Set its amount to 1.2 g and its purity to 98 %."
+      ],
+      "expect": {
+        "check": "found = [s for s in collection.get_samples(per_page=100) if s.properties.get('external_label') == f'{run}-ASA']\nif len(found) != 1:\n    result = f'{len(found)} samples with that label'\nelse:\n    s = found[0]\n    problems = []\n    if s.molecule.get('inchikey') != 'BSYNRYMUTXBXSQ-UHFFFAOYSA-N':\n        problems.append(f\"InChIKey {s.molecule.get('inchikey')}\")\n    if s.gram is None or abs(s.gram - 1.2) > 1e-6:\n        problems.append(f'amount {s.gram} g')\n    if abs((s.properties.get('purity') or 0) - 0.98) > 1e-6:\n        problems.append(f\"purity {s.properties.get('purity')}\")\n    result = True if not problems else '; '.join(problems)"
+      }
+    },
+    {
+      "id": "create-reaction",
+      "description": "Write: a reaction from two existing samples (starting material, reactant) and a new product.",
+      "setup": "a = collection.new_sample_smiles('OC(=O)c1ccccc1')\na.properties['external_label'] = f'{run}-bza'\na.properties['target_amount'] = {'value': 1.22, 'unit': 'g'}\na.save()\nb = collection.new_sample_smiles('CCO')\nb.properties['external_label'] = f'{run}-EtOH'\nb.properties['target_amount'] = {'value': 5, 'unit': 'g'}\nb.save()\nresult = {'acid': f'{run}-bza', 'alcohol': f'{run}-EtOH'}",
+      "prompt": "Create a reaction named '{run} esterification' in the collection {collection} with the sample '{setup.acid}' as starting material, the sample '{setup.alcohol}' as reactant and ethyl benzoate as product.",
+      "expect": {
+        "check": "found = [r for r in collection.get_reactions(per_page=100) if (r.properties.get('name') or '') == f'{run} esterification']\nif len(found) != 1:\n    result = f'{len(found)} reactions with that name'\nelse:\n    r = found[0]\n    def keys(role):\n        return sorted(m.molecule.get('inchikey') for m in r.properties[role])\n    want = {'starting_materials': ['WPYMKLBDIGXBTP-UHFFFAOYSA-N'], 'reactants': ['LFQSCWFLJHTTHZ-UHFFFAOYSA-N'], 'products': ['MTZQAGJQAFMTAQ-UHFFFAOYSA-N']}\n    wrong = {role: keys(role) for role in want if keys(role) != want[role]}\n    result = True if not wrong else f'materials {wrong}'"
+      }
+    },
+    {
+      "id": "research-plan-table",
+      "description": "Write: a research plan with a table of planned experiments.",
+      "prompt": "Create a research plan named '{run} TLC screen' in the collection {collection} with a table that has the columns 'Eluent' and 'Rf' and one row for each of the eluents hexane/EtOAc 9:1, 4:1 and 1:1 (leave Rf empty).",
+      "expect": {
+        "check": "found = [p for p in collection.get_research_plans(per_page=100) if (p.name or p.json_data.get('name') or '') == f'{run} TLC screen']\nif len(found) != 1:\n    result = f'{len(found)} research plans with that name'\nelse:\n    tables = [e for e in found[0].body if e.get('type') == 'table']\n    rows = [row for t in tables for row in (t.get('value') or {}).get('rows', [])]\n    text = str(rows)\n    missing = [r for r in ('9:1', '4:1', '1:1') if r not in text]\n    result = True if tables and not missing else f'{len(tables)} tables, eluents missing: {missing}'"
+      }
+    },
+    {
+      "id": "jupyter-kinetics",
+      "description": "JupyterLab, no Chemotion: fit a first-order rate law to data given in the prompt and plot it.",
+      "jupyter": true,
+      "prompt": "I followed the decay of a compound by HPLC:\n\n| t (min) | c (mM) |\n|---|---|\n| 0 | 10.00 |\n| 10 | 7.94 |\n| 20 | 6.30 |\n| 30 | 5.00 |\n| 45 | 3.54 |\n| 60 | 2.50 |\n| 90 | 1.25 |\n\nFit a first-order rate law in JupyterLab, give me the rate constant k (in 1/min) and the half-life, and plot the data with the fit.",
+      "expect": {
+        "answer_regex": [
+          "0[.,]0231|2[.,]31\\s*[×x*·]\\s*10",
+          "(?<![\\d.])30(?:[.,]0+)?\\s*min"
+        ],
+        "files": ["*.png"]
+      }
+    },
+    {
+      "id": "jupyter-calibration",
+      "description": "JupyterLab, no Chemotion: linear calibration curve, unknown concentration, plot saved under a given name.",
+      "jupyter": true,
+      "prompt": "UV-Vis calibration at 280 nm:\n\n| c (µM) | A |\n|---|---|\n| 0 | 0.004 |\n| 10 | 0.151 |\n| 20 | 0.302 |\n| 40 | 0.597 |\n| 60 | 0.902 |\n| 80 | 1.196 |\n\nMy unknown has A = 0.450. Do a linear regression in JupyterLab, tell me the concentration of the unknown and R², and save the calibration plot as calibration.png.",
+      "expect": {
+        "answer_regex": "(?<![\\d.])(?:29[.,]9\\d*|30[.,]0\\d*)(?![\\d])",
+        "files": ["calibration.png"]
+      }
+    },
+    {
+      "id": "jupyter-inventory",
+      "description": "Chemotion → JupyterLab: fetch samples, build a table with pandas, save it as CSV, total amount of substance.",
+      "jupyter": true,
+      "setup": "a = collection.new_sample_smiles('Cc1ccccc1')\na.properties['external_label'] = f'{run}-tol'\na.properties['target_amount'] = {'value': 0.5, 'unit': 'g'}\na.save()\nb = collection.new_sample_smiles('OC(=O)c1ccccc1')\nb.properties['external_label'] = f'{run}-bza'\nb.properties['target_amount'] = {'value': 1.22, 'unit': 'g'}\nb.save()\nc = collection.new_sample_smiles('CCO')\nc.properties['external_label'] = f'{run}-EtOH'\nc.properties['target_amount'] = {'value': 2, 'unit': 'g'}\nc.save()\nresult = {'prefix': run}",
+      "prompt": "Make an inventory of the samples in the collection {collection} whose external label starts with '{setup.prefix}-': with pandas in JupyterLab, a table with external label, sum formula, molecular weight, amount in g and amount in mmol. Save it as inventory.csv and tell me the total amount in mmol.",
+      "expect": {
+        "answer_regex": "(?<![\\d.])58[.,]8[23]",
+        "files": ["inventory.csv"],
+        "check": "files = list(exchange.glob('inventory.csv'))\ntext = files[0].read_text(encoding='utf-8') if files else ''\nmissing = [l for l in (f'{run}-tol', f'{run}-bza', f'{run}-EtOH') if l not in text]\nresult = True if files and not missing else f'inventory.csv: {len(files)} files, labels missing: {missing}'"
+      }
+    },
+    {
+      "id": "jupyter-similarity",
+      "description": "Chemotion → JupyterLab: the sample most similar to a query sample by Morgan fingerprints (RDKit).",
+      "jupyter": true,
+      "setup": "q = collection.new_sample_smiles('CC(=O)Oc1ccccc1C(=O)O')\nq.properties['external_label'] = f'{run}-query'\nq.save()\na = collection.new_sample_smiles('COC(=O)c1ccccc1O')\na.properties['external_label'] = f'{run}-c1'\na.save()\nb = collection.new_sample_smiles('OC(=O)c1ccccc1')\nb.properties['external_label'] = f'{run}-c2'\nb.save()\nc = collection.new_sample_smiles('OC(=O)c1ccccc1O')\nc.properties['external_label'] = f'{run}-c3'\nc.save()\nd = collection.new_sample_smiles('CC(=O)Nc1ccc(O)cc1')\nd.properties['external_label'] = f'{run}-c4'\nd.save()\ne = collection.new_sample_smiles('OC1CCCCC1')\ne.properties['external_label'] = f'{run}-c5'\ne.save()\nresult = {'query': f'{run}-query', 'prefix': f'{run}-c'}",
+      "prompt": "Which of the samples in the collection {collection} whose external label starts with '{setup.prefix}' is the most similar to the sample '{setup.query}'? Use the Tanimoto similarity of Morgan fingerprints (radius 2, 2048 bits) computed with RDKit in JupyterLab, and give the similarity values.",
+      "expect": {
+        "answer_regex": "(?<![\\d.])0[.,]4[45]\\d*",
+        "check": "text = answer.lower()\nresult = True if f'{run}-c3'.lower() in text else 'the answer does not name ' + f'{run}-c3'"
+      }
+    },
+    {
+      "id": "jupyter-descriptors-writeback",
+      "description": "Chemotion → JupyterLab → Chemotion: compute descriptors with RDKit and write them into each sample's description.",
+      "jupyter": true,
+      "setup": "a = collection.new_sample_smiles('CC(=O)Nc1ccc(O)cc1')\na.properties['external_label'] = f'{run}-m1'\na.save()\nb = collection.new_sample_smiles('CC(C)Cc1ccc(cc1)C(C)C(=O)O')\nb.properties['external_label'] = f'{run}-m2'\nb.save()\nc = collection.new_sample_smiles('CN1C=NC2=C1C(=O)N(C(=O)N2C)C')\nc.properties['external_label'] = f'{run}-m3'\nc.save()\nresult = {'prefix': f'{run}-m', 'ids': [a.id, b.id, c.id]}",
+      "prompt": "For each sample in the collection {collection} whose external label starts with '{setup.prefix}', compute the Crippen logP and the TPSA with RDKit in JupyterLab and write them into the sample's description in Chemotion as 'logP = <value with 2 decimals>, TPSA = <value with 1 decimal>'.",
+      "expect": {
+        "check": "expected = [('1.35', '49.3'), ('3.07', '37.3'), ('-1.03', '61.8')]\nproblems = []\nfor sample_id, (logp, tpsa) in zip(setup['ids'], expected):\n    text = str(instance.get_sample(sample_id).properties.get('description') or '')\n    if logp not in text or tpsa not in text:\n        problems.append(f'sample {sample_id}: {text[:200]!r}')\nresult = True if not problems else '; '.join(problems)"
+      }
     }
   ]
 }
