@@ -1,6 +1,6 @@
 ---
 name: milestone-development
-description: ChemAssistent development workflow — the Opus orchestrator executes docs/milestones.md one milestone at a time with at most two Sonnet worker agents in the ChemAssistent-wt-a / ChemAssistent-wt-b worktrees, then reviews, merges, gates on pytest and reports. Use for every ChemAssistent milestone, work package, worker round, review/merge or milestone report; in this repo use it instead of two-worker-milestones.
+description: ChemAssistent development workflow — the Opus orchestrator executes docs/milestones.md one milestone at a time with at most two Sonnet worker agents in the wt-a/ChemAssistent / wt-b/ChemAssistent worktrees, then reviews, merges, gates on pytest and reports. Use for every ChemAssistent milestone, work package, worker round, review/merge or milestone report; in this repo use it instead of two-worker-milestones.
 ---
 
 # ChemAssistent milestone development
@@ -47,10 +47,13 @@ all product, release and security decisions.
 
 - Repo `/home/martin/Deveolop/KIT/ChemAssistent` (GitHub `StarmanMartin/ChemAssistent`).
   `CLAUDE.md` is the architecture spec: read it before designing.
-- Worktrees `../ChemAssistent-wt-a` (branch `wt/mN-a`) and `../ChemAssistent-wt-b` (`wt/mN-b`):
-  `git worktree add ../ChemAssistent-wt-a -b wt/mN-a milestone/mN-<slug>`, then symlink the
+- Worktrees `../wt-a/ChemAssistent` (branch `wt/mN-a`) and `../wt-b/ChemAssistent` (`wt/mN-b`).
+  The folder itself must be named `ChemAssistent`: the repo root has an `__init__.py`, so pytest
+  imports it as a package named after the folder, and a hyphenated name fails to collect.
+  `mkdir -p ../wt-a && git worktree add ../wt-a/ChemAssistent -b wt/mN-a milestone/mN-<slug>`,
+  then symlink the
   git-ignored `.venv` and `workspace/` (chemotionapi checkout + skills) from the main checkout.
-  Sync before each round: `git -C ../ChemAssistent-wt-a merge --ff-only milestone/mN-<slug>`.
+  Sync before each round: `git -C ../wt-a/ChemAssistent merge --ff-only milestone/mN-<slug>`.
 - `.venv` (made from `/usr/bin/python3 --system-site-packages`) has chemotion_api v4: the
   Chemotion tests skip there. Run them with a scratch venv on the `v312.0.1` tag against the
   docker test instance (port 3579), see CLAUDE.md testing notes.
@@ -109,7 +112,7 @@ all product, release and security decisions.
 Push `milestone/mN-<slug>`, open the PR (behavior, work packages, verification commands and
 results, screenshots, CLAUDE.md/installer notes), wait for the Windows build, get the owner's
 OK, merge, mark the milestone `done (#PR)`, remove the worktrees
-(`git worktree remove ../ChemAssistent-wt-a`, branches deleted), report and stop.
+(`git worktree remove ../wt-a/ChemAssistent`, same for `wt-b`, branches deleted), report and stop.
 
 ## Pitfalls
 
@@ -118,6 +121,8 @@ OK, merge, mark the milestone `done (#PR)`, remove the worktrees
   processes must be tracked tasks, not `&`.
 - WSLg: never open X11 GTK windows and type into them (hides the pointer until `wsl --shutdown`).
 - Chemotion test data only in `AIExamples/ChemAssistent tests`, deleted again afterwards.
+- The `.venv`/`workspace` symlinks show as untracked (`.gitignore`'s `.venv/` does not match a
+  symlink): commit worker changes with explicit `git add <files>`, never `git add -A`.
 - Scratchpad files vanish on reboot; keep decisions in `dev/` or `docs/milestones.md`.
 - If a worker is blocked (quota, tooling), ask the owner whether to finish the round yourself and
   report it as an exception.
