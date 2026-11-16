@@ -163,3 +163,22 @@ def test_round_trip(size, sizes):
     width, height = size
     back = dl.fractions_from_positions(dl.positions_from_fractions(sizes, width, height), width, height)
     assert back == pytest.approx(sizes, abs=1.0 / min(width, height))
+
+
+def _shown(*zones):
+    return {zone: zone in zones for zone in dl.ZONES}
+
+
+@pytest.mark.parametrize("zones, expected", [
+    (("left", "center", "right", "bottom"), {"left", "right", "bottom"}),
+    (("center", "right", "bottom"), {"right", "bottom"}),
+    (("left", "center", "bottom"), {"left", "bottom"}),
+    (("left", "bottom"), {"bottom"}),
+    (("left", "right"), {"left"}),
+    (("center", "right"), {"right"}),
+    (("bottom",), set()),
+    (("left",), set()),
+    ((), set()),
+])
+def test_measurable_sizes(zones, expected):
+    assert dl.measurable_sizes(_shown(*zones)) == expected

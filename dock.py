@@ -36,7 +36,7 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import GLib, Gtk  # type: ignore  # noqa: E402
 
 from dock_layout import (  # noqa: E402
-    DEFAULT_SIZES, ZONES, fractions_from_positions, positions_from_fractions)
+    DEFAULT_SIZES, ZONES, fractions_from_positions, measurable_sizes, positions_from_fractions)
 
 GROUP = "chem-assistent-dock"
 DROP_TARGET_SIZE = 90  # px: room an empty zone gets while a tab is dragged over the window
@@ -79,6 +79,7 @@ class Dock(Gtk.Box):
         self._pressed: Gtk.Paned | None = None  # the pane whose handle is held
         self._moved = False  # that pane's position changed during the press
         self._size: tuple[int, int] | None = None  # from apply_sizes()
+        self._applied: tuple[int, int] | None = None  # dock size the positions were last set for
         self._popover: Gtk.Popover | None = None
 
         self.zones: dict[str, Gtk.Notebook] = {}
@@ -152,6 +153,7 @@ class Dock(Gtk.Box):
         if panel is None or zone not in self.zones:
             return
         source = self._zone_of(panel_id)
+        self._measure_sizes()  # keep a handle drag the press/release path missed
         with self._quiet():
             if source != zone:
                 if source is not None:
@@ -168,6 +170,7 @@ class Dock(Gtk.Box):
         zone = self._zone_of(panel_id)
         if panel is None or zone is None:
             return
+        self._measure_sizes()
         with self._quiet():
             self.zones[zone].set_current_page(self.zones[zone].page_num(panel.widget))
             self._layout["hidden"] = [z for z in self._layout["hidden"] if z != zone]
@@ -177,6 +180,7 @@ class Dock(Gtk.Box):
         """Hide or show a zone; False when refused (the last visible zone stays)."""
         if zone not in self.zones:
             return False
+        self._measure_sizes()  # before the visibility changes: the positions are still the user's
         hidden = [z for z in self._layout["hidden"] if z != zone]
         if not visible:
             if not self._shown(zone, hidden=self._layout["hidden"]):
@@ -201,7 +205,8 @@ class Dock(Gtk.Box):
         return [self.buttons[zone] for zone in ZONES]
 
     def layout(self) -> dict:
-        """The current layout (a copy): tabs from the widgets, sizes as last set."""
+        """The current layout (a copy): tabs from the widgets, sizes from the live pane positions."""
+        self._measure_sizes()
         result = copy.deepcopy(self._layout)
         zones = self._read_zones()
         for zone in ZONES:  # panels not added yet keep their place
@@ -214,6 +219,16 @@ class Dock(Gtk.Box):
         """Set the pane positions from the layout's sizes (after the window grew)."""
         self._size = (width, height)
         self._apply_positions()
+        # GTK clamps a position to the pane's allocation at that moment (the inner
+        # panes are not laid out yet right after a resize) and keeps the clamped value:
+        # set it again once the layout has settled.
+        for delay in (60, 300):
+            GLib.timeout_add(delay, self._reapply)
+
+    def _reapply(self) -> bool:
+        if not self._dragging and self._pressed is None:
+            self._apply_positions()
+        return False
 
     def do_show_all(self) -> None:
         """Show the panels; the zones decide their own visibility."""
@@ -364,10 +379,29 @@ class Dock(Gtk.Box):
         positions = positions_from_fractions(self._layout["sizes"], width, height)
         if not self._shown("left"):  # right is measured against the whole width
             positions["inner"] += positions["top"]
+        self._applied = (width, height)
         with self._quiet():
             for name, pane in self.panes.items():
                 if pane.get_position() != positions[name]:
                     pane.set_position(positions[name])
+
+    def _measure_sizes(self) -> None:
+        """Take the sizes from the live pane positions (the user may have dragged a
+        handle without the press/release path noticing). Only for panes with both
+        sides shown, and only while the positions belong to the current dock size
+        (a window resize not yet applied would give wrong fractions)."""
+        if self._size is None or self._dragging:
+            return
+        width, height = self._dock_size()
+        if width <= 1 or height <= 1 or self._applied != (width, height):
+            return
+        keys = measurable_sizes({zone: self._shown(zone) for zone in ZONES})
+        positions = {name: pane.get_position() for name, pane in self.panes.items()}
+        if not self._shown("left"):
+            positions["top"] = 0
+        measured = fractions_from_positions(positions, width, height)
+        for key in keys:
+            self._layout["sizes"][key] = measured[key]
 
     def _pane_pressed(self, pane: Gtk.Paned, event) -> bool:
         if event.button == 1:
@@ -435,6 +469,7 @@ class Dock(Gtk.Box):
         self.on_change(result)
 
     def _drag_begin(self, *_args) -> None:
+        self._measure_sizes()
         self._dragging = True
         self._update_visibility()  # empty zones become drop targets
         self._apply_positions()
