@@ -84,34 +84,26 @@ be opened without asking anything first, e.g. to browse the ELN in the Explorer 
   - Still small prompt
 
 ## M4 – Choose the Chemotion version, not the chemotionapi release
-**Status:** planned
+**Status:** in progress
 **Goal:** users pick the version of their Chemotion ELN (or it is read from the server), and
 the app installs the matching chemotionapi release by itself. ELN X.Y.Z maps to the release
 line `vXYZ`; of that line the highest release `vXYZ.a.b` is used (ELN 3.1.2 → `v312.1.1`,
-ELN 4.0.1 → `v401.1.1` with today's tags). Only developer mode keeps the free choice of
-tags and branches.
+ELN 4.0.1 → `v401.1.1` with today's tags); an ELN version without a line of its own gets the
+nearest lower line. Only developer mode keeps the free choice of tags and branches.
 **Work packages:**
-- WP4.1 Version mapping (`api_versions.py`, GTK-free, tests): `eln_versions(tags)` = the ELN versions that have releases (from `vXYZ`), `latest_for(eln_version, tags)` = the highest `vXYZ.a.b`, `eln_version_of(tag)`; config key for the chosen ELN version (`config.py`)
-- WP4.2 Detection: read the ELN version from the server's public `/about` page (shared with `issues.eln_version()`, parsed into X.Y.Z) when the URL is set; in a thread, never on the main loop
-- WP4.3 Settings, Chemotion tab (`settings.py`): users see one "Chemotion version" combo (ELN versions with releases, "Detect from server" filled automatically once the URL is set), the chosen release shown as information; on change setup_workspace.sh installs the latest release of that line. Developer mode keeps today's tag/branch list
-- WP4.4 Installers (`install.sh`, `api_versions.py choose/default`, `setup_workspace.sh`): no version question any more; if a chemotionapi is already selected/installed it is kept, otherwise the latest release is installed. `CHEMOTION_API_TAG` still overrides. Windows: the bundle's fixed `CHEMOTION_REF` (`windows/build.py`) is documented as is
+- WP4.1 Version mapping and server version (`api_versions.py`, GTK-free, tests; `issues.py` uses the shared `/about` parser): ELN version ↔ release line, `release_for()` (highest of the line, else nearest lower line), `server_eln_version()`, `check_installed()` for warnings
+- WP4.2 Settings, Chemotion tab (`settings.py`): one "Chemotion version" choice (ELN versions with releases), the server's version detected when the URL is set and preselected, Install installs the newest release of that line; developer mode keeps today's tag/branch list
+- WP4.3 App warning (`app.py`): at the start of a conversation, in a thread, the server's ELN version is compared with the installed release; a mismatch gives a warning note in the chat with "Open settings"
+- WP4.4 Installers (`api_versions.py` script modes, `install.sh`, `setup_workspace.sh`): no version question; an installed release is kept, otherwise the newest is installed; `CHEMOTION_API_TAG` still wins
 **Acceptance criteria:**
-- With a URL set, the settings show the server's ELN version preselected; picking an ELN version installs the highest `vXYZ.a.b` of its line.
+- With a URL set, the settings show the server's ELN version preselected; installing installs the highest `vXYZ.a.b` of its line (or of the nearest lower line).
 - Non-developers cannot pick an individual tag or a branch; developer mode can, as before.
-- Mapping is tested: ELN 3.1.2 → highest `v312.*`, 4.0.1 → highest `v401.*`; an ELN version without a release line gives a clear message (no silent fallback).
-- A reinstall (`install.sh`, also the curl one-liner) keeps an installed chemotionapi and asks nothing; a fresh install gets the newest release; `CHEMOTION_API_TAG` still wins.
-- An unreachable server or `/about` without a version leaves the choice to the user; nothing blocks the settings window.
+- Mapping is tested: 3.1.2 → highest `v312.*`, 4.0.1 → highest `v401.*`, a version without a line → nearest lower line, nothing lower → a clear error.
+- A reinstall keeps the installed release and asks nothing; a fresh install gets the newest release; `CHEMOTION_API_TAG` still wins.
+- A conversation against a server whose version does not fit the installed release shows a warning note naming the release to install; an unreachable server or `/about` without a version shows nothing and never blocks the window.
 - `pytest tests/` passes; CLAUDE.md describes the new flow.
 **Issues:** –
-**Open owner decisions:**
-- Reinstall with a selection: keep exactly the installed release, or update to the newest release of the same ELN line (e.g. `v312.0.1` → `v312.1.1`)? 
-  - keep installed version
-- ELN version without its own release line (e.g. a future 3.1.3): show an error, or offer the nearest lower line? 
-  - use nearest lower one
-- Should the app (not only the settings) warn when the detected server version does not match the installed release line? 
-  - yes
-- Windows bundle: stays on its built-in release, or should it get per-version bundles later? 
-  - get per-version later
+**Open owner decisions:** – (2026-11-17: reinstall keeps the installed release; no own line → nearest lower line; the app warns on a mismatch; Windows keeps its built-in release, per-version bundles later)
 
 ## M5 – Explorer: chemotionapi/ELN version mismatch message
 **Status:** planned
