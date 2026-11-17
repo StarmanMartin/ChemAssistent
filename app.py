@@ -1,6 +1,6 @@
 """ChemAssistent: a Chemotion icon in the top bar (the tray on Windows) that
 opens a chat with an AI agent (agent.py) about the Chemotion ELN. Code the
-agent wants to run is shown on the right and runs only after the user
+agent wants to run is shown in the Results panel and runs only after the user
 confirmed it — unless an auto-run mode is on (config key `auto_run`, and the
 menu in the conversation header): then read-only or all code starts by
 itself, and the card shows what ran. The header also switches the model of
@@ -86,6 +86,9 @@ from agent import (  # noqa: E402
     looks_read_only, message_text, model_infos, without_images, mcp_command, tool_summary,
 )
 from cli_agent import CliAgent, cli_models, command_problem  # noqa: E402
+from details_view import DetailsPanel  # noqa: E402
+from dock import Dock  # noqa: E402
+from dock_layout import normalize_layout  # noqa: E402
 from explorer_view import ExplorerPanel  # noqa: E402
 from mcp_client import McpHub, split_tool_name  # noqa: E402
 from jobs import ACTIVE, FINISHED, REPORT_HEADER, USER_TEXT, Jobs, duration  # noqa: E402
@@ -94,7 +97,7 @@ from model_picker import ModelList  # noqa: E402
 from config import (  # noqa: E402
     AGENT_SHORT, AUTO_RUN_LABELS, AUTO_RUN_MODES, CLI_AGENTS, CONFIG_FILE, MAIN_THREAD_KEYRING_WAIT_S, STATE_DIR,
     WINDOWS, WORKSPACE_DIR, Config, ai_problem, jupyter_problem, limit_main_thread_wait, load_config,
-    migrate_secrets, model_name, read_raw_config,
+    migrate_secrets, model_name, read_raw_config, save_setting,
 )
 
 
@@ -121,8 +124,20 @@ GROW_WAIT_MS = 1000
 REPLAY_CHARS = 10000
 REPLAY_ITEMS = 60
 REPLAY_MESSAGE_CHARS = 2000
-# The chat's share of the window width; the results get the rest.
-CHAT_SHARE = 0.45
+# The docking layout (dock.py): each panel's default zone, titles and icons.
+PANELS = {"conversation": "bottom", "results": "right", "explorer": "left", "details": "center"}
+PANEL_INFO = {
+    "conversation": ("Conversation", "user-available-symbolic", "The chat with the assistant"),
+    "results": ("Results", "view-list-symbolic", "Code to confirm, its output and the links"),
+    "explorer": ("Explorer", "folder-symbolic", "The Chemotion collections and their elements"),
+    "details": ("Details", "dialog-information-symbolic", "The selected elements and collections"),
+}
+# A changed layout is saved this long after the last change (in a thread).
+SAVE_DELAY_MS = 800
+# Quit waits at most this long for the last layout save.
+SAVE_FLUSH_S = 3.0
+# Space the conversation page's header takes of the work area (before it is laid out).
+HEADER_HEIGHT_GUESS = 44
 # Header icon for each auto-run mode (config.AUTO_RUN_MODES).
 RUN_MODE_ICONS = {"off": "dialog-question-symbolic", "readonly": "emblem-readonly-symbolic",
                   "always": "system-run-symbolic"}
@@ -1141,13 +1156,12 @@ class BottomFollower:
 class ResultsPanel(Gtk.Box):
     """One tab per snippet: its code to confirm on top and, once it ran, its
     output below. Tabs of waiting or running code stay; at most
-    MAX_RESULT_TABS are kept. The first tab, "Explorer", is always there: the
-    Chemotion collections and their elements (explorer_view.py). The second,
-    "Links", collects every link the conversation showed (Chemotion elements,
-    JupyterLab notebooks, exchanged files); it appears with the first link and
-    is never dropped."""
+    MAX_RESULT_TABS are kept. "Links" collects every link the conversation
+    showed (Chemotion elements, JupyterLab notebooks, exchanged files); it
+    appears with the first link and is never dropped. (The Explorer is a panel
+    of its own in the dock.)"""
 
-    def __init__(self, mention=None, select=None) -> None:
+    def __init__(self) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.cards: list[RequestCard] = []
         self.count = 0
@@ -1181,15 +1195,8 @@ class ResultsPanel(Gtk.Box):
 
         self.tabs = Gtk.Notebook()
         self.tabs.set_scrollable(True)
+        self.tabs.set_no_show_all(True)  # shown with the first tab
         self.pack_start(self.tabs, True, True, 0)
-        self.explorer = ExplorerPanel(open_url, open_settings, mention=mention, on_select=select)
-        tab = Gtk.Box(spacing=4)
-        tab.pack_start(Gtk.Image.new_from_icon_name("folder-symbolic", Gtk.IconSize.MENU), False, False, 0)
-        tab.pack_start(label("Explorer", wrap=False), False, False, 0)
-        tab.set_tooltip_text("The Chemotion collections and their elements")
-        tab.show_all()
-        self.explorer.show_all()
-        self.tabs.append_page(self.explorer, tab)
 
     def add_request(self, pending: PendingRequest) -> RequestCard:
         self.empty.hide()
@@ -1257,7 +1264,8 @@ class ResultsPanel(Gtk.Box):
         scroller.show_all()
         self.links_page = scroller
         current = self.tabs.get_nth_page(self.tabs.get_current_page())
-        self.tabs.insert_page(scroller, tab, 1)  # after the Explorer
+        self.tabs.show()
+        self.tabs.insert_page(scroller, tab, 0)  # Links stays the first tab
         if current is not None:
             self.tabs.set_current_page(self.tabs.page_num(current))
 
@@ -1347,7 +1355,6 @@ class ResultsPanel(Gtk.Box):
             window.set_urgency_hint(bool(count) and not window.is_active())
 
     def close(self) -> None:
-        self.explorer.close()
         for card in self.cards:
             card.close()
 
@@ -1818,7 +1825,7 @@ class ChatPanel(Gtk.Box):
         self.answer = None
         self.earlier = replay_items(messages)
         self._show_earlier()
-        self.add_note("Continued from the history. Earlier results are not shown on the right.",
+        self.add_note("Continued from the history. Earlier results are not shown in the Results panel.",
                       "document-open-recent-symbolic")
 
     def _show_earlier(self) -> None:
@@ -1919,13 +1926,18 @@ class ChatPanel(Gtk.Box):
 
 # --- the window ----------------------------------------------------------------
 class AssistantWindow(Gtk.Window):
-    """Starts as a centered prompt; grows to the work area with the chat on
-    the left and the results on the right."""
+    """Starts as a centered prompt; grows to the work area with the docking
+    layout (dock.py): by default the Explorer left, Details in the middle,
+    the Results right and the conversation along the bottom."""
 
     def __init__(self, app: ChemAssistentApp) -> None:
         super().__init__(type=Gtk.WindowType.TOPLEVEL, title="ChemAssistent")
         self.app = app
-        self.paned: Gtk.Paned | None = None
+        self.dock: Dock | None = None
+        self.explorer: ExplorerPanel | None = None
+        self.details: DetailsPanel | None = None
+        self.dock_size: tuple[int, int] | None = None  # the dock's size the panes were last set for
+        self.layout_timer = 0  # the pending debounced layout save (GLib source id)
         self.chat: ChatPanel | None = None
         self.results: ResultsPanel | None = None
         self.agent: Agent | None = None
@@ -2157,18 +2169,74 @@ class AssistantWindow(Gtk.Window):
         header.pack_end(icon_button("document-new-symbolic", "New conversation", self.app.new_conversation),
                         False, False, 0)
         header.pack_end(self._build_run_mode_button(), False, False, 0)
+        self.chat = ChatPanel(self._send, self._stop)
+        self.results = ResultsPanel()
+        self.explorer = ExplorerPanel(open_url, open_settings, mention=self.chat.insert_mention,
+                                      on_select=self._explorer_selected)
+        self.details = DetailsPanel(open_url, self.chat.insert_mention)
+        saved = self.app.layout_saver.latest  # the last window's, even if not written yet
+        if saved is None:
+            try:  # the saved layout, without waiting for the keyring (no secrets needed)
+                saved = read_raw_config(secrets=False).get("dock_layout")
+            except Exception:  # noqa: BLE001 - a broken config must not stop the conversation
+                LOG.exception("could not read the saved layout")
+        self.dock = Dock(normalize_layout(saved, PANELS), self._layout_changed)
+        widgets = {"conversation": self.chat, "results": self.results, "explorer": self.explorer,
+                   "details": self.details}
+        for panel_id, widget in widgets.items():
+            title, icon, tip = PANEL_INFO[panel_id]
+            self.dock.add_panel(panel_id, title, icon, widget, tooltip=tip)
+        # The zone buttons sit left of the run-mode button (pack_end: packed first = rightmost).
+        for button in reversed(self.dock.toggle_buttons()):
+            button.set_relief(Gtk.ReliefStyle.NONE)
+            header.pack_end(button, False, False, 0)
+        self.dock.connect("size-allocate", self._dock_allocated)
         header.pack_end(self._build_jobs_button(), False, False, 0)
         main.pack_start(handle, False, False, 0)
 
-        self.chat = ChatPanel(self._send, self._stop)
-        self.results = ResultsPanel(mention=self.chat.insert_mention, select=self.chat.set_selection)
         self._add_job_links()
-        self.paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
-        self.paned.set_wide_handle(True)
-        self.paned.pack1(self.chat, True, False)
-        self.paned.pack2(self.results, True, False)
-        main.pack_start(self.paned, True, True, 0)
+        main.pack_start(self.dock, True, True, 0)
         return main
+
+    # --- docking layout ---------------------------------------------------------
+    def _explorer_selected(self, items: list[dict]) -> None:
+        """The Explorer's selection: the chat's chip and the Details panel."""
+        if self.chat is not None:
+            self.chat.set_selection(items)
+        if self.details is not None:
+            self.details.show_items(items)
+
+    def _dock_allocated(self, _dock, allocation) -> None:
+        """The dock got a new size (the window grew or was resized): set the panes
+        to the saved fractions of it. Done on idle (set_position inside a
+        size-allocate re-runs the layout), once per size."""
+        size = (allocation.width, allocation.height)
+        if size == self.dock_size or allocation.width <= 1:
+            return
+        self.dock_size = size
+        GLib.idle_add(self._apply_dock_sizes, size)
+
+    def _apply_dock_sizes(self, size: tuple[int, int]) -> bool:
+        if not self.closed and self.dock is not None and size == self.dock_size and self.expanded:
+            self.dock.apply_sizes(*size)
+        return False
+
+    def _layout_changed(self, layout: dict) -> None:
+        """The dock reports a change: save it 800 ms after the last one."""
+        if self.closed:
+            return
+        if self.layout_timer:
+            GLib.source_remove(self.layout_timer)
+        self.layout_timer = GLib.timeout_add(SAVE_DELAY_MS, self._save_layout_now)
+
+    def _save_layout_now(self) -> bool:
+        self.layout_timer = 0
+        if self.dock is not None:
+            self._save_layout(self.dock.layout())
+        return False
+
+    def _save_layout(self, layout: dict) -> None:
+        self.app.layout_saver.save(layout)
 
     # --- auto-run mode ----------------------------------------------------------
     def _build_run_mode_button(self) -> Gtk.MenuButton:
@@ -2613,12 +2681,14 @@ class AssistantWindow(Gtk.Window):
             else:
                 pending.auto_reason = reason
         card = self.results.add_request(pending)
+        if not pending.auto:
+            self.dock.present("results")  # a waiting card is never hidden
         self.chat.add_note(f"#{card.number} {pending.purpose or 'Code'}"
                            + {"jupyter": " · JupyterLab", "job": " · JupyterLab job",
                               "mcp": " · MCP"}.get(pending.target, "")
                            + (" · auto-run" if pending.auto else ""), "system-run-symbolic")
         self.chat.set_busy(True, "Running automatically…" if pending.auto else
-                           f"Waiting for you to confirm or reject the {TARGETS[pending.target][4]} on the right…")
+                           f"Waiting for you to confirm or reject the {TARGETS[pending.target][4]} in the Results panel…")
         return False
 
     def _on_header_press(self, _widget, event) -> bool:
@@ -2641,7 +2711,8 @@ class AssistantWindow(Gtk.Window):
             self.move(area.x, area.y)
             self.resize(area.width, area.height)
         self.maximize()
-        self.paned.set_position(int(area.width * CHAT_SHARE))
+        # Estimate now; _dock_allocated() corrects it once the dock really has its size.
+        self.dock.apply_sizes(area.width, max(1, area.height - HEADER_HEIGHT_GUESS))
         self.present_now()
         self.chat.focus_input()
         if then is None:
@@ -2682,8 +2753,15 @@ class AssistantWindow(Gtk.Window):
             # A turn still running is saved as far as it got; restore() answers its open calls.
             self._save_history()
             self.agent.cancel()
+        if self.layout_timer:
+            GLib.source_remove(self.layout_timer)
+            self.layout_timer = 0
+        if self.dock is not None and self.expanded:
+            self._save_layout(self.dock.layout())  # the final state, also what on_change missed
         if self.results is not None:
             self.results.close()
+        if self.explorer is not None:
+            self.explorer.close()
         if self.mcp is not None:
             # Ends the server programs (each may take a few seconds).
             threading.Thread(target=self.mcp.close, name="mcp-close", daemon=True).start()
@@ -2702,10 +2780,54 @@ def load_indicator_module():
     return None
 
 
+class SettingSaver:
+    """Saves one UI setting (save_setting(): the config lock may wait for
+    another program) in a thread: one write at a time, in order, the newest
+    value last; values handed in meanwhile collapse into the newest. `latest`
+    is that newest value at once (a new window starts from it, written or
+    not); failures are logged, never shown."""
+
+    def __init__(self, key: str) -> None:
+        self.key = key
+        self.latest = None
+        self._lock = threading.Lock()
+        self._pending = False
+        self._thread: threading.Thread | None = None
+
+    def save(self, value) -> None:
+        with self._lock:
+            self.latest = value
+            self._pending = True
+            if self._thread is None:
+                self._thread = threading.Thread(target=self._run, name=f"save-{self.key}", daemon=True)
+                self._thread.start()
+
+    def _run(self) -> None:
+        while True:
+            with self._lock:
+                if not self._pending:
+                    self._thread = None
+                    return
+                self._pending, value = False, self.latest
+            try:
+                save_setting(self.key, value)
+            except (OSError, ValueError) as error:
+                LOG.warning("could not save %s: %s", self.key, error)
+            except Exception:  # noqa: BLE001 - the thread must go on with the next value
+                LOG.exception("could not save %s", self.key)
+
+    def flush(self, timeout: float) -> None:
+        """Wait (at most `timeout` s) until the last value is written."""
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout)
+
+
 class ChemAssistentApp:
     def __init__(self, show_prompt: bool) -> None:
         self.window: AssistantWindow | None = None
         self.server = RequestServer(self)
+        self.layout_saver = SettingSaver("dock_layout")
         self.show_prompt = show_prompt
         self.indicator = None
         self.last_hotkey = 0.0
@@ -3019,6 +3141,7 @@ class ChemAssistentApp:
     def quit(self) -> bool:
         if self.window is not None:
             self.window.close_conversation()
+        self.layout_saver.flush(SAVE_FLUSH_S)  # its thread dies with the process
         self.server.close()
         Gtk.main_quit()
         return False

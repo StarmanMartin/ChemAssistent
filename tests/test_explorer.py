@@ -400,6 +400,52 @@ def test_pages_against_the_test_instance(chemotion, test_collection, cleanup_sam
     assert item["url"].endswith(f"/mydb/collection/{node['id']}/sample/{item['id']}")
 
 
+def test_detail_rows_leave_out_empty_values():
+    item = {"type_label": "Sample", "short_label": "API-1", "name": "", "collection": "A/B", "shared": False,
+            "id": 7}
+    assert explorer.detail_rows(item) == [("Type", "Sample"), ("Short label", "API-1"), ("Collection", "A/B"),
+                                          ("ID", "7")]
+    item.update(shared=True, name="Water")
+    assert ("Shared", "yes") in explorer.detail_rows(item) and ("Name", "Water") in explorer.detail_rows(item)
+    assert explorer.detail_rows({}) == []
+    assert explorer.detail_rows({"id": 0}) == [("ID", "0")]
+
+
+def test_describe_has_the_detail_fields():
+    """ExplorerPanel.describe() (GTK: in a subprocess) fills the Details fields."""
+    import json
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    code = """
+import json, gi
+gi.require_version("Gtk", "3.0")
+from gi.repository import Gtk
+import explorer_view as v
+panel = v.ExplorerPanel.__new__(v.ExplorerPanel)
+panel.types = [{"name": "sample", "label": "Sample"}]
+store = Gtk.TreeStore(str, str, str, str, object)
+panel.store = store
+node = {"id": 3, "label": "B", "path": "A/B", "shared": True, "url": "u/c"}
+parent = store.append(None, ["", "", None, v.COLLECTION, node])
+element = {"id": 9, "type": "sample", "short_label": "API-9", "name": "Water", "url": "u/s"}
+child = store.append(parent, ["", "", None, v.ELEMENT, element])
+print(json.dumps([panel.describe(parent), panel.describe(child)]))
+"""
+    done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                          cwd=Path(explorer.__file__).parent)
+    if done.returncode:
+        pytest.skip("no GTK here: " + done.stderr[-200:])
+    collection, element = json.loads(done.stdout.strip().splitlines()[-1])
+    assert (collection["kind"], collection["id"], collection["collection"], collection["shared"]) == \
+        ("collection", 3, "A/B", True)
+    assert element["kind"] == "element" and element["type_label"] == "Sample"
+    assert (element["short_label"], element["name"], element["collection"], element["shared"]) == \
+        ("API-9", "Water", "A/B", True)
+    assert element["label"] == "API-9 Water" and element["url"] == "u/s"
+
+
 def test_icons_are_in_adwaita():
     """The Windows bundle ships only the Adwaita and hicolor icon themes.
     The names are read from the source: importing GTK 3 here may clash with
@@ -410,8 +456,11 @@ def test_icons_are_in_adwaita():
     adwaita = Path("/usr/share/icons/Adwaita")
     if not adwaita.is_dir():
         pytest.skip("no Adwaita icon theme here")
-    source = (Path(explorer.__file__).parent / "explorer_view.py").read_text(encoding="utf-8")
-    names = set(re.findall(r'"([a-z0-9-]+-symbolic)"', source))
+    names = set()
+    for module in ("explorer_view.py", "details_view.py", "dock.py"):  # dock.py: the docking layout
+        path = Path(explorer.__file__).parent / module
+        if path.exists():
+            names |= set(re.findall(r'"([a-z0-9-]+-symbolic)"', path.read_text(encoding="utf-8")))
     assert len(names) > 10
     missing = [name for name in sorted(names) if not any(adwaita.rglob(f"{name}.*"))]
     assert missing == []
