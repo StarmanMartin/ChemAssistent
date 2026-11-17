@@ -8,6 +8,8 @@ Both programs of the bundle run this file:
     chem-assistent-runner.exe --setup-ai     install.ps1: AI endpoint and token (setup_ai.py)
     chem-assistent-runner.exe --mcp-bridge --session-file <path>
                                              a CLI agent's tools (mcp_bridge.py, stdio)
+    chem-assistent-runner.exe --explorer-helper
+                                             the Explorer's chemotion_api process (explorer_helper.py, stdio)
     chem-assistent-runner.exe --self-test    build.ps1: checks that the bundle is complete
 
 ChemAssistent.exe has no console; chem-assistent-runner.exe is a console
@@ -82,6 +84,27 @@ def pdf_problems() -> list[str]:
     return []
 
 
+def explorer_helper_problems() -> list[str]:
+    """The Explorer's helper starts from the runner exe, imports chemotion_api
+    and answers a request (ping) on stdio."""
+    import json
+    import subprocess
+
+    import workspace
+
+    try:
+        done = subprocess.run(workspace.command("explorer_helper.py", console=True),
+                              input=json.dumps({"id": 1, "method": "ping", "args": [], "config": {}}) + "\n",
+                              capture_output=True, text=True, encoding="utf-8", timeout=120,
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        answer = json.loads(done.stdout.strip().splitlines()[0])
+    except (OSError, ValueError, IndexError, subprocess.TimeoutExpired) as exc:
+        return [f"the Explorer helper does not run: {type(exc).__name__}: {exc}"]
+    if not answer.get("result") or done.returncode:
+        return [f"the Explorer helper answered {answer!r} (exit code {done.returncode}): {done.stderr.strip()[-300:]}"]
+    return []
+
+
 def self_test() -> int:
     """Import everything the app needs and load the data files GTK finds at
     run time (typelibs, the SVG loader, GtkSourceView's language specs)."""
@@ -113,6 +136,7 @@ def self_test() -> int:
     problems += keystore_problems(keystore)
     problems += save_lock_problems(config)
     problems += pdf_problems()
+    problems += explorer_helper_problems()
     for problem in problems:
         print(f"Self-test: {problem}", file=sys.stderr)
     if not problems:
@@ -130,6 +154,10 @@ def main() -> int:
             return 0
         if args == ["--self-test"]:
             return self_test()
+        if args == ["--explorer-helper"]:
+            import explorer_helper
+
+            return explorer_helper.main()
         if args[:1] == ["--mcp-bridge"]:
             import mcp_bridge
 
