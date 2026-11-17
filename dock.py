@@ -21,8 +21,12 @@ Details that are easy to get wrong:
 - During a tab drag nothing is hidden (the source notebook must stay mapped
   or the drag breaks); empty zones the user did not hide are shown as drop
   targets for the drag, and everything is settled on `drag-end`.
-- Pane positions are only reported when the user dragged a handle (button
-  held); programmatic positions (apply_sizes, resizing the window) are not.
+- Pane positions are only taken as the user's when they change while button 1
+  is held (read from the pointer, not from button events: GTK 3's pane gestures
+  may swallow those) or the pane has the keyboard focus (F8); positions GTK sets
+  itself (clamping during a resize) and our own (`_quiet()`) are not. The
+  sizes are recorded at once; the other panes are re-set and the change is
+  reported once the button is up.
 - Menus are popovers with `Gtk.ModelButton` rows, never `Gtk.Menu`.
 """
 from __future__ import annotations
@@ -32,13 +36,17 @@ from typing import Callable
 
 import gi
 
+gi.require_version("Gdk", "3.0")
 gi.require_version("Gtk", "3.0")
-from gi.repository import GLib, Gtk  # type: ignore  # noqa: E402
+from gi.repository import Gdk, GLib, Gtk  # type: ignore  # noqa: E402
 
 from dock_layout import (  # noqa: E402
     DEFAULT_SIZES, ZONES, fractions_from_positions, measurable_sizes, positions_from_fractions)
 
 GROUP = "chem-assistent-dock"
+# Which layout size each pane's handle sets.
+PANE_SIZES = {"outer": "bottom", "top": "left", "inner": "right"}
+DRAG_SETTLE_MS = 150  # a handle drag is over this long after the last move with the button up
 DROP_TARGET_SIZE = 90  # px: room an empty zone gets while a tab is dragged over the window
 ZONE_TITLES = {"left": "Left", "center": "Center", "right": "Right", "bottom": "Bottom"}
 ZONE_ICONS = {  # Adwaita symbolic icons (test_icons_are_in_adwaita scans this file)
@@ -76,8 +84,8 @@ class Dock(Gtk.Box):
         self._by_widget: dict[Gtk.Widget, str] = {}
         self._busy = 0  # >0: programmatic changes, no signal handling
         self._dragging = False
-        self._pressed: Gtk.Paned | None = None  # the pane whose handle is held
-        self._moved = False  # that pane's position changed during the press
+        self._drag_pane: str | None = None  # the pane whose handle the user moves
+        self._drag_timer = 0  # GLib source: ends that move
         self._size: tuple[int, int] | None = None  # from apply_sizes()
         self._applied: tuple[int, int] | None = None  # dock size the positions were last set for
         self._popover: Gtk.Popover | None = None
@@ -103,8 +111,6 @@ class Dock(Gtk.Box):
         self.panes = {"outer": self.outer, "top": self.top, "inner": self.inner}
         for pane in self.panes.values():
             pane.set_wide_handle(True)
-            pane.connect("button-press-event", self._pane_pressed)
-            pane.connect("button-release-event", self._pane_released)
             pane.connect("notify::position", self._pane_moved)
         self.outer.pack1(self.top, True, True)
         self.outer.pack2(self.zones["bottom"], False, True)
@@ -153,7 +159,6 @@ class Dock(Gtk.Box):
         if panel is None or zone not in self.zones:
             return
         source = self._zone_of(panel_id)
-        self._measure_sizes()  # keep a handle drag the press/release path missed
         with self._quiet():
             if source != zone:
                 if source is not None:
@@ -165,12 +170,14 @@ class Dock(Gtk.Box):
         self._settle(emit=True)
 
     def present(self, panel_id: str) -> None:
-        """Switch its zone to the panel and show the zone."""
+        """Switch its zone to the panel and show the zone (reported only if that changed something)."""
         panel = self.panels.get(panel_id)
         zone = self._zone_of(panel_id)
         if panel is None or zone is None:
             return
-        self._measure_sizes()
+        changed = zone in self._layout["hidden"] or self._read_current().get(zone) != panel_id
+        if not changed:
+            return
         with self._quiet():
             self.zones[zone].set_current_page(self.zones[zone].page_num(panel.widget))
             self._layout["hidden"] = [z for z in self._layout["hidden"] if z != zone]
@@ -180,7 +187,6 @@ class Dock(Gtk.Box):
         """Hide or show a zone; False when refused (the last visible zone stays)."""
         if zone not in self.zones:
             return False
-        self._measure_sizes()  # before the visibility changes: the positions are still the user's
         hidden = [z for z in self._layout["hidden"] if z != zone]
         if not visible:
             if not self._shown(zone, hidden=self._layout["hidden"]):
@@ -205,14 +211,13 @@ class Dock(Gtk.Box):
         return [self.buttons[zone] for zone in ZONES]
 
     def layout(self) -> dict:
-        """The current layout (a copy): tabs from the widgets, sizes from the live pane positions."""
-        self._measure_sizes()
+        """The current layout (a copy): tabs from the widgets, the rest as recorded."""
         result = copy.deepcopy(self._layout)
         zones = self._read_zones()
         for zone in ZONES:  # panels not added yet keep their place
             result["zones"][zone] = zones[zone] + [
                 pid for pid in self._layout["zones"][zone] if pid not in self.panels]
-        result["current"] = self._read_current()
+        result["current"] = self._merged_current()
         return result
 
     def apply_sizes(self, width: int, height: int) -> None:
@@ -226,7 +231,7 @@ class Dock(Gtk.Box):
             GLib.timeout_add(delay, self._reapply)
 
     def _reapply(self) -> bool:
-        if not self._dragging and self._pressed is None:
+        if not self._dragging and self._drag_pane is None:
             self._apply_positions()
         return False
 
@@ -308,7 +313,7 @@ class Dock(Gtk.Box):
         if self._busy or self._dragging:
             return
         self._layout["zones"].update(self._merged_zones())
-        self._layout["current"] = self._read_current()
+        self._layout["current"] = self._merged_current()
         if not any(self.zones[z].get_n_pages() for z in ZONES if z not in self._layout["hidden"]) \
                 and any(self.zones[z].get_n_pages() for z in ZONES):
             self._layout["hidden"] = []  # never an invisible window
@@ -317,6 +322,15 @@ class Dock(Gtk.Box):
         self._apply_positions()
         if emit:
             self._emit()
+
+    def _merged_current(self) -> dict[str, str]:
+        """The shown tab per zone; a zone whose saved tab is not added yet keeps it
+        (add_panel() selects it when it comes)."""
+        current = self._read_current()
+        for zone, panel_id in self._layout["current"].items():
+            if panel_id not in self.panels:
+                current[zone] = panel_id
+        return current
 
     def _merged_zones(self) -> dict[str, list[str]]:
         zones = self._read_zones()
@@ -385,58 +399,52 @@ class Dock(Gtk.Box):
                 if pane.get_position() != positions[name]:
                     pane.set_position(positions[name])
 
-    def _measure_sizes(self) -> None:
-        """Take the sizes from the live pane positions (the user may have dragged a
-        handle without the press/release path noticing). Only for panes with both
-        sides shown, and only while the positions belong to the current dock size
-        (a window resize not yet applied would give wrong fractions)."""
-        if self._size is None or self._dragging:
-            return
-        width, height = self._dock_size()
-        if width <= 1 or height <= 1 or self._applied != (width, height):
-            return
-        keys = measurable_sizes({zone: self._shown(zone) for zone in ZONES})
+    def _fractions(self, width: int, height: int) -> dict[str, float]:
+        """The sizes the live pane positions give."""
         positions = {name: pane.get_position() for name, pane in self.panes.items()}
-        if not self._shown("left"):
+        if not self._shown("left"):  # right is measured against the whole width
             positions["top"] = 0
-        measured = fractions_from_positions(positions, width, height)
-        for key in keys:
-            self._layout["sizes"][key] = measured[key]
+        return fractions_from_positions(positions, width, height)
 
-    def _pane_pressed(self, pane: Gtk.Paned, event) -> bool:
-        if event.button == 1:
-            self._pressed, self._moved = pane, False
-        return False
+    def _user_moves(self, pane: Gtk.Paned) -> bool:
+        """Is the user moving this pane's handle: button 1 held, or keyboard focus (F8)?"""
+        return pane.is_focus() or self._button_held()
+
+    def _button_held(self) -> bool:
+        window = self.get_window()
+        seat = Gdk.Display.get_default().get_default_seat() if window is not None else None
+        pointer = seat.get_pointer() if seat is not None else None
+        if pointer is None:
+            return False
+        mask = window.get_device_position(pointer)[3]
+        return bool(mask & Gdk.ModifierType.BUTTON1_MASK)
 
     def _pane_moved(self, pane: Gtk.Paned, _param) -> None:
-        if not self._busy and pane is self._pressed:
-            self._moved = True
-
-    def _pane_released(self, pane: Gtk.Paned, event) -> bool:
-        if pane is not self._pressed or event.button != 1:
-            return False
-        moved, self._pressed, self._moved = self._moved, None, False
-        if moved and self._size is not None:
-            GLib.idle_add(self._pane_dragged, pane)
-        return False
-
-    def _pane_dragged(self, pane: Gtk.Paned) -> bool:
-        """Take the size the user dragged to, clamp it and settle the others."""
+        """Record the size the user drags a handle to (see the module docstring)."""
+        if self._busy or self._dragging or self._size is None:
+            return
+        name = next(n for n, p in self.panes.items() if p is pane)
+        if self._drag_pane not in (None, name) or not self._user_moves(pane):
+            return  # GTK clamps the other panes while one handle moves
         width, height = self._dock_size()
-        positions = {name: p.get_position() for name, p in self.panes.items()}
-        if not self._shown("left"):
-            positions["top"] = 0
-        measured = fractions_from_positions(positions, width, height)
-        key = {"outer": "bottom", "top": "left", "inner": "right"}[
-            next(name for name, p in self.panes.items() if p is pane)]
-        both = {"outer": self.top.get_visible() and self._shown("bottom"),
-                "top": self._shown("left") and self.inner.get_visible(),
-                "inner": self._shown("center") and self._shown("right")}[
-            next(name for name, p in self.panes.items() if p is pane)]
-        if both:
-            self._layout["sizes"][key] = measured[key]
-            self._apply_positions()
-            self._emit()
+        key = PANE_SIZES[name]
+        if self._applied != (width, height) \
+                or key not in measurable_sizes({zone: self._shown(zone) for zone in ZONES}):
+            return
+        self._drag_pane = name
+        self._layout["sizes"][key] = self._fractions(width, height)[key]
+        if self._drag_timer:
+            GLib.source_remove(self._drag_timer)
+        self._drag_timer = GLib.timeout_add(DRAG_SETTLE_MS, self._pane_settled)
+
+    def _pane_settled(self) -> bool:
+        """The handle rests: set the other panes (right keeps its width) and report."""
+        if self._button_held():
+            return True  # still held: ask again
+        self._drag_timer = 0
+        self._drag_pane = None
+        self._apply_positions()
+        self._emit()
         return False
 
     # -- tab signals ------------------------------------------------------
@@ -469,7 +477,6 @@ class Dock(Gtk.Box):
         self.on_change(result)
 
     def _drag_begin(self, *_args) -> None:
-        self._measure_sizes()
         self._dragging = True
         self._update_visibility()  # empty zones become drop targets
         self._apply_positions()

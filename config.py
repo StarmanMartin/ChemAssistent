@@ -424,15 +424,25 @@ def explorer_types(data: dict) -> list[str] | None:
 
 
 def save_setting(key: str, value) -> None:
-    """Change one key of the saved config (a UI choice like explorer_types).
-    Raises OSError, also while the keyring does not give the secrets: saving
-    then would delete them (RawConfig)."""
-    data = read_raw_config(retry=True)
-    if data.keyring_problem:
-        raise OSError(f"the settings cannot be saved now: the system keyring did not give the "
-                      f"passwords and tokens ({data.keyring_problem})")
-    data[key] = value
-    save_raw_config(data)
+    """Change one non-secret key of the saved config (a UI choice like
+    explorer_types or dock_layout) in place: config.json is read and written
+    under _save_lock(), so a concurrent save of another process is not undone,
+    and the keyring is not touched (its secrets do not change: no read, no
+    unlock prompt). Raises OSError (also after SAVE_LOCK_WAIT_S), ValueError
+    for a key that save_raw_config() must save."""
+    global _secrets_cache
+    if key in SECRET_KEYS or key in (SECRET_STORE_KEY, "use_keyring"):
+        raise ValueError(f"{key} is saved with the other settings (save_raw_config)")
+    ensure_example_config()
+    with _save_lock():
+        old = _file_stamp()
+        data = _read_file()
+        data[key] = value
+        with _secrets_lock:
+            write_private_json(CONFIG_FILE, data)
+            # The keyring holds what it held: the cached secrets stay valid.
+            if _secrets_cache is not None and _secrets_cache[0] == old:
+                _secrets_cache = (_file_stamp(),) + _secrets_cache[1:]
 
 
 def write_private_json(path: Path, data: object) -> None:

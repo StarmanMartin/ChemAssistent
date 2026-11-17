@@ -134,6 +134,8 @@ PANEL_INFO = {
 }
 # A changed layout is saved this long after the last change (in a thread).
 SAVE_DELAY_MS = 800
+# Quit waits at most this long for the last layout save.
+SAVE_FLUSH_S = 3.0
 # Space the conversation page's header takes of the work area (before it is laid out).
 HEADER_HEIGHT_GUESS = 44
 # Header icon for each auto-run mode (config.AUTO_RUN_MODES).
@@ -2172,11 +2174,12 @@ class AssistantWindow(Gtk.Window):
         self.explorer = ExplorerPanel(open_url, open_settings, mention=self.chat.insert_mention,
                                       on_select=self._explorer_selected)
         self.details = DetailsPanel(open_url, self.chat.insert_mention)
-        try:  # the saved layout, without waiting for the keyring (no secrets needed)
-            saved = read_raw_config(secrets=False).get("dock_layout")
-        except Exception:  # noqa: BLE001 - a broken config must not stop the conversation
-            LOG.exception("could not read the saved layout")
-            saved = None
+        saved = self.app.layout_saver.latest  # the last window's, even if not written yet
+        if saved is None:
+            try:  # the saved layout, without waiting for the keyring (no secrets needed)
+                saved = read_raw_config(secrets=False).get("dock_layout")
+            except Exception:  # noqa: BLE001 - a broken config must not stop the conversation
+                LOG.exception("could not read the saved layout")
         self.dock = Dock(normalize_layout(saved, PANELS), self._layout_changed)
         widgets = {"conversation": self.chat, "results": self.results, "explorer": self.explorer,
                    "details": self.details}
@@ -2232,19 +2235,8 @@ class AssistantWindow(Gtk.Window):
             self._save_layout(self.dock.layout())
         return False
 
-    @staticmethod
-    def _save_layout(layout: dict) -> None:
-        """Write the layout to config.json in a thread (the keyring or the lock
-        may wait); a failure is logged, never shown."""
-        def work() -> None:
-            try:
-                save_setting("dock_layout", layout)
-            except (OSError, ValueError) as error:
-                LOG.warning("could not save the layout: %s", error)
-            except Exception:  # noqa: BLE001 - a daemon thread must not die loudly
-                LOG.exception("could not save the layout")
-
-        threading.Thread(target=work, name="save-layout", daemon=True).start()
+    def _save_layout(self, layout: dict) -> None:
+        self.app.layout_saver.save(layout)
 
     # --- auto-run mode ----------------------------------------------------------
     def _build_run_mode_button(self) -> Gtk.MenuButton:
@@ -2689,7 +2681,8 @@ class AssistantWindow(Gtk.Window):
             else:
                 pending.auto_reason = reason
         card = self.results.add_request(pending)
-        self.dock.present("results")  # a waiting card is never hidden
+        if not pending.auto:
+            self.dock.present("results")  # a waiting card is never hidden
         self.chat.add_note(f"#{card.number} {pending.purpose or 'Code'}"
                            + {"jupyter": " · JupyterLab", "job": " · JupyterLab job",
                               "mcp": " · MCP"}.get(pending.target, "")
@@ -2787,10 +2780,54 @@ def load_indicator_module():
     return None
 
 
+class SettingSaver:
+    """Saves one UI setting (save_setting(): the config lock may wait for
+    another program) in a thread: one write at a time, in order, the newest
+    value last; values handed in meanwhile collapse into the newest. `latest`
+    is that newest value at once (a new window starts from it, written or
+    not); failures are logged, never shown."""
+
+    def __init__(self, key: str) -> None:
+        self.key = key
+        self.latest = None
+        self._lock = threading.Lock()
+        self._pending = False
+        self._thread: threading.Thread | None = None
+
+    def save(self, value) -> None:
+        with self._lock:
+            self.latest = value
+            self._pending = True
+            if self._thread is None:
+                self._thread = threading.Thread(target=self._run, name=f"save-{self.key}", daemon=True)
+                self._thread.start()
+
+    def _run(self) -> None:
+        while True:
+            with self._lock:
+                if not self._pending:
+                    self._thread = None
+                    return
+                self._pending, value = False, self.latest
+            try:
+                save_setting(self.key, value)
+            except (OSError, ValueError) as error:
+                LOG.warning("could not save %s: %s", self.key, error)
+            except Exception:  # noqa: BLE001 - the thread must go on with the next value
+                LOG.exception("could not save %s", self.key)
+
+    def flush(self, timeout: float) -> None:
+        """Wait (at most `timeout` s) until the last value is written."""
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout)
+
+
 class ChemAssistentApp:
     def __init__(self, show_prompt: bool) -> None:
         self.window: AssistantWindow | None = None
         self.server = RequestServer(self)
+        self.layout_saver = SettingSaver("dock_layout")
         self.show_prompt = show_prompt
         self.indicator = None
         self.last_hotkey = 0.0
@@ -3104,6 +3141,7 @@ class ChemAssistentApp:
     def quit(self) -> bool:
         if self.window is not None:
             self.window.close_conversation()
+        self.layout_saver.flush(SAVE_FLUSH_S)  # its thread dies with the process
         self.server.close()
         Gtk.main_quit()
         return False

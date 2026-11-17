@@ -107,6 +107,7 @@ class DemoApp:
         self.jobs = NoJobs()
         self.models: list[str] | None = []
         self.models_error = ""
+        self.layout_saver = app.SettingSaver("dock_layout")  # never saves: _save_layout is patched
         provider = Gtk.CssProvider()
         provider.load_from_data(app.CSS)
         Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), provider,
