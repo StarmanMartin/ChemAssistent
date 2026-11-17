@@ -105,18 +105,27 @@ nearest lower line. Only developer mode keeps the free choice of tags and branch
 **Issues:** –
 **Open owner decisions:** – (2026-11-17: reinstall keeps the installed release; no own line → nearest lower line; the app warns on a mismatch; Windows keeps its built-in release, per-version bundles later)
 
-## M5 – Explorer: chemotionapi/ELN version mismatch message
+## M5 – Explorer: chemotionapi/ELN version mismatch
 **Status:** planned
-**Goal:** when the installed chemotionapi does not fit the server (e.g. `v401.*` against ELN
-3.1.2), the Explorer says so, offers to fix it, and forgets the message once it is fixed.
+**Goal:** when the installed chemotionapi does not fit the server, the Explorer says so in
+plain words, offers "Change to <release>", and works with the new release at once — without
+restarting the app.
+**Findings (2026-11-17, reproduced):** the Explorer runs chemotion_api inside the app process;
+after another release is installed (settings or setup_workspace.sh) Python keeps the old modules,
+so "Try again", Refresh and even a new `ExplorerSource` keep failing until the app restarts (a new
+process works at once). Snippets are not affected (each runs in its own `chemotion_runner.py`
+process). The message itself depends on the direction: v401 against ELN 3.1.2 gives
+chemotion_api's `UnsupportedServerVersion` text, v312 against ELN 4.0.1 only
+`400 {"error":"id is invalid"}`.
 **Work packages:**
-- WP5.1 The mismatch message disappears after the version was changed: the Explorer's source logs in again with the newly installed chemotion_api (today it keeps showing the old message) (`explorer.py`, `explorer_view.py`)
-- WP5.2 A "Change to <matching version>" button on the message: installs the release that fits the server's ELN version (with M4's mapping) and refreshes the Explorer (`explorer_view.py`, `settings.py`/`api_versions.py`)
+- WP5.1 Explorer helper process: `ExplorerSource`'s chemotion_api calls run in a helper process (stdin/stdout JSON requests like `chemotion_runner.py`, started with the venv Python / the frozen runner exe), restarted when the installed release (`workspace/chemotionapi.tag`/`.branch`) changes or the helper dies; `ExplorerWorker`/`ExplorerPanel` keep their interface (`explorer.py`, new helper module, tests with the Chemotion test instance)
+- WP5.2 Clear message: on an Explorer error the server's ELN version is checked (`api_versions.check_installed()`); a mismatch shows the M4 warning text instead of the raw error (`explorer.py`, `explorer_view.py`)
+- WP5.3 "Change to <release>" button on that message: installs `release_for()`'s tag (setup_workspace.sh, as the settings do; Linux; Windows: the advice only), then the helper restarts and the Explorer reloads (`explorer_view.py`, shared install helper with `settings.py`)
 **Acceptance criteria:**
-- chemotionapi `v401.*` against ELN 3.1.2: the Explorer shows the mismatch message with a "Change to v312.…" button.
+- chemotionapi `v312.*` against ELN 4.0.1 (and `v401.*` against 3.1.2): the Explorer shows the version message with "Change to v401.1.1" (resp. `v312.*`), not the raw error.
 - After the change (button or settings) the Explorer loads the collections without restarting the app.
-- `pytest tests/` passes; the reload is covered by a GTK-free test.
+- The app process no longer imports chemotion_api for the Explorer; Explorer behaviour (paging, types, shared collections, refresh, mention, details) is unchanged.
+- Windows bundle: the helper runs from the frozen runner; the `--self-test` covers starting it.
+- `pytest tests/` passes; the helper protocol and the restart on a release change are tested.
 **Issues:** –
-**Open owner decisions:**
-- Depends on M4 (version mapping): do M4 first, or a simple button "Open settings" until then?
-  - Do M4 first. Then i need to check if M5 is fixed already!
+**Open owner decisions:** – (2026-11-17: fix by an Explorer helper process, not a restart button or module reloading)
