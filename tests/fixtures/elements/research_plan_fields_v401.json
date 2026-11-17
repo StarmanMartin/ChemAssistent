@@ -1,0 +1,100 @@
+{
+ "can_copy": true,
+ "can_update": true,
+ "body": [
+  {
+   "id": "b182b856-ad0a-46e7-84c1-bc7142aeab9a",
+   "type": "sample",
+   "value": {
+    "sample_id": 325
+   }
+  },
+  {
+   "id": "c1f4",
+   "type": "reaction",
+   "value": {
+    "reaction_id": 41
+   }
+  },
+  {
+   "id": "c1f5",
+   "type": "ketcher",
+   "value": {
+    "svg_file": "0f3a9c1d.svg",
+    "sdf_file": "\n  Ketcher\n"
+   }
+  },
+  {
+   "id": "c1f6",
+   "type": "image",
+   "value": {
+    "file_name": "old.png",
+    "public_name": "1234.png"
+   }
+  },
+  {
+   "id": "c1f7",
+   "type": "future_field",
+   "value": {}
+  }
+ ],
+ "id": 11,
+ "is_restricted": false,
+ "name": "Plan with structures",
+ "preview_attachment": null,
+ "type": "research_plan",
+ "comment_count": 0,
+ "user_labels": [],
+ "attachment_count": 0,
+ "research_plan_metadata": {
+  "id": null,
+  "research_plan_id": 11,
+  "title": "New Research Plan",
+  "doi": null,
+  "url": null,
+  "landing_page": null,
+  "type": null,
+  "description": null,
+  "publisher": null,
+  "publication_year": null,
+  "dates": null,
+  "creator": null,
+  "affiliation": null,
+  "contributor": null,
+  "language": null,
+  "rights": null,
+  "format": null,
+  "version": null,
+  "geo_location": null,
+  "funding_reference": null,
+  "subject": "",
+  "alternate_identifier": null,
+  "related_identifier": null
+ },
+ "tag": {
+  "taggable_data": {
+   "user_labels": [],
+   "collection_labels": [
+    {
+     "id": 209
+    }
+   ]
+  },
+  "taggable_id": 11,
+  "taggable_type": "ResearchPlan",
+  "created_at": "16.11.2026, 10:20:34 +0000",
+  "updated_at": "16.11.2026, 10:20:34 +0000"
+ },
+ "wellplates": [
+  {
+   "id": 14,
+   "name": "Plate A",
+   "short_label": "API-WP514",
+   "type": "wellplate"
+  }
+ ],
+ "segments": [],
+ "short_label": "API-RP11",
+ "created_at": "16.11.2026, 10:20:34 +0000",
+ "updated_at": "16.11.2026, 10:20:34 +0000"
+}

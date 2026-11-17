@@ -21,6 +21,7 @@ with an image fails in the listing, v312) and the Explorer needs only labels.
 """
 from __future__ import annotations
 
+import base64
 import collections
 import inspect
 import json
@@ -327,49 +328,82 @@ class ExplorerSource:
 
     def details(self, type_name: str, element_id: int, collection_id: int | str | None = None) -> dict:
         """The view model (element_views.py) of one element, read only. A type
-        without an adapter gives the stub without a request; the url needs the
+        without an adapter, or one the installed chemotion_api has no getter
+        for, gives the stub (no request for the first); the url needs the
         collection the element is shown in (else it is "")."""
-        if type_name not in element_views.SUPPORTED:
+        if type_name not in element_views.ADAPTERS:
             return element_views.stub(type_name, {"id": element_id})
 
         def work(instance):
+            getter = getattr(instance, GETTERS.get(type_name, ""), None)
+            if getter is None:
+                return element_views.stub(type_name, {"id": element_id})
             host = instance.host_url.rstrip("/")
             url = ""
             if collection_id not in (None, ""):
                 url = f"{host}/mydb/collection/{collection_id}/{type_name}/{element_id}"
-            element = instance.get_sample(element_id)
+            element = getter(element_id)
             data = element.json_data
-            svg, notes = self._sample_image(element, data)
-            model = element_views.view(type_name, data, svg, url)
+            images, notes = self._load_images(element, type_name, data)
+            model = element_views.view(type_name, data, images, url)
             model["notes"] = list(model.get("notes") or []) + notes
             return model
 
         return self._call(work)
 
     @staticmethod
-    def _sample_image(element, data: dict) -> tuple[str | None, list[str]]:
-        """The structure as SVG text: the sample's own drawing, else its
-        molecule's. (None, notes) when there is none, it is too large or the
-        request fails (the details are shown without it)."""
-        try:
-            if data.get("sample_svg_file"):
-                content = element.load_image().content
-            else:
-                name = (data.get("molecule") or {}).get("molecule_svg_file")
-                if not name:
-                    return None, []
-                response = element._session.get(f"/images/molecules/{name}")
+    def _load_images(element, type_name: str, data: dict) -> tuple[dict, list[str]]:
+        """GET every image `IMAGE_REFS[type_name]` names (SVG as text, others
+        base64): ({key: IMAGE}, notes). An image that is missing, too large
+        or fails to load is left out with a note (the details are shown
+        without it); a 401 is raised."""
+        refs = element_views.IMAGE_REFS.get(type_name)
+        images: dict[str, dict] = {}
+        notes: list[str] = []
+        for key, path in (refs(data) if refs else {}).items():
+            name = element_views.IMAGE_NAMES.get(type_name, "") if key in ("image", "scheme") else key
+            name = name or "element"
+            try:
+                response = element._session.get(path)
                 if response.status_code != 200:
                     raise ConnectionError(f"{response.status_code}")
                 content = response.content
-        except Exception as exc:
-            if _is_unauthorized(exc):
-                raise
-            LOG.warning("Structure image not loaded: %s", exc)
-            return None, ["The structure image could not be loaded."]
-        if len(content) > element_views.MAX_IMAGE_BYTES:
-            return None, [element_views.IMAGE_TOO_LARGE]
-        return content.decode("utf-8", errors="replace"), []
+                if len(content) > element_views.MAX_IMAGE_BYTES:
+                    notes.append(element_views.image_too_large(name))
+                    continue
+                images[key] = _image_of(path, content, getattr(response, "headers", None))
+            except Exception as exc:
+                if _is_unauthorized(exc):
+                    raise
+                LOG.warning("Image %s not loaded: %s", path, exc)
+                notes.append(f"The {name} image could not be loaded.")
+        return images, notes
+
+
+# The instance's getter per element type (a line without one has no view for it).
+GETTERS = {"sample": "get_sample", "reaction": "get_reaction", "wellplate": "get_wellplate",
+           "screen": "get_screen", "research_plan": "get_research_plan", "cell_line": "get_cell_line",
+           "device_description": "get_device_description",
+           "sequence_based_macromolecule_sample": "get_sbmm_sample"}
+RASTER_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif"}
+
+
+def _image_of(path: str, content: bytes, headers: Any) -> dict:
+    """An IMAGE dict (element_views.py) from a response; ValueError for
+    anything that is no SVG, PNG, JPEG or GIF."""
+    mime = ""
+    try:
+        mime = str((headers or {}).get("Content-Type") or "").split(";")[0].strip().lower()
+    except Exception:
+        pass
+    extension = os.path.splitext(path.split("?")[0])[1].lower()
+    if "svg" in mime or extension == ".svg":
+        return {"mime": element_views.IMAGE_MIME, "data": content.decode("utf-8", errors="replace")}
+    if mime not in RASTER_TYPES.values():
+        mime = RASTER_TYPES.get(extension, "")
+    if not mime:
+        raise ValueError(f"unsupported image type for {path}")
+    return {"mime": mime, "data": base64.b64encode(content).decode("ascii"), "encoding": "base64"}
 
 
 def _kill_tree(process: subprocess.Popen) -> None:
@@ -639,7 +673,7 @@ class ExplorerProxy:
         return self._request("page", [collection, type_name, page, per_page])
 
     def details(self, type_name: str, element_id: int, collection_id: int | str | None = None) -> dict:
-        if type_name not in element_views.SUPPORTED:  # no request for a stub
+        if type_name not in element_views.ADAPTERS:  # no request for a stub
             return element_views.stub(type_name, {"id": element_id})
         return self._request("details", [type_name, element_id, collection_id])
 

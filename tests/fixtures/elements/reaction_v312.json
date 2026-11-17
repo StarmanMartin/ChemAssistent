@@ -1,0 +1,218 @@
+{
+ "collection_id": null,
+ "dangerous_products": "",
+ "research_plans": {},
+ "conditions": "Reflux",
+ "description": {
+  "ops": [
+   {
+    "insert": "Stirred for "
+   },
+   {
+    "insert": "2 h",
+    "attributes": {
+     "bold": true
+    }
+   },
+   {
+    "insert": ".\n"
+   }
+  ]
+ },
+ "duration": "2 Hour(s)",
+ "user_labels": [],
+ "durationDisplay": {
+  "dispUnit": "Hour(s)",
+  "dispValue": "",
+  "memUnit": "Hour(s)",
+  "memValue": null
+ },
+ "literatures": {},
+ "name": "Esterification v312",
+ "observation": {
+  "ops": [
+   {
+    "insert": "\n"
+   }
+  ]
+ },
+ "products": [
+  {
+   "type": "sample",
+   "id": 104,
+   "short_label": "TST-R7",
+   "name": "Ethyl benzoate",
+   "external_label": "",
+   "reference": false,
+   "equivalent": 0.5,
+   "coefficient": 1.0,
+   "position": 0,
+   "metrics": "mmm",
+   "purity": 1.0,
+   "density": 0.0,
+   "molarity_value": 0.0,
+   "molarity_unit": "M",
+   "target_amount_value": 0.0,
+   "target_amount_unit": "g",
+   "real_amount_value": 0.6,
+   "real_amount_unit": "g",
+   "decoupled": false,
+   "sample_type": "Micromolecule",
+   "residues": [],
+   "sum_formula": "",
+   "molecule": {
+    "id": 104,
+    "iupac_name": "ethyl benzoate",
+    "molecular_weight": 150.1745,
+    "sum_formular": "C9H10O2",
+    "molecule_svg_file": ""
+   },
+   "can_update": true,
+   "gas_type": null
+  }
+ ],
+ "purification": "TLC",
+ "purification_solvents": [],
+ "reactants": [
+  {
+   "type": "sample",
+   "id": 102,
+   "short_label": "reactant",
+   "name": "Ethanol",
+   "external_label": "",
+   "reference": false,
+   "equivalent": 2.0,
+   "coefficient": 1.0,
+   "position": 0,
+   "metrics": "mmmm",
+   "purity": 1.0,
+   "density": 0.0,
+   "molarity_value": 0.0,
+   "molarity_unit": "M",
+   "target_amount_value": 0.01638,
+   "target_amount_unit": "mol",
+   "real_amount_value": null,
+   "real_amount_unit": "g",
+   "decoupled": false,
+   "sample_type": "Micromolecule",
+   "residues": [],
+   "sum_formula": "",
+   "molecule": {
+    "id": 102,
+    "iupac_name": "ethanol",
+    "molecular_weight": 46.06844,
+    "sum_formular": "C2H6O",
+    "molecule_svg_file": ""
+   },
+   "can_update": true,
+   "gas_type": null
+  }
+ ],
+ "rf_value": 0.0,
+ "rxno": "",
+ "role": "",
+ "solvent": "",
+ "solvents": [
+  {
+   "type": "sample",
+   "id": 103,
+   "short_label": "solvent",
+   "name": "",
+   "external_label": "Toluene",
+   "reference": false,
+   "equivalent": 1.0,
+   "coefficient": 1.0,
+   "position": 0,
+   "metrics": "mmmm",
+   "purity": 1.0,
+   "density": 0.87,
+   "molarity_value": 0.0,
+   "molarity_unit": "M",
+   "target_amount_value": 0.01,
+   "target_amount_unit": "l",
+   "real_amount_value": null,
+   "real_amount_unit": "g",
+   "decoupled": false,
+   "sample_type": "Micromolecule",
+   "residues": [],
+   "sum_formula": "",
+   "molecule": {
+    "id": 103,
+    "iupac_name": "",
+    "molecular_weight": 92.13842,
+    "sum_formular": "C7H8",
+    "molecule_svg_file": ""
+   },
+   "can_update": true,
+   "gas_type": null
+  }
+ ],
+ "status": "Done",
+ "starting_materials": [
+  {
+   "type": "sample",
+   "id": 101,
+   "short_label": "TST-7-1",
+   "name": "Benzoic acid",
+   "external_label": "",
+   "reference": true,
+   "equivalent": 1.0,
+   "coefficient": 1.0,
+   "position": 0,
+   "metrics": "mmmm",
+   "purity": 1.0,
+   "density": 0.0,
+   "molarity_value": 0.0,
+   "molarity_unit": "M",
+   "target_amount_value": 1.0,
+   "target_amount_unit": "g",
+   "real_amount_value": null,
+   "real_amount_unit": "g",
+   "decoupled": false,
+   "sample_type": "Micromolecule",
+   "residues": [],
+   "sum_formula": "",
+   "molecule": {
+    "id": 101,
+    "iupac_name": "benzoic acid",
+    "molecular_weight": 122.12134,
+    "sum_formular": "C7H6O2",
+    "molecule_svg_file": ""
+   },
+   "can_update": true,
+   "gas_type": null
+  }
+ ],
+ "temperature": {
+  "valueUnit": "°C",
+  "userText": "",
+  "data": [
+   {
+    "time": "00:00:00",
+    "value": "25"
+   },
+   {
+    "time": "01:00:00",
+    "value": "80"
+   }
+  ]
+ },
+ "timestamp_start": "",
+ "timestamp_stop": "",
+ "tlc_description": "",
+ "tlc_solvents": "",
+ "type": "reaction",
+ "can_update": true,
+ "can_copy": false,
+ "variations": [],
+ "vessel_size": {
+  "amount": null,
+  "unit": "ml"
+ },
+ "gaseous": false,
+ "id": 7,
+ "short_label": "TST-R7",
+ "updated_at": "2026-05-06T10:11:12.000Z",
+ "created_at": "2026-05-05T09:00:00.000Z",
+ "reaction_svg_file": "aa11.svg"
+}

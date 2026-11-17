@@ -1,0 +1,47 @@
+{
+ "id": 1,
+ "can_copy": false,
+ "amount": 1000,
+ "passage": 4,
+ "contamination": null,
+ "name": "New cell line",
+ "short_label": null,
+ "description": null,
+ "unit": "cells",
+ "cellline_material": {
+  "id": 2,
+  "name": "API-line-09d3a2",
+  "source": "ATCC",
+  "cell_type": null,
+  "organism": "Homo sapiens",
+  "tissue": "cervix",
+  "disease": null,
+  "growth_medium": null,
+  "biosafety_level": null,
+  "variant": null,
+  "mutation": null,
+  "optimal_growth_temp": null,
+  "cryo_pres_medium": null,
+  "gender": null,
+  "description": null,
+  "deleted_at": null,
+  "created_at": "2026-11-16T10:16:50.332Z",
+  "updated_at": "2026-11-16T10:16:50.332Z",
+  "created_by": null
+ },
+ "tag": {
+  "id": 36,
+  "taggable_type": "CelllineSample",
+  "taggable_id": 1,
+  "taggable_data": {
+   "collection_labels": [
+    {
+     "id": 27
+    }
+   ]
+  },
+  "created_at": "2026-11-16T10:16:50.154Z",
+  "updated_at": "2026-11-16T10:16:55.128Z"
+ },
+ "type": "cell_line"
+}
