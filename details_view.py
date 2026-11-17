@@ -8,7 +8,9 @@ Explorer's worker; cached by (type, id, updated_at)); several selected items
 explorer.detail_rows(), "Open in Chemotion", "Mention in message"), an element
 card opens its detail view ("<- All selected" goes back). A table row of a
 detail view with a target (`targets` of the view model: a reaction's materials,
-a screen's wellplates) has a button that opens the target's detail view; a
+a screen's wellplates) has a button that opens the target's detail view (it also gets
+"Mention in message": details_logic.linked_mention(), the collection is the one of the
+element the trail started from); a
 navigation trail of the views left that way gives "<- <title>" back buttons
 (the first one in the trail returns to "All selected" again). More than
 MAX_DETAIL_ITEMS items show the first ones and a note. A selection change
@@ -25,6 +27,7 @@ import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import GdkPixbuf, GLib, Gtk, Pango  # type: ignore  # noqa: E402
 
+from details_logic import inherit_collection, linked_mention  # noqa: E402
 from explorer import detail_rows  # noqa: E402
 
 MAX_DETAIL_ITEMS = 20
@@ -219,7 +222,8 @@ class DetailsPanel(Gtk.Box):
             return
         self.trail.append((current, self.current_back, self.current_title or current.get("label") or ""))
         self._open_detail({"kind": ELEMENT, "type": target["type"], "id": target["id"],
-                           "collection_id": current.get("collection_id"),
+                           "collection_id": current.get("collection_id"), "linked": True,
+                           **inherit_collection(current),
                            "label": label or f"{target['type'].replace('_', ' ')} {target['id']}"}, back=False)
 
     def _render_error(self, item: dict, message: str, back: bool) -> None:
@@ -263,6 +267,8 @@ class DetailsPanel(Gtk.Box):
         if model.get("subtitle"):
             self.content.pack_start(_label(model["subtitle"], "dim", selectable=True), False, False, 0)
         # The listing's link first: it knows the route of shared collections.
+        if item.get("linked") and not item.get("text"):  # opened from a link: the reference from the view
+            item = {**item, "text": linked_mention(item, model)}
         self.content.pack_start(self._buttons(item, item.get("url") or model.get("url")), False, False, 0)
         image = self._image(model.get("image"))
         if image is not None:
