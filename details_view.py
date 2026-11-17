@@ -20,14 +20,19 @@ from __future__ import annotations
 
 import base64
 import binascii
+import threading
+from pathlib import Path
 from typing import Callable
 
 import gi
 
 gi.require_version("Gtk", "3.0")
-from gi.repository import GdkPixbuf, GLib, Gtk, Pango  # type: ignore  # noqa: E402
+from gi.repository import GdkPixbuf, Gio, GLib, Gtk, Pango  # type: ignore  # noqa: E402
 
-from details_logic import inherit_collection, linked_mention  # noqa: E402
+from details_logic import (  # noqa: E402
+    MAX_DOWNLOAD_BYTES, analysis_mention, file_mention, human_size, inherit_collection, jupyter_path, linked_mention,
+    needs_confirmation, open_path, relative_to_exchange, sanitize_name,
+)
 from explorer import detail_rows  # noqa: E402
 
 MAX_DETAIL_ITEMS = 20
@@ -105,14 +110,18 @@ def pixbuf_from_image(image: dict | None, max_width: int, max_height: int = MAX_
 class DetailsPanel(Gtk.Box):
     """`open_url(url)` and `mention(text)` are called by the buttons;
     `request(method, args, on_done, on_error)` is the Explorer worker's request
-    (None: no detail views, short cards only)."""
+    (None: no detail views, short cards only). `download_targets()` gives
+    `{"jupyter": (exchange Path, sync() -> notes) | None, "downloads": Path}` for the
+    files of the analyses section (None: "Open" and "Download to…" only, in a temp folder)."""
 
     def __init__(self, open_url: Callable[[str], None], mention: Callable[[str], None],
-                 request: Callable | None = None) -> None:
+                 request: Callable | None = None, download_targets: Callable[[], dict] | None = None) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.open_url = open_url
         self.mention = mention
         self.request = request
+        self.download_targets = download_targets
+        self.previews: dict[tuple, dict | None] = {}  # (kind, id) -> IMAGE, kept per panel
         self.items: list[dict] = []
         self.counter = 0  # bumped by every view change; a late answer of an older one is dropped
         self.cache: dict[tuple, dict] = {}
@@ -274,7 +283,7 @@ class DetailsPanel(Gtk.Box):
         if image is not None:
             self.content.pack_start(image, False, False, 0)
         for section in model.get("sections") or []:
-            self.content.pack_start(self._section(section), False, False, 0)
+            self.content.pack_start(self._section(section, item), False, False, 0)
         for note in model.get("notes") or []:
             self.content.pack_start(_label(note, "dim"), False, False, 0)
         self.content.show_all()
@@ -288,12 +297,16 @@ class DetailsPanel(Gtk.Box):
         widget.set_halign(Gtk.Align.START)
         return widget
 
-    def _section(self, section: dict) -> Gtk.Widget:
+    def _section(self, section: dict, item: dict | None = None) -> Gtk.Widget:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         heading = _label("", None)
         heading.set_markup("<b>%s</b>" % GLib.markup_escape_text(section.get("title") or ""))
         box.pack_start(heading, False, False, 0)
         kind = section.get("kind")
+        if kind == "analyses":
+            for analysis in section.get("analyses") or []:
+                box.pack_start(self._analysis(analysis, item or {}), False, False, 0)
+            return box
         if kind == "text":
             body = _label(section.get("text") or "", selectable=True)
             markup = section.get("markup")
@@ -355,6 +368,260 @@ class DetailsPanel(Gtk.Box):
             mention.connect("clicked", lambda *_: self.mention(item["text"]))
             buttons.pack_start(mention, False, False, 0)
         return buttons
+
+    # --- analyses (M9) -----------------------------------------------------------
+    def _targets(self) -> dict:
+        try:
+            return (self.download_targets() if self.download_targets else None) or {}
+        except Exception:  # noqa: BLE001
+            return {}
+
+    def _load_preview(self, kind: str, ident, show: Callable[[dict], None], number: int) -> None:
+        """Preview image of an analysis/attachment, once per panel (None cached too)."""
+        if self.request is None:
+            return
+        key = (kind, ident)
+        if key in self.previews:
+            if self.previews[key]:
+                show(self.previews[key])
+            return
+
+        def done(image) -> None:
+            self.previews[key] = image or None
+            if image and number == self.counter:
+                show(image)
+
+        def failed(_message: str) -> None:
+            pass  # a missing preview is no error worth a message
+
+        try:
+            self.request("preview", (kind, ident), done, failed)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _analysis(self, analysis: dict, item: dict) -> Gtk.Widget:
+        number = self.counter
+        title = " · ".join(str(part) for part in (analysis.get("name"), analysis.get("kind"), analysis.get("status")) if part)
+        expander = Gtk.Expander(label=title or f"Analysis {analysis.get('id')}")
+        label = expander.get_label_widget()
+        if isinstance(label, Gtk.Label):
+            label.set_ellipsize(Pango.EllipsizeMode.END)
+            label.set_tooltip_text(title)
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin_start=12, margin_top=4, margin_bottom=6)
+        if item.get("text"):
+            mention = Gtk.Button.new_from_icon_name("insert-text-symbolic", Gtk.IconSize.BUTTON)
+            mention.set_label("Mention in message")
+            mention.set_always_show_image(True)
+            mention.set_halign(Gtk.Align.START)
+            mention.connect("clicked", lambda *_: self.mention(analysis_mention(item, analysis)))
+            body.pack_start(mention, False, False, 0)
+        holder = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)  # the preview comes in here
+        body.pack_start(holder, False, False, 0)
+        if analysis.get("text"):
+            text = _label(analysis["text"], selectable=True)
+            if analysis.get("markup") and valid_markup(analysis["markup"]):
+                text.set_markup(analysis["markup"])
+            body.pack_start(text, False, False, 0)
+        thumbs: list[tuple[dict, Gtk.Box]] = []
+        for dataset in analysis.get("datasets") or []:
+            body.pack_start(self._dataset(dataset, analysis, item, thumbs), False, False, 0)
+        expander.add(body)
+        loaded = []
+
+        def show_preview(image: dict) -> None:
+            widget = self._image(image)
+            if widget is not None and holder.get_parent() is not None:
+                holder.pack_start(widget, False, False, 0)
+                widget.show()
+
+        def expanded(*_args) -> None:
+            if not expander.get_expanded() or loaded:
+                return
+            loaded.append(True)
+            if analysis.get("preview"):
+                self._load_preview("analysis", analysis.get("id"), show_preview, number)
+            for file, slot in thumbs:
+                def show_thumb(image: dict, slot=slot) -> None:
+                    pixbuf = pixbuf_from_image(image, 160, 100)
+                    if pixbuf is not None:
+                        thumb = Gtk.Image.new_from_pixbuf(pixbuf)
+                        thumb.set_halign(Gtk.Align.START)
+                        slot.pack_start(thumb, False, False, 0)
+                        thumb.show()
+                self._load_preview("attachment", file.get("id"), show_thumb, number)
+
+        expander.connect("notify::expanded", expanded)
+        return expander
+
+    def _dataset(self, dataset: dict, analysis: dict, item: dict, thumbs: list) -> Gtk.Widget:
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        head = _label("", None)
+        text = "<b>%s</b>" % GLib.markup_escape_text(str(dataset.get("name") or "Dataset"))
+        if dataset.get("instrument"):
+            text += "  <span alpha='60%%'>%s</span>" % GLib.markup_escape_text(str(dataset["instrument"]))
+        head.set_markup(text)
+        box.pack_start(head, False, False, 0)
+        rows = dataset.get("rows") or []
+        if rows:
+            grid = Gtk.Grid(column_spacing=12, row_spacing=2)
+            for row, entry in enumerate(rows):
+                grid.attach(_label(entry.get("label") or "", "dim"), 0, row, 1, 1)
+                value = " ".join(part for part in (entry.get("value"), entry.get("unit")) if part)
+                value_label = _label(value, selectable=True)
+                value_label.set_hexpand(True)
+                grid.attach(value_label, 1, row, 1, 1)
+            box.pack_start(grid, False, False, 0)
+        for file in dataset.get("files") or []:
+            box.pack_start(self._file_row(file, analysis, item, thumbs), False, False, 0)
+        return box
+
+    def _file_row(self, file: dict, analysis: dict, item: dict, thumbs: list) -> Gtk.Widget:
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        line = Gtk.Box(spacing=6)
+        line.pack_start(Gtk.Image.new_from_icon_name("text-x-generic-symbolic", Gtk.IconSize.MENU), False, False, 0)
+        name = _label(str(file.get("name") or ""), selectable=True)
+        name.set_line_wrap(False)
+        name.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
+        name.set_tooltip_text(str(file.get("name") or ""))
+        line.pack_start(name, True, True, 0)
+        size = human_size(file.get("size"))
+        if size:
+            line.pack_start(_label(size, "dim"), False, False, 0)
+        button = Gtk.MenuButton()
+        button.set_image(Gtk.Image.new_from_icon_name("view-more-symbolic", Gtk.IconSize.BUTTON))
+        button.set_relief(Gtk.ReliefStyle.NONE)
+        button.set_tooltip_text("Open or download")
+        status = _label("", "dim", selectable=True)
+        status.set_no_show_all(True)
+
+        def say(text: str) -> None:
+            status.set_text(text)
+            status.set_visible(bool(text))
+
+        # Rows are built when the popover opens: JupyterLab may come or go meanwhile.
+        popover = Gtk.Popover(relative_to=button)
+        menu = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, border_width=6)
+        popover.add(menu)
+        button.set_popover(popover)
+
+        def fill(*_args) -> None:
+            for child in menu.get_children():
+                menu.remove(child)
+            rows = [("Open", lambda: self.file_action("open", item, analysis, file, say)),
+                    ("Download to…", lambda: self.file_action("to", item, analysis, file, say))]
+            if self._targets().get("jupyter"):
+                rows.insert(1, ("Download to JupyterLab", lambda: self.file_action("jupyter", item, analysis, file, say)))
+            if item.get("text"):
+                rows.append(("Mention in message", lambda: self.mention(file_mention(item, analysis, file))))
+            for text, callback in rows:
+                row = Gtk.ModelButton(text=text)
+
+                def clicked(_row, callback=callback) -> None:
+                    popover.popdown()
+                    GLib.idle_add(lambda: callback() and False)
+                row.connect("clicked", clicked)
+                menu.pack_start(row, False, False, 0)
+            menu.show_all()
+
+        popover.connect("show", fill)
+        line.pack_end(button, False, False, 0)
+        box.pack_start(line, False, False, 0)
+        if file.get("thumb"):
+            slot = Gtk.Box()
+            box.pack_start(slot, False, False, 0)
+            thumbs.append((file, slot))
+        box.pack_start(status, False, False, 0)
+        return box
+
+    def file_action(self, mode: str, item: dict, analysis: dict, file: dict, say: Callable[[str], None]) -> None:
+        """"open" | "jupyter" | "to": choose the target path, confirm a big file, download it
+        through the worker, then open it / sync it / say where it went."""
+        if self.request is None:
+            return
+        targets = self._targets()
+        if mode == "to":
+            dialog = Gtk.FileChooserNative.new("Download to…", self.get_toplevel(), Gtk.FileChooserAction.SAVE, "Save", "Cancel")
+            dialog.set_current_name(sanitize_name(str(file.get("name") or ""), "file"))
+            dialog.set_do_overwrite_confirmation(True)
+
+            def response(chooser, code) -> None:
+                chosen = chooser.get_filename() if code == Gtk.ResponseType.ACCEPT else None
+                self._keep.discard(chooser)
+                if chosen:
+                    self._confirm_and_download(Path(chosen), mode, file, say, targets)
+            self._keep.add(dialog)
+            dialog.connect("response", response)
+            dialog.show()
+            return
+        if mode == "jupyter":
+            jupyter = targets.get("jupyter")
+            if not jupyter:
+                say("JupyterLab is not available in this conversation.")
+                return
+            path = jupyter_path(jupyter[0], item, analysis, file)
+        else:
+            downloads = targets.get("downloads") or Path(GLib.get_user_cache_dir()) / "chem-assistent" / "downloads"
+            path = open_path(downloads, file)
+            if path.exists() and file.get("size") is not None and path.stat().st_size == file.get("size"):
+                self._finished(path, mode, say, targets)
+                return
+        self._confirm_and_download(path, mode, file, say, targets)
+
+    _keep: set = set()  # native dialogs stay referenced until they answer
+
+    def _confirm_and_download(self, path: Path, mode: str, file: dict, say, targets: dict) -> None:
+        if not needs_confirmation(file.get("size")):
+            self._download(path, mode, file, say, targets, MAX_DOWNLOAD_BYTES)
+            return
+        dialog = Gtk.MessageDialog(transient_for=self.get_toplevel(), modal=True, message_type=Gtk.MessageType.QUESTION,
+                                   buttons=Gtk.ButtonsType.NONE, text="Download a large file?")
+        dialog.format_secondary_text(f"{file.get('name')} is {human_size(file.get('size'))}. Download it anyway?")
+        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Download", Gtk.ResponseType.OK)
+
+        def response(box, code) -> None:
+            box.destroy()
+            if code == Gtk.ResponseType.OK:
+                self._download(path, mode, file, say, targets, None)
+        dialog.connect("response", response)
+        dialog.show()
+
+    def _download(self, path: Path, mode: str, file: dict, say, targets: dict, max_bytes) -> None:
+        say("Downloading…")
+
+        def done(_result) -> None:
+            self._finished(path, mode, say, targets)
+
+        def failed(message: str) -> None:
+            say(f"Download failed: {message}")
+
+        try:
+            self.request("download", (file.get("id"), str(path), max_bytes), done, failed)
+        except Exception as exc:  # noqa: BLE001
+            say(f"Download failed: {exc}")
+
+    def _finished(self, path: Path, mode: str, say, targets: dict) -> None:
+        if mode == "open":
+            say(f"Opened {path.name}")
+            try:
+                Gio.AppInfo.launch_default_for_uri(Gio.File.new_for_path(str(path)).get_uri(), None)
+            except GLib.Error as exc:
+                say(f"Saved to {path}, but it cannot be opened: {exc.message}")
+        elif mode == "jupyter":
+            jupyter = targets.get("jupyter")
+            relative = relative_to_exchange(jupyter[0], path) if jupyter else str(path)
+            say("Sending to JupyterLab…")
+
+            def work() -> None:
+                try:
+                    notes = jupyter[1]() or []
+                    text = f"Saved to JupyterLab: {relative}" + "".join(f"\n{note}" for note in notes)
+                except Exception as exc:  # noqa: BLE001
+                    text = f"Saved locally ({relative}), but not sent to JupyterLab: {exc}"
+                GLib.idle_add(lambda: say(text) and False)
+            threading.Thread(target=work, daemon=True).start()
+        else:
+            say(f"Saved to {path}")
 
     # --- short cards -------------------------------------------------------------
     def _card(self, item: dict) -> Gtk.Widget:
