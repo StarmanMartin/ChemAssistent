@@ -283,6 +283,9 @@ class DetailsPanel(Gtk.Box):
         image = self._image(model.get("image"))
         if image is not None:
             self.content.pack_start(image, False, False, 0)
+        # The loaded element knows its short label (a linked item may not): the JupyterLab folder name.
+        if not item.get("short_label") and model.get("short_label"):
+            item = {**item, "short_label": model["short_label"]}
         for section in model.get("sections") or []:
             self.content.pack_start(self._section(section, item), False, False, 0)
         for note in model.get("notes") or []:
