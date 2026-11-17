@@ -65,7 +65,7 @@ selected in the Explorer.
 **Open owner decisions:** –
 
 ## M3 – Open the conversation view without a message
-**Status:** in progress
+**Status:** done (#32)
 **Goal:** the big conversation view (dock with Explorer, Details, Results, Conversation) can
 be opened without asking anything first, e.g. to browse the ELN in the Explorer and ask later.
 **Work packages:**
