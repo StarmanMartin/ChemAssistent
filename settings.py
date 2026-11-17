@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import dataclasses
 import os
-import subprocess
-import sys
 import threading
 import webbrowser
 from pathlib import Path
@@ -37,9 +35,6 @@ from model_picker import ModelEntry  # noqa: E402
 
 PRGNAME = "chem-assistent-settings"
 ICON_FILE = Path(__file__).with_name("chem-assistent.svg")
-SETUP_WORKSPACE = Path(__file__).with_name("setup_workspace.sh")
-# Fetch, pip install and the API reference of another chemotion_api version.
-SETUP_TIMEOUT_S = 900
 # The URL field paused this long: read the server's ELN version.
 DETECT_DELAY_MS = 800
 
@@ -1162,20 +1157,8 @@ class SettingsWindow(Gtk.Window):
         threading.Thread(target=self._install_api_worker, args=(ref, label), daemon=True).start()
 
     def _install_api_worker(self, ref: str, label: str) -> None:
-        # Runs in a thread: no GTK calls here. sys.executable is the app's venv.
-        command = [str(SETUP_WORKSPACE), str(SETUP_WORKSPACE.parent), sys.executable]
-        command += ["--branch", ref.removeprefix("branch:")] if ref.startswith("branch:") else [ref]
-        try:
-            done = subprocess.run(command, capture_output=True, text=True, timeout=SETUP_TIMEOUT_S)
-            if done.returncode == 0:
-                text = done.stdout.strip().splitlines()[-1]  # "chemotionapi <label> (<commit>) installed, ..."
-            else:
-                lines = (done.stderr or done.stdout).strip().splitlines()
-                text = f"Installing {label} failed: {lines[-1] if lines else f'exit code {done.returncode}'}"
-        except subprocess.TimeoutExpired:
-            text = f"Installing {label} took longer than {SETUP_TIMEOUT_S} s and was stopped."
-        except OSError as exc:
-            text = f"Installing {label} failed: {exc}"
+        # Runs in a thread: no GTK calls here.
+        _ok, text = api_versions.install(ref)
         GLib.idle_add(self._install_api_done, text)
 
     def _install_api_done(self, text: str) -> bool:
