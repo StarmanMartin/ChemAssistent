@@ -453,7 +453,7 @@ def test_images_reach_the_view_and_big_ones_are_left_out():
 def test_supported_follows_the_adapters(monkeypatch):
     assert "reaction" in element_views.SUPPORTED and "vessel" not in element_views.SUPPORTED
     monkeypatch.setitem(element_views.ADAPTERS, "vessel", lambda data, images, url: {"type": "vessel"})
-    assert "vessel" in element_views.SUPPORTED and view("vessel", {}) == {"type": "vessel"}
+    assert "vessel" in element_views.SUPPORTED and view("vessel", {})["type"] == "vessel"  # (view() adds short_label/name)
 
 
 @pytest.mark.chemotion

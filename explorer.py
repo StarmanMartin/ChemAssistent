@@ -328,14 +328,22 @@ class ExplorerSource:
 
     def details(self, type_name: str, element_id: int, collection_id: int | str | None = None) -> dict:
         """The view model (element_views.py) of one element, read only. A type
-        without an adapter, or one the installed chemotion_api has no getter
-        for, gives the stub (no request for the first); the url needs the
-        collection the element is shown in (else it is "")."""
-        if type_name not in element_views.ADAPTERS:
-            return element_views.stub(type_name, {"id": element_id})
+        with no adapter that the server does not mark `is_generic`, or one the
+        installed chemotion_api has no getter for, gives the stub; a generic
+        type (LabIMotion) is loaded with `get_generic_by_name()` and shown from
+        its layers (element_generic.py). The url needs the collection the
+        element is shown in (else it is "")."""
 
         def work(instance):
-            getter = getattr(instance, GETTERS.get(type_name, ""), None)
+            generic = False
+            if type_name in element_views.ADAPTERS:
+                getter = getattr(instance, GETTERS.get(type_name, ""), None)
+            else:
+                klass = self._all_classes(instance).get(type_name)
+                generic = bool(klass and klass.get("is_generic")) and hasattr(instance, "get_generic_by_name")
+                if not generic:
+                    return element_views.stub(type_name, {"id": element_id})
+                getter = lambda element_id: instance.get_generic_by_name(type_name, element_id)  # noqa: E731
             if getter is None:
                 return element_views.stub(type_name, {"id": element_id})
             host = instance.host_url.rstrip("/")
@@ -344,7 +352,12 @@ class ExplorerSource:
                 url = f"{host}/mydb/collection/{collection_id}/{type_name}/{element_id}"
             element = getter(element_id)
             data = element.json_data
-            images, notes = self._load_images(element, type_name, data)
+            if generic:
+                if not isinstance(data.get("element_klass"), dict):
+                    data = dict(data, element_klass={k: v for k, v in klass.items() if k != "properties_template"})
+                images, notes = {}, []
+            else:
+                images, notes = self._load_images(element, type_name, data)
             model = element_views.view(type_name, data, images, url)
             model["notes"] = list(model.get("notes") or []) + notes
             return model
@@ -673,8 +686,7 @@ class ExplorerProxy:
         return self._request("page", [collection, type_name, page, per_page])
 
     def details(self, type_name: str, element_id: int, collection_id: int | str | None = None) -> dict:
-        if type_name not in element_views.ADAPTERS:  # no request for a stub
-            return element_views.stub(type_name, {"id": element_id})
+        # Always the helper: only it knows whether the server's type is a generic one (it answers the stub otherwise).
         return self._request("details", [type_name, element_id, collection_id])
 
     def save_types(self, shown: list[str], known: list[str]) -> None:

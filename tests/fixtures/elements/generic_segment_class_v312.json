@@ -1,0 +1,222 @@
+{
+    "id": 3,
+    "uuid": "54572179-1020-43a4-b738-e743e17de6c0",
+    "label": "eee",
+    "desc": "Des",
+    "properties_template": {
+        "pkg": {
+            "eln": {
+                "version": "v1.10.2",
+                "base_revision": "7e269bb594d29413788f3e5bfa16544981b5d392",
+                "current_revision": "7e269bb594d29413788f3e5bfa16544981b5d392"
+            },
+            "name": "chem-generic-ui",
+            "version": "1.4.4",
+            "labimotion": "1.4.0.2"
+        },
+        "uuid": "54572179-1020-43a4-b738-e743e17de6c0",
+        "klass": "SegmentKlass",
+        "layers": {
+            "one": {
+                "wf": false,
+                "key": "one",
+                "cols": 1,
+                "color": "none",
+                "label": "Nr 1",
+                "style": "panel_generic_heading",
+                "fields": [
+                    {
+                        "type": "text",
+                        "field": "a",
+                        "label": "a",
+                        "default": "",
+                        "position": 1,
+                        "sub_fields": [],
+                        "text_sub_fields": []
+                    }
+                ],
+                "position": 10,
+                "timeRecord": "",
+                "wf_position": 0
+            }
+        },
+        "version": "0.1",
+        "identifier": "c36a48b8-8912-4407-a908-b7ff6467bdc5",
+        "select_options": {}
+    },
+    "properties_release": {
+        "pkg": {
+            "eln": {
+                "version": "v1.10.2",
+                "base_revision": "7e269bb594d29413788f3e5bfa16544981b5d392",
+                "current_revision": "7e269bb594d29413788f3e5bfa16544981b5d392"
+            },
+            "name": "chem-generic-ui",
+            "version": "1.4.4",
+            "labimotion": "1.4.0.2"
+        },
+        "uuid": "54572179-1020-43a4-b738-e743e17de6c0",
+        "klass": "SegmentKlass",
+        "layers": {
+            "one": {
+                "wf": false,
+                "key": "one",
+                "cols": 1,
+                "color": "none",
+                "label": "Nr 1",
+                "style": "panel_generic_heading",
+                "fields": [
+                    {
+                        "type": "text",
+                        "field": "a",
+                        "label": "a",
+                        "default": "",
+                        "position": 1,
+                        "sub_fields": [],
+                        "text_sub_fields": []
+                    }
+                ],
+                "position": 10,
+                "timeRecord": "",
+                "wf_position": 0
+            }
+        },
+        "version": "0.1",
+        "identifier": "c36a48b8-8912-4407-a908-b7ff6467bdc5",
+        "select_options": {}
+    },
+    "is_active": false,
+    "version": "0.1",
+    "place": 100,
+    "released_at": "2024-12-04 13:09:17 UTC",
+    "identifier": "c36a48b8-8912-4407-a908-b7ff6467bdc5",
+    "sync_time": null,
+    "created_by": 7,
+    "updated_by": 7,
+    "created_at": "2024-12-04 13:08:41 UTC",
+    "updated_at": "2024-12-04 13:09:17 UTC",
+    "element_klass": {
+        "id": 9,
+        "uuid": "5ebf115b-f57b-4f33-b1b1-c68f9a896089",
+        "label": "Tryout",
+        "desc": "",
+        "properties_template": {
+            "pkg": {
+                "eln": {
+                    "version": "v1.10.2",
+                    "base_revision": "7e269bb594d29413788f3e5bfa16544981b5d392",
+                    "current_revision": "7e269bb594d29413788f3e5bfa16544981b5d392"
+                },
+                "name": "chem-generic-ui",
+                "version": "1.4.4",
+                "labimotion": "1.4.0.2"
+            },
+            "uuid": "2b02e177-9655-41cc-9067-9f2ca555ef51",
+            "klass": "ElementKlass",
+            "layers": {
+                "one": {
+                    "wf": false,
+                    "key": "one",
+                    "cols": 1,
+                    "color": "none",
+                    "label": "Nr. 1",
+                    "style": "panel_generic_heading",
+                    "fields": [
+                        {
+                            "type": "text",
+                            "field": "Name",
+                            "label": "Name",
+                            "default": "",
+                            "position": 1,
+                            "sub_fields": [],
+                            "text_sub_fields": []
+                        },
+                        {
+                            "type": "table",
+                            "field": "Table",
+                            "label": "Table",
+                            "default": "",
+                            "position": 2,
+                            "required": false,
+                            "sub_fields": [
+                                {
+                                    "id": "748041a1-1639-424d-9147-1f5ea2436c43",
+                                    "type": "text",
+                                    "value": "",
+                                    "col_name": "Col 1"
+                                },
+                                {
+                                    "id": "017cd221-2419-44f1-a1b6-16411b7aa44f",
+                                    "type": "text",
+                                    "value": "",
+                                    "col_name": "Col 2"
+                                }
+                            ],
+                            "text_sub_fields": []
+                        },
+                        {
+                            "type": "input-group",
+                            "field": "Group",
+                            "label": "Group",
+                            "default": "",
+                            "position": 3,
+                            "required": false,
+                            "sub_fields": [
+                                {
+                                    "id": "a2c7b308-b1d5-447b-b3dd-8b090c11f4c1",
+                                    "type": "label",
+                                    "value": "TEST"
+                                },
+                                {
+                                    "id": "b21ffab0-8e17-4934-bb45-218ef371348d",
+                                    "type": "number",
+                                    "value": ""
+                                },
+                                {
+                                    "id": "087203bc-2493-4b2d-bae1-92437167ed28",
+                                    "type": "text",
+                                    "value": ""
+                                }
+                            ],
+                            "text_sub_fields": []
+                        }
+                    ],
+                    "position": 10,
+                    "timeRecord": "",
+                    "wf_position": 0
+                }
+            },
+            "version": null,
+            "identifier": "0e7d841f-6f2a-44e3-b2e9-b9e2a8fa6241",
+            "select_options": {}
+        },
+        "properties_release": {
+            "pkg": {
+                "eln": {
+                    "version": "v1.10.2",
+                    "base_revision": "7e269bb594d29413788f3e5bfa16544981b5d392",
+                    "current_revision": "7e269bb594d29413788f3e5bfa16544981b5d392"
+                },
+                "labimotion": "1.4.0.2"
+            },
+            "uuid": "5ebf115b-f57b-4f33-b1b1-c68f9a896089",
+            "klass": "ElementKlass",
+            "layers": {},
+            "select_options": {}
+        },
+        "is_active": false,
+        "version": null,
+        "place": 100,
+        "released_at": "2024-12-04 12:57:51 UTC",
+        "identifier": "0e7d841f-6f2a-44e3-b2e9-b9e2a8fa6241",
+        "sync_time": null,
+        "created_by": 7,
+        "updated_by": 7,
+        "created_at": "2024-12-04 12:57:51 UTC",
+        "updated_at": "2024-12-04 13:00:03 UTC",
+        "name": "try",
+        "icon_name": "fa fa-check-square",
+        "klass_prefix": "T",
+        "is_generic": true
+    }
+}

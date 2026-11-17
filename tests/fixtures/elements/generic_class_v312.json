@@ -1,0 +1,731 @@
+{
+    "id": 10,
+    "uuid": "46322835-af0a-4e11-94da-21d5e1fdf69f",
+    "label": "zzz",
+    "desc": "uuuu",
+    "properties_template": {
+        "pkg": {
+            "eln": {
+                "version": "v1.10.2",
+                "base_revision": "7e269bb594d29413788f3e5bfa16544981b5d392",
+                "current_revision": "7e269bb594d29413788f3e5bfa16544981b5d392"
+            },
+            "name": "chem-generic-ui",
+            "version": "1.4.4",
+            "labimotion": "1.4.0.2"
+        },
+        "uuid": "c0f6047d-b307-4bd1-891b-6d911d5f0737",
+        "klass": "ElementKlass",
+        "layers": {
+            "aaa": {
+                "wf": false,
+                "key": "aaa",
+                "cols": 3,
+                "color": "primary",
+                "label": "bbb",
+                "style": "panel_generic_heading_bu",
+                "fields": [
+                    {
+                        "cols": 2,
+                        "type": "checkbox",
+                        "field": "a",
+                        "label": "a",
+                        "default": "",
+                        "position": 1,
+                        "required": false,
+                        "sub_fields": [],
+                        "text_sub_fields": []
+                    },
+                    {
+                        "type": "datetime",
+                        "field": "b",
+                        "label": "b",
+                        "default": "",
+                        "position": 2,
+                        "required": false,
+                        "sub_fields": [],
+                        "cond_fields": [
+                            {
+                                "id": "bfd2d90e-285c-45e2-a898-9a54caf1cdf8",
+                                "field": "a",
+                                "label": "TEST",
+                                "layer": "aaa",
+                                "value": "true"
+                            }
+                        ],
+                        "cond_operator": 1,
+                        "text_sub_fields": []
+                    },
+                    {
+                        "type": "datetime-range",
+                        "field": "c",
+                        "label": "c",
+                        "default": "",
+                        "position": 3,
+                        "required": false,
+                        "sub_fields": [],
+                        "text_sub_fields": []
+                    },
+                    {
+                        "type": "drag_element",
+                        "field": "d",
+                        "label": "d",
+                        "default": "",
+                        "position": 4,
+                        "required": false,
+                        "sub_fields": [],
+                        "text_sub_fields": []
+                    },
+                    {
+                        "type": "drag_molecule",
+                        "field": "e",
+                        "label": "e",
+                        "default": "",
+                        "position": 5,
+                        "required": false,
+                        "sub_fields": [],
+                        "text_sub_fields": []
+                    },
+                    {
+                        "type": "drag_sample",
+                        "field": "f",
+                        "label": "f",
+                        "default": "",
+                        "position": 6,
+                        "required": false,
+                        "sub_fields": [],
+                        "text_sub_fields": []
+                    },
+                    {
+                        "type": "formula-field",
+                        "field": "g",
+                        "label": "g",
+                        "decimal": "2",
+                        "default": "",
+                        "formula": "i*3",
+                        "position": 7,
+                        "required": false,
+                        "sub_fields": [],
+                        "text_sub_fields": []
+                    },
+                    {
+                        "type": "input-group",
+                        "field": "h",
+                        "label": "h",
+                        "default": "",
+                        "position": 8,
+                        "required": false,
+                        "sub_fields": [
+                            {
+                                "id": "c69acf5c-50ff-45c3-afe7-5e208fa0a245",
+                                "type": "number",
+                                "value": "1"
+                            },
+                            {
+                                "id": "fbe90755-8da0-426e-8591-b1143f5b1488",
+                                "type": "label",
+                                "value": ""
+                            },
+                            {
+                                "id": "dd4764e0-c7c7-47b5-a6c5-0df86c1082f0",
+                                "type": "text",
+                                "value": ""
+                            },
+                            {
+                                "id": "9c357be0-6c58-4a2a-b909-7845f2803129",
+                                "type": "system-defined",
+                                "value": "",
+                                "value_system": "eV",
+                                "option_layers": "energy"
+                            }
+                        ],
+                        "text_sub_fields": []
+                    },
+                    {
+                        "type": "integer",
+                        "field": "i",
+                        "label": "i",
+                        "default": "",
+                        "position": 9,
+                        "sub_fields": [],
+                        "text_sub_fields": []
+                    },
+                    {
+                        "type": "select",
+                        "field": "j",
+                        "label": "j",
+                        "default": "",
+                        "position": 10,
+                        "required": false,
+                        "sub_fields": [],
+                        "option_layers": "aaa",
+                        "text_sub_fields": []
+                    },
+                    {
+                        "type": "system-defined",
+                        "field": "k",
+                        "label": "k",
+                        "default": "",
+                        "position": 11,
+                        "required": false,
+                        "sub_fields": [],
+                        "value_system": "rpm",
+                        "option_layers": "agitation",
+                        "text_sub_fields": []
+                    },
+                    {
+                        "type": "table",
+                        "field": "l",
+                        "label": "l",
+                        "default": "",
+                        "position": 12,
+                        "required": false,
+                        "sub_fields": [
+                            {
+                                "id": "639d2333-d364-4bc2-846e-517905f98aaa",
+                                "type": "drag_molecule",
+                                "value": "inchikey;smiles;iupac;molecular_weight;",
+                                "col_name": ""
+                            },
+                            {
+                                "id": "e8577d01-df93-4379-bb83-18bfebc00758",
+                                "type": "drag_sample",
+                                "value": "name;external_label;molecular_weight;",
+                                "col_name": ""
+                            },
+                            {
+                                "id": "0e8de19c-1daf-49b7-8884-7c7052da2903",
+                                "type": "select",
+                                "value": "",
+                                "col_name": "",
+                                "option_layers": "aaa"
+                            },
+                            {
+                                "id": "005d7d4e-7af0-44bd-a3ad-74c48f7b3798",
+                                "type": "system-defined",
+                                "value": "",
+                                "col_name": "",
+                                "value_system": "u_l",
+                                "option_layers": "enzyme_activity"
+                            },
+                            {
+                                "id": "42b1895b-2deb-427b-81dc-b1324821b6ca",
+                                "type": "text",
+                                "value": "",
+                                "col_name": ""
+                            }
+                        ],
+                        "text_sub_fields": []
+                    },
+                    {
+                        "type": "text",
+                        "field": "m",
+                        "label": "m",
+                        "default": "",
+                        "position": 13,
+                        "sub_fields": [],
+                        "text_sub_fields": []
+                    },
+                    {
+                        "type": "text-formula",
+                        "field": "n",
+                        "label": "n",
+                        "default": "",
+                        "position": 14,
+                        "required": false,
+                        "sub_fields": [],
+                        "text_sub_fields": [
+                            {
+                                "id": "b03d89e4-3f06-4e90-930a-8b877b825d04",
+                                "field": "m",
+                                "layer": "aaa",
+                                "separator": "."
+                            },
+                            {
+                                "id": "139f00d7-2d05-49b6-86b5-c6baa92d9207",
+                                "field": "l[@@]42b1895b-2deb-427b-81dc-b1324821b6ca",
+                                "layer": "aaa",
+                                "separator": "."
+                            }
+                        ]
+                    },
+                    {
+                        "type": "textarea",
+                        "field": "o",
+                        "label": "o",
+                        "default": "",
+                        "position": 15,
+                        "required": false,
+                        "sub_fields": [],
+                        "text_sub_fields": []
+                    },
+                    {
+                        "type": "upload",
+                        "field": "p",
+                        "label": "p",
+                        "default": "",
+                        "position": 16,
+                        "required": false,
+                        "sub_fields": [],
+                        "text_sub_fields": []
+                    }
+                ],
+                "position": 30,
+                "timeRecord": "",
+                "cond_fields": [],
+                "wf_position": 0,
+                "cond_operator": 1
+            },
+            "con": {
+                "wf": false,
+                "key": "con",
+                "cols": 1,
+                "color": "none",
+                "label": "CON",
+                "style": "panel_generic_heading",
+                "fields": [],
+                "position": 10,
+                "timeRecord": "",
+                "cond_fields": [
+                    {
+                        "id": "f4bf9895-11e2-4a7f-8354-84d6936c4b24",
+                        "field": "a",
+                        "label": "",
+                        "layer": "aaa",
+                        "value": "true"
+                    },
+                    {
+                        "id": "4b9ce375-106a-415d-9355-50fda165756d",
+                        "field": "a",
+                        "label": "",
+                        "layer": "aaa",
+                        "value": "true"
+                    }
+                ],
+                "wf_position": 0,
+                "cond_operator": 0
+            },
+            "wfwf": {
+                "wf": true,
+                "key": "wfwf",
+                "cols": 1,
+                "color": "none",
+                "label": "wfwfwf",
+                "style": "panel_generic_heading_bui",
+                "fields": [],
+                "position": 20,
+                "timeRecord": "",
+                "wf_position": 0
+            }
+        },
+        "version": "0.2",
+        "flowObject": {
+            "edges": [
+                {
+                    "id": "reactflow__edge-1-3a9eac39-989a-4e11-b956-d36963c6d745",
+                    "label": "next",
+                    "source": "1",
+                    "target": "3a9eac39-989a-4e11-b956-d36963c6d745",
+                    "animated": true,
+                    "markerEnd": {
+                        "type": "arrowclosed"
+                    },
+                    "sourceHandle": null,
+                    "targetHandle": null
+                },
+                {
+                    "id": "reactflow__edge-3a9eac39-989a-4e11-b956-d36963c6d745-2",
+                    "label": "next",
+                    "source": "3a9eac39-989a-4e11-b956-d36963c6d745",
+                    "target": "2",
+                    "animated": true,
+                    "markerEnd": {
+                        "type": "arrowclosed"
+                    },
+                    "sourceHandle": null,
+                    "targetHandle": null
+                }
+            ],
+            "nodes": [
+                {
+                    "id": "1",
+                    "data": {
+                        "label": "Start"
+                    },
+                    "type": "input",
+                    "width": 150,
+                    "height": 39,
+                    "position": {
+                        "x": 250,
+                        "y": 15
+                    },
+                    "deletable": false,
+                    "positionAbsolute": {
+                        "x": 250,
+                        "y": 15
+                    }
+                },
+                {
+                    "id": "2",
+                    "data": {
+                        "label": "End"
+                    },
+                    "type": "output",
+                    "width": 150,
+                    "height": 39,
+                    "position": {
+                        "x": 250,
+                        "y": 255
+                    },
+                    "deletable": false,
+                    "positionAbsolute": {
+                        "x": 250,
+                        "y": 255
+                    }
+                },
+                {
+                    "id": "3a9eac39-989a-4e11-b956-d36963c6d745",
+                    "data": {
+                        "lKey": "wfwf",
+                        "layer": {
+                            "wf": true,
+                            "key": "wfwf",
+                            "cols": 1,
+                            "color": "none",
+                            "label": "wfwfwf",
+                            "style": "panel_generic_heading_bui",
+                            "fields": [],
+                            "position": 20,
+                            "timeRecord": "",
+                            "wf_position": 0
+                        }
+                    },
+                    "type": "default",
+                    "width": 150,
+                    "height": 57,
+                    "position": {
+                        "x": 332.72265625,
+                        "y": 165.97265625
+                    },
+                    "positionAbsolute": {
+                        "x": 332.72265625,
+                        "y": 165.97265625
+                    }
+                }
+            ],
+            "viewport": {
+                "x": -265.5,
+                "y": 59,
+                "zoom": 2
+            }
+        },
+        "identifier": "4505a216-8bbb-47cb-be7d-32fdc1d7114b",
+        "select_options": {
+            "aaa": {
+                "options": [
+                    {
+                        "key": "a",
+                        "label": "a"
+                    },
+                    {
+                        "key": "b",
+                        "label": "b"
+                    }
+                ]
+            }
+        }
+    },
+    "properties_release": {
+        "pkg": {
+            "eln": {
+                "version": "v1.10.2",
+                "base_revision": "7e269bb594d29413788f3e5bfa16544981b5d392",
+                "current_revision": "7e269bb594d29413788f3e5bfa16544981b5d392"
+            },
+            "name": "chem-generic-ui",
+            "version": "1.4.4",
+            "labimotion": "1.4.0.2"
+        },
+        "uuid": "46322835-af0a-4e11-94da-21d5e1fdf69f",
+        "klass": "ElementKlass",
+        "layers": {
+            "aaa": {
+                "wf": false,
+                "key": "aaa",
+                "cols": 3,
+                "color": "none",
+                "label": "bbb",
+                "style": "panel_generic_heading",
+                "fields": [
+                    {
+                        "cols": 2,
+                        "type": "checkbox",
+                        "field": "a",
+                        "label": "a",
+                        "default": "",
+                        "position": 1,
+                        "required": false,
+                        "sub_fields": [],
+                        "text_sub_fields": []
+                    },
+                    {
+                        "type": "datetime",
+                        "field": "b",
+                        "label": "b",
+                        "default": "",
+                        "position": 2,
+                        "required": false,
+                        "sub_fields": [],
+                        "text_sub_fields": []
+                    },
+                    {
+                        "type": "datetime-range",
+                        "field": "c",
+                        "label": "c",
+                        "default": "",
+                        "position": 3,
+                        "required": false,
+                        "sub_fields": [],
+                        "text_sub_fields": []
+                    },
+                    {
+                        "type": "drag_element",
+                        "field": "d",
+                        "label": "d",
+                        "default": "",
+                        "position": 4,
+                        "required": false,
+                        "sub_fields": [],
+                        "text_sub_fields": []
+                    },
+                    {
+                        "type": "drag_molecule",
+                        "field": "e",
+                        "label": "e",
+                        "default": "",
+                        "position": 5,
+                        "required": false,
+                        "sub_fields": [],
+                        "text_sub_fields": []
+                    },
+                    {
+                        "type": "drag_sample",
+                        "field": "f",
+                        "label": "f",
+                        "default": "",
+                        "position": 6,
+                        "required": false,
+                        "sub_fields": [],
+                        "text_sub_fields": []
+                    },
+                    {
+                        "type": "formula-field",
+                        "field": "g",
+                        "label": "g",
+                        "decimal": "2",
+                        "default": "",
+                        "formula": "i*3",
+                        "position": 7,
+                        "required": false,
+                        "sub_fields": [],
+                        "text_sub_fields": []
+                    },
+                    {
+                        "type": "input-group",
+                        "field": "h",
+                        "label": "h",
+                        "default": "",
+                        "position": 8,
+                        "required": false,
+                        "sub_fields": [
+                            {
+                                "id": "c69acf5c-50ff-45c3-afe7-5e208fa0a245",
+                                "type": "number",
+                                "value": "1"
+                            },
+                            {
+                                "id": "fbe90755-8da0-426e-8591-b1143f5b1488",
+                                "type": "label",
+                                "value": ""
+                            },
+                            {
+                                "id": "dd4764e0-c7c7-47b5-a6c5-0df86c1082f0",
+                                "type": "text",
+                                "value": ""
+                            },
+                            {
+                                "id": "9c357be0-6c58-4a2a-b909-7845f2803129",
+                                "type": "system-defined",
+                                "value": "",
+                                "value_system": "eV",
+                                "option_layers": "energy"
+                            }
+                        ],
+                        "text_sub_fields": []
+                    },
+                    {
+                        "type": "integer",
+                        "field": "i",
+                        "label": "i",
+                        "default": "",
+                        "position": 9,
+                        "sub_fields": [],
+                        "text_sub_fields": []
+                    },
+                    {
+                        "type": "select",
+                        "field": "j",
+                        "label": "j",
+                        "default": "",
+                        "position": 10,
+                        "required": false,
+                        "sub_fields": [],
+                        "option_layers": "aaa",
+                        "text_sub_fields": []
+                    },
+                    {
+                        "type": "system-defined",
+                        "field": "k",
+                        "label": "k",
+                        "default": "",
+                        "position": 11,
+                        "required": false,
+                        "sub_fields": [],
+                        "value_system": "rpm",
+                        "option_layers": "agitation",
+                        "text_sub_fields": []
+                    },
+                    {
+                        "type": "table",
+                        "field": "l",
+                        "label": "l",
+                        "default": "",
+                        "position": 12,
+                        "required": false,
+                        "sub_fields": [
+                            {
+                                "id": "639d2333-d364-4bc2-846e-517905f98aaa",
+                                "type": "drag_molecule",
+                                "value": "inchikey;smiles;iupac;molecular_weight;",
+                                "col_name": ""
+                            },
+                            {
+                                "id": "e8577d01-df93-4379-bb83-18bfebc00758",
+                                "type": "drag_sample",
+                                "value": "name;external_label;molecular_weight;",
+                                "col_name": ""
+                            },
+                            {
+                                "id": "0e8de19c-1daf-49b7-8884-7c7052da2903",
+                                "type": "select",
+                                "value": "",
+                                "col_name": "",
+                                "option_layers": "aaa"
+                            },
+                            {
+                                "id": "005d7d4e-7af0-44bd-a3ad-74c48f7b3798",
+                                "type": "system-defined",
+                                "value": "",
+                                "col_name": "",
+                                "value_system": "u_l",
+                                "option_layers": "enzyme_activity"
+                            },
+                            {
+                                "id": "42b1895b-2deb-427b-81dc-b1324821b6ca",
+                                "type": "text",
+                                "value": "",
+                                "col_name": ""
+                            }
+                        ],
+                        "text_sub_fields": []
+                    },
+                    {
+                        "type": "text",
+                        "field": "m",
+                        "label": "m",
+                        "default": "",
+                        "position": 13,
+                        "sub_fields": [],
+                        "text_sub_fields": []
+                    },
+                    {
+                        "type": "text-formula",
+                        "field": "n",
+                        "label": "n",
+                        "default": "",
+                        "position": 14,
+                        "required": false,
+                        "sub_fields": [],
+                        "text_sub_fields": [
+                            {
+                                "id": "b03d89e4-3f06-4e90-930a-8b877b825d04",
+                                "field": "m",
+                                "layer": "aaa",
+                                "separator": "."
+                            },
+                            {
+                                "id": "139f00d7-2d05-49b6-86b5-c6baa92d9207",
+                                "field": "l[@@]42b1895b-2deb-427b-81dc-b1324821b6ca",
+                                "layer": "aaa",
+                                "separator": "."
+                            }
+                        ]
+                    },
+                    {
+                        "type": "textarea",
+                        "field": "o",
+                        "label": "o",
+                        "default": "",
+                        "position": 15,
+                        "required": false,
+                        "sub_fields": [],
+                        "text_sub_fields": []
+                    },
+                    {
+                        "type": "upload",
+                        "field": "p",
+                        "label": "p",
+                        "default": "",
+                        "position": 16,
+                        "required": false,
+                        "sub_fields": [],
+                        "text_sub_fields": []
+                    }
+                ],
+                "position": 10,
+                "timeRecord": "",
+                "wf_position": 0
+            }
+        },
+        "version": "0.2",
+        "identifier": "4505a216-8bbb-47cb-be7d-32fdc1d7114b",
+        "select_options": {
+            "aaa": {
+                "options": [
+                    {
+                        "key": "a",
+                        "label": "a"
+                    },
+                    {
+                        "key": "b",
+                        "label": "b"
+                    }
+                ]
+            }
+        }
+    },
+    "is_active": false,
+    "version": "0.2",
+    "place": 100,
+    "released_at": "2024-11-20 08:33:13 UTC",
+    "identifier": "4505a216-8bbb-47cb-be7d-32fdc1d7114b",
+    "sync_time": null,
+    "created_by": 7,
+    "updated_by": 7,
+    "created_at": "2024-11-20 07:40:13 UTC",
+    "updated_at": "2024-11-20 15:00:59 UTC",
+    "name": "rrr",
+    "icon_name": "fa fa-bath",
+    "klass_prefix": "ttt",
+    "is_generic": true
+}

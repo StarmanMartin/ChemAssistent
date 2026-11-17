@@ -15,7 +15,8 @@ a plain dict out that the panel only has to lay out.
 
 Every value is a string, already formatted; empty values and empty sections
 are left out here, never in the panel. A type without an adapter gives the
-stub `{"type", "id", "unsupported": True}`.
+view of a generic element (element_generic.py) when its JSON has layers, else the
+stub `{"type", "id", "unsupported": True}`; the generic segments of any element are appended as sections.
 
 Adapters are `(data, images, url) -> view model` in `ADAPTERS`; `IMAGE_REFS[type](data)`
 names the server paths the helper loads for it (`{key: "/images/..."}`, the loaded IMAGEs
@@ -289,6 +290,10 @@ Adapter = Callable[[dict, dict, str], dict]
 Refs = Callable[[dict], dict]
 ADAPTERS: dict[str, Adapter] = {}
 IMAGE_REFS: dict[str, Refs] = {}
+# Set by element_generic.py: the adapter for a type without one whose JSON has layers (a LabIMotion
+# generic element) and the sections of an element's generic segments.
+GENERIC_ADAPTER: Adapter | None = None
+SEGMENT_SECTIONS: Callable[[dict], list] | None = None
 SUPPORTED = ADAPTERS.keys()  # a live view: types added to ADAPTERS count at once
 # What the notes call each type's image ("The structure image could not be loaded.").
 IMAGE_NAMES = {"sample": "structure", "reaction": "scheme"}
@@ -297,13 +302,33 @@ IMAGE_NAMES = {"sample": "structure", "reaction": "scheme"}
 def view(type_name: str, data: dict, images: dict | str | None = None, url: str = "") -> dict:
     """The view model of one element from its raw JSON. `images` = the loaded
     IMAGEs by key (see IMAGE_REFS); a str is SVG text for the key "image"
-    (a sample's structure). A type without an adapter gives the stub."""
+    (a sample's structure). A type without an adapter gives the generic view
+    when the JSON carries layers (element_generic.py), else the stub. The
+    element's generic segments are appended as sections; every model gets
+    `short_label` and `name` (for the mention of a view opened from a link)."""
     adapter = ADAPTERS.get(type_name)
     if adapter is None:
-        return stub(type_name, data)
+        if GENERIC_ADAPTER is not None and isinstance(data, dict) and _has_layers(data):
+            adapter = GENERIC_ADAPTER
+        else:
+            return stub(type_name, data)
     if isinstance(images, str):
         images = {"image": {"mime": IMAGE_MIME, "data": images}}
-    return adapter(data, images or {}, url)
+    model = adapter(data, images or {}, url)
+    if SEGMENT_SECTIONS is not None and isinstance(data, dict) and data.get("segments"):
+        extra = SEGMENT_SECTIONS(data)
+        if extra:
+            model["sections"] = list(model.get("sections") or []) + extra
+    # What "Mention in message" of a linked view names (details_logic.linked_mention()).
+    if isinstance(data, dict):
+        model.setdefault("short_label", str(data.get("short_label") or ""))
+        model.setdefault("name", str(data.get("name") or "") or str(model.get("title") or ""))
+    return model
+
+
+def _has_layers(data: dict) -> bool:
+    properties = data.get("properties")
+    return isinstance(properties, dict) and isinstance(properties.get("layers"), dict)
 
 
 def _image(image: Any, notes: list[str], name: str = "structure") -> dict | None:
@@ -817,7 +842,9 @@ ADAPTERS["sample"] = lambda data, images, url: sample_view(data, images.get("ima
 IMAGE_REFS["sample"] = sample_images
 
 # The other built-in types (research plan, wellplate, screen, cell line, device description,
-# SBMM sample) register themselves into ADAPTERS/IMAGE_REFS; last, as it imports this module.
+# SBMM sample) register themselves into ADAPTERS/IMAGE_REFS, element_generic.py into the two hooks
+# above; last, as they import this module.
 import element_types  # noqa: E402  (it registers itself; may still be loading here)
+import element_generic  # noqa: E402  (so does this one: GENERIC_ADAPTER, SEGMENT_SECTIONS)
 
-del element_types
+del element_types, element_generic
