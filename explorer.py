@@ -34,6 +34,8 @@ import time
 from dataclasses import replace
 from typing import Any, Callable
 
+import element_views
+
 LOG = logging.getLogger("chem-assistent")
 
 PER_PAGE = 10
@@ -276,7 +278,7 @@ class ExplorerSource:
 
     def page(self, collection: dict, type_name: str, page: int = 1, per_page: int = PER_PAGE) -> dict:
         """One page of one type in one collection:
-        {items: [{id, type, short_label, name, url, tooltip}], total, more, page}."""
+        {items: [{id, type, short_label, name, updated_at, url, tooltip}], total, more, page}."""
         if collection.get("id") is None:
             return {"items": [], "total": 0, "more": False, "page": page}
 
@@ -317,11 +319,57 @@ class ExplorerSource:
                 if data.get("updated_at"):
                     tooltip.append(f"Updated {data['updated_at']}")
                 items.append({"id": item_id, "type": type_name, "short_label": data.get("short_label") or "",
-                              "name": name, "url": f"{host}/mydb/{route}/{collection['id']}/{type_name}/{item_id}",
+                              "name": name, "updated_at": str(data.get("updated_at") or ""), "url": f"{host}/mydb/{route}/{collection['id']}/{type_name}/{item_id}",
                               "tooltip": "\n".join(tooltip)})
             return {"items": items, "total": total, "more": more, "page": page}
 
         return self._call(work)
+
+    def details(self, type_name: str, element_id: int, collection_id: int | str | None = None) -> dict:
+        """The view model (element_views.py) of one element, read only. A type
+        without an adapter gives the stub without a request; the url needs the
+        collection the element is shown in (else it is "")."""
+        if type_name not in element_views.SUPPORTED:
+            return element_views.stub(type_name, {"id": element_id})
+
+        def work(instance):
+            host = instance.host_url.rstrip("/")
+            url = ""
+            if collection_id not in (None, ""):
+                url = f"{host}/mydb/collection/{collection_id}/{type_name}/{element_id}"
+            element = instance.get_sample(element_id)
+            data = element.json_data
+            svg, notes = self._sample_image(element, data)
+            model = element_views.view(type_name, data, svg, url)
+            model["notes"] = list(model.get("notes") or []) + notes
+            return model
+
+        return self._call(work)
+
+    @staticmethod
+    def _sample_image(element, data: dict) -> tuple[str | None, list[str]]:
+        """The structure as SVG text: the sample's own drawing, else its
+        molecule's. (None, notes) when there is none, it is too large or the
+        request fails (the details are shown without it)."""
+        try:
+            if data.get("sample_svg_file"):
+                content = element.load_image().content
+            else:
+                name = (data.get("molecule") or {}).get("molecule_svg_file")
+                if not name:
+                    return None, []
+                response = element._session.get(f"/images/molecules/{name}")
+                if response.status_code != 200:
+                    raise ConnectionError(f"{response.status_code}")
+                content = response.content
+        except Exception as exc:
+            if _is_unauthorized(exc):
+                raise
+            LOG.warning("Structure image not loaded: %s", exc)
+            return None, ["The structure image could not be loaded."]
+        if len(content) > element_views.MAX_IMAGE_BYTES:
+            return None, [element_views.IMAGE_TOO_LARGE]
+        return content.decode("utf-8", errors="replace"), []
 
 
 def _kill_tree(process: subprocess.Popen) -> None:
@@ -589,6 +637,11 @@ class ExplorerProxy:
 
     def page(self, collection: dict, type_name: str, page: int = 1, per_page: int = PER_PAGE) -> dict:
         return self._request("page", [collection, type_name, page, per_page])
+
+    def details(self, type_name: str, element_id: int, collection_id: int | str | None = None) -> dict:
+        if type_name not in element_views.SUPPORTED:  # no request for a stub
+            return element_views.stub(type_name, {"id": element_id})
+        return self._request("details", [type_name, element_id, collection_id])
 
     def save_types(self, shown: list[str], known: list[str]) -> None:
         """As ExplorerSource.save_types(), in the app process."""

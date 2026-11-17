@@ -302,6 +302,24 @@ def test_helper_protocol_errors():
     assert len(answers) == 4
 
 
+def test_details_goes_to_the_helper_but_a_stub_does_not(made):
+    p = made()
+    result = p.details("sample", 7, 3)
+    assert result["method"] == "details" and result["args"] == ["sample", 7, 3]
+    assert p.details("sample", 7)["args"] == ["sample", 7, None]
+    pid = result["pid"]
+    assert p.details("reaction", 4) == {"type": "reaction", "id": 4, "unsupported": True}
+    assert p.details("sample", 8)["pid"] == pid  # the stub started no new helper
+
+
+def test_helper_answers_details_of_an_unsupported_type_without_a_login():
+    login = {"url": "http://127.0.0.1:9", "user": "u", "password": "p"}  # nothing listens there
+    answers, _ = run_helper([{"id": 1, "method": "details", "args": ["wellplate", 2, None], "config": login}])
+    assert answers[0]["result"] == {"type": "wellplate", "id": 2, "unsupported": True}
+    answers, _ = run_helper([{"id": 2, "method": "details", "args": ["sample", 2, None], "config": login}])
+    assert answers[0]["kind"] == "explorer" and "Cannot connect" in answers[0]["error"]
+
+
 def test_helper_stdout_stays_clean_with_stray_prints(monkeypatch):
     class Source:
         def types(self):

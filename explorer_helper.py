@@ -4,7 +4,7 @@ imported first, also after another release is installed (explorer.py's
 ExplorerProxy starts a new helper then).
 
 Line-delimited JSON (UTF-8) on stdin/stdout, one request at a time:
-    request  {"id": n, "method": "collections" | "types" | "page" | "ping", "args": [...],
+    request  {"id": n, "method": "collections" | "types" | "page" | "details" | "ping", "args": [...],
               "config": {"url", "user", "password", "verify_tls", "explorer_types"}}
     answer   {"id": n, "result": ...}  or  {"id": n, "error": "<text>", "kind": "explorer" | "bug"}
 "ping" answers with the installed chemotion_api's version (the Windows self-test).
@@ -29,7 +29,7 @@ from typing import IO, Any
 import explorer
 from explorer import ExplorerError, ExplorerSource
 
-METHODS = ("collections", "types", "page")
+METHODS = ("collections", "types", "page", "details")
 
 
 def login_of(data: dict) -> SimpleNamespace:
