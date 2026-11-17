@@ -169,7 +169,7 @@ values as the web client's main tab.
 **Open owner decisions:** – (2026-11-17: material rows link to their sample's detail view, with a way back to the reaction)
 
 ## M8 – Element details: generic elements (LabIMotion)
-**Status:** planned
+**Status:** in progress
 **Goal:** generic elements (and generic segments on built-in elements) are shown from their
 class definition, without code per class: layers in order, fields with label, value and unit.
 **Reference:** `~/Deveolop/KIT/LabIMotion` (field types and how the web client renders them), chemotion_api `generic_element.py` / `generic_segments.py` (both lines).
