@@ -22,12 +22,14 @@ class Recorder:
         self.events: list[tuple[str, object]] = []
         self.executions: list[dict] = []
         self.answer = "Output:\n(nothing)"
+        self.agent = None
 
     def on_event(self, kind: str, data) -> None:
         self.events.append((kind, data))
 
     def execute(self, purpose: str, code: str, cancelled, target: str) -> str:
-        self.executions.append({"purpose": purpose, "code": code, "target": target, "cancelled": cancelled})
+        self.executions.append({"purpose": purpose, "code": code, "target": target, "cancelled": cancelled,
+                                "call_id": getattr(self.agent, "current_call_id", None)})
         return self.answer() if callable(self.answer) else self.answer
 
     @property
@@ -262,6 +264,22 @@ def test_unknown_tool_and_broken_arguments(fake_ai, ai_config, workspace, record
 
 
 # --- execute_python -----------------------------------------------------------
+def test_current_call_id_is_set_during_the_execute_callback(fake_ai, ai_config, workspace, recorder):
+    fake_ai.script_next(
+        {"tool_calls": [{"name": "execute_python", "id": "call_abc",
+                         "arguments": {"purpose": "p", "code": "result = 1"}}]},
+        {"content": "Done."},
+    )
+    agent = make_agent(ai_config, recorder)
+    recorder.agent = agent
+    assert agent.current_call_id == ""
+
+    agent.send("Go")
+
+    assert recorder.executions[0]["call_id"] == "call_abc"
+    assert agent.current_call_id == ""
+
+
 def test_execute_python_is_handed_to_the_app(fake_ai, ai_config, workspace, recorder):
     code = "result = [c.label for c in instance.get_root_collection().children]"
     fake_ai.script_next(

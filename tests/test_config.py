@@ -82,6 +82,7 @@ def test_load_config_validates_and_clamps(tmp_path, monkeypatch):
     assert loaded.jupyter_url == "http://j.test" and loaded.jupyter_folder == "Lab"
     assert loaded.jupyter is True
     assert loaded.ai_token == "t"
+    assert loaded.training_data is False   # opt-in
 
 
 def test_load_config_takes_the_chosen_agents_values(tmp_path, monkeypatch):
@@ -666,3 +667,16 @@ def test_a_dismissed_unlock_prompt_is_an_error(tmp_path, monkeypatch):
     monkeypatch.setattr(keystore, "_store", secret_service(locked))
     with pytest.raises(ValueError, match="system keyring: the keyring is still locked"):
         load_config()
+
+
+def test_training_data_default_and_parsing(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_config, "CONFIG_FILE", config_file(tmp_path))
+    monkeypatch.setattr(app_config, "CONFIG_DIR", tmp_path)
+    monkeypatch.delenv("CHEMOTION_PASSWORD", raising=False)
+    monkeypatch.delenv("KI_TOOLBOX_API_KEY", raising=False)
+    base = {"url": "http://chemotion.test", "user": "u", "password": "p",
+            "ai_url": "http://ai.test/v1", "ai_model": "m", "ai_token": "t"}
+    save_raw_config(dict(base))
+    assert load_config().training_data is False
+    save_raw_config({**base, "training_data": True})
+    assert load_config().training_data is True
