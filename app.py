@@ -2237,7 +2237,8 @@ class AssistantWindow(Gtk.Window):
         self.explorer = ExplorerPanel(open_url, open_settings, mention=self.chat.insert_mention,
                                       on_select=self._explorer_selected)
         self.details = DetailsPanel(open_url, self.chat.insert_mention,
-                                   request=self.explorer.worker.request)
+                                   request=self.explorer.worker.request,
+                                   download_targets=self.download_targets)
         saved = self.app.layout_saver.latest  # the last window's, even if not written yet
         if saved is None:
             try:  # the saved layout, without waiting for the keyring (no secrets needed)
@@ -2263,6 +2264,20 @@ class AssistantWindow(Gtk.Window):
         return main
 
     # --- docking layout ---------------------------------------------------------
+    def download_targets(self) -> dict:
+        """Where the Details panel puts downloaded files: `jupyter` = (exchange folder,
+        sync) with JupyterLab on (None otherwise), `downloads` = the folder of "Open"."""
+        bridge = self.jupyter
+        jupyter = None
+        if bridge is not None and self.exchange is not None:
+            def sync() -> list[str]:
+                notes: list[str] = []
+                with bridge.lock:
+                    bridge.sync_up(notes)
+                return notes
+            jupyter = (self.exchange, sync)
+        return {"jupyter": jupyter, "downloads": STATE_DIR / "downloads" / (self.conversation_id or "explorer")}
+
     def _explorer_selected(self, items: list[dict]) -> None:
         """The Explorer's selection: the chat's chip and the Details panel."""
         if self.chat is not None:
