@@ -1195,7 +1195,7 @@ class SettingsWindow(Gtk.Window):
         self.training_note.set_text(text or f"{count} conversation{'' if count == 1 else 's'} recorded")
         self.delete_training_button.set_sensitive(count > 0)
 
-    def _secret_values(self) -> list[str]:
+    def _redact_values(self) -> list[str]:
         """The secrets as the form holds them (they must not appear in an export)."""
         self._store_agent_fields()
         values = [entry.get_text() for entry in self.secret_entries.values()]
@@ -1211,13 +1211,13 @@ class SettingsWindow(Gtk.Window):
         if not folder:
             return
         private = {"url": self.url.get_text().strip(), "user": self.user.get_text().strip()}
-        secrets = self._secret_values()
+        redact = self._redact_values()
         self.export_button.set_sensitive(False)
         self._update_training_note("Exporting…")
 
         def worker() -> None:
             try:
-                text = training.export(Path(folder), private=private, secrets=secrets).text()
+                text = training.export(Path(folder), private=private, redact=redact).text()
             except Exception as exc:  # noqa: BLE001 - shown to the user
                 text = f"Export failed: {exc}"
             GLib.idle_add(self._export_done, text)

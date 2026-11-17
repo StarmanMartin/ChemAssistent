@@ -423,7 +423,7 @@ def test_scrub(tmp_path):
     assert text == ("login <user> at https://eln.example.org/api and eln.example.org, mail <email>,"
                     " token <secret>, file <state>/exchange/x.png, <workspace>/y, <skills>/z, ~/doc, martinez")
     assert out["k martin"][1:] == [5, None]
-    assert s.secret_hits == 1 and s.replacements == 9
+    assert s.redacted == 1 and s.replacements == 9
     assert value["k martin"][0].startswith("login martin")  # original untouched
 
 
@@ -433,12 +433,12 @@ def test_export_scrubs_everything_and_counts(tmp_path):
               assistant(call("t1", f"print('{tmp_path}/home/x')")), tool("t1", f"{tmp_path}/state/y {token}"),
               assistant(content="done")],
         [event("t1", original="print('x')")], meta={"agent": "api", "who": "martin@kit.edu"})
-    summary, out = export(tmp_path, private={"url": "https://eln.kit.edu", "user": "martin"}, secrets=[token])
+    summary, out = export(tmp_path, private={"url": "https://eln.kit.edu", "user": "martin"}, redact=[token])
     for name in ("sft", "preference", "kto", "meta"):
         text = (out / f"{name}.jsonl").read_text()
         for bad in (token, "eln.kit.edu", "martin", str(tmp_path)):
             assert bad not in text, (name, bad)
-    assert summary.secret_hits >= 2 and summary.replacements >= 6
+    assert summary.redacted >= 2 and summary.replacements >= 6
     assert "WARNING" in summary.text()
     assert "<user>" in (out / "sft.jsonl").read_text()
 

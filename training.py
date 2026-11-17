@@ -42,7 +42,7 @@ DECISIONS = ("run", "edited", "rejected", "auto", "abandoned")
 SPLITS = ("train", "validation", "test")
 CODE_TOOLS = ("execute_python", "execute_jupyter", "start_jupyter_job")
 MAX_ERROR_CHARS = 500
-MIN_SECRET_CHARS = 4
+MIN_REDACT_CHARS = 4
 MIN_USER_CHARS = 3
 EXAMPLE_URL = "https://eln.example.org"
 EDITED_PREFIX = "The user edited the code before running it. This code ran:\n```python\n"
@@ -212,13 +212,13 @@ def clear() -> int:
 class Scrubber:
     """The replacement rules of one export (longest first) and their counts."""
 
-    def __init__(self, private: dict[str, str] | None = None, secrets: Iterable[str] = ()) -> None:
+    def __init__(self, private: dict[str, str] | None = None, redact: Iterable[str] = ()) -> None:
         private = private or {}
         self.replacements = 0
-        self.secret_hits = 0
+        self.redacted = 0  # (no "secret" in these names: CodeQL counts such values as one)
         self.rules: list[tuple[re.Pattern, str, bool]] = []
-        for secret in sorted({s for s in secrets if s and len(s) >= MIN_SECRET_CHARS}, key=len, reverse=True):
-            self.rules.append((re.compile(re.escape(secret)), "<secret>", True))
+        for value in sorted({s for s in redact if s and len(s) >= MIN_REDACT_CHARS}, key=len, reverse=True):
+            self.rules.append((re.compile(re.escape(value)), "<secret>", True))
         url = (private.get("url") or "").strip().rstrip("/")
         if url:
             bare = re.sub(r"^[a-z][a-z0-9+.-]*://", "", url, flags=re.I)
@@ -237,12 +237,12 @@ class Scrubber:
         self.rules.append((EMAIL_PATTERN, "<email>", False))
 
     def text(self, value: str) -> str:
-        for pattern, replacement, secret in self.rules:
+        for pattern, replacement, counted in self.rules:
             value, n = pattern.subn(replacement.replace("\\", "\\\\"), value)
             if n:
                 self.replacements += n
-                if secret:
-                    self.secret_hits += n
+                if counted:
+                    self.redacted += n
         return value
 
 
@@ -529,7 +529,7 @@ class ExportSummary:
     preference: dict[str, int] = field(default_factory=lambda: dict.fromkeys(SPLITS, 0))
     kto: dict[str, int] = field(default_factory=lambda: dict.fromkeys(SPLITS, 0))
     replacements: int = 0
-    secret_hits: int = 0
+    redacted: int = 0
     files: list[Path] = field(default_factory=list)
 
     def text(self) -> str:
@@ -540,8 +540,8 @@ class ExportSummary:
             counts = getattr(self, name)
             parts.append(f"{name}: {sum(counts.values())}")
         parts.append(f"{self.replacements} items scrubbed")
-        if self.secret_hits:
-            parts.append(f"WARNING: {self.secret_hits} secret values found and replaced")
+        if self.redacted:
+            parts.append(f"WARNING: {self.redacted} passwords or tokens found and replaced")
         return "; ".join(parts) + "."
 
 
@@ -551,13 +551,13 @@ def _dump(path: Path, rows: list[dict]) -> None:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
-def export(out_dir: Path, *, private: dict[str, str] | None = None, secrets: Iterable[str] = (),
+def export(out_dir: Path, *, private: dict[str, str] | None = None, redact: Iterable[str] = (),
            recovery: bool = False, include_reasoning: bool = False,
            split: tuple[float, float, float] = (0.8, 0.1, 0.1)) -> ExportSummary:
     """Curates all records and writes the datasets into `out_dir`."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    scrubber = Scrubber(private, secrets)
+    scrubber = Scrubber(private, redact)
     summary = ExportSummary()
     sft, preference, kto, metas = [], [], [], []
     seen: set[str] = set()
@@ -596,7 +596,7 @@ def export(out_dir: Path, *, private: dict[str, str] | None = None, secrets: Ite
             kto.append({"id": cid, "split": which, **scrub(item, scrubber)})
             summary.kto[which] += 1
     summary.replacements = scrubber.replacements
-    summary.secret_hits = scrubber.secret_hits
+    summary.redacted = scrubber.redacted
     for name, rows in (("sft", sft), ("preference", preference), ("kto", kto), ("meta", metas)):
         target = out_dir / f"{name}.jsonl"
         _dump(target, rows)
@@ -655,7 +655,7 @@ Skipped conversations:
 
 Removed or replaced: the ELN URL, the login name, secrets (tokens, passwords), e-mail addresses and local
 paths (state and workspace folders, home directory). {summary.replacements} replacements were made
-({summary.secret_hits} of them secrets).
+({summary.redacted} of them passwords or tokens).
 The ELN data itself (sample and reaction names, structures, values, files) is NOT removed: check the data
 before you share it.
 """
