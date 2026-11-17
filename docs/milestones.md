@@ -106,7 +106,7 @@ nearest lower line. Only developer mode keeps the free choice of tags and branch
 **Open owner decisions:** – (2026-11-17: reinstall keeps the installed release; no own line → nearest lower line; the app warns on a mismatch; Windows keeps its built-in release, per-version bundles later)
 
 ## M5 – Explorer: chemotionapi/ELN version mismatch
-**Status:** in progress
+**Status:** done (#35)
 **Goal:** when the installed chemotionapi does not fit the server, the Explorer says so in
 plain words, offers "Change to <release>", and works with the new release at once — without
 restarting the app.
