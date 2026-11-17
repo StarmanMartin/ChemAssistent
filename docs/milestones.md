@@ -152,23 +152,21 @@ with both chemotionapi lines (v312 for ELN 3.1, v401 for ELN 4.0).
 **Open owner decisions:** – (2026-11-17: "Mention in message" inserts the reference only, as today; several selected elements: their short cards, a click opens one in detail, with a way back)
 
 ## M7 – Element details: reactions and the other built-in types
-**Status:** planned
+**Status:** in progress
 **Goal:** every built-in element type gets its default view on M6's foundation, with the same
 values as the web client's main tab.
 **Reference:** `chemotion_ELN/app/javascript/src/apps/mydb/elements/details/{reactions,researchPlans,wellplates,screens,cellLines,deviceDescriptions,vessels,sequenceBasedMacromoleculeSamples}/`; chemotion_api per line (v312 has fewer types: types the installed line or the server does not have are skipped).
 **Work packages:**
 - WP7.1 Reaction: the scheme image (stored `reaction_svg_file` / `load_image()`; v401 can also render it), materials table per role (starting materials, reactants, solvents, products: label, name, amount, equivalents, yield), conditions, temperature, duration, status, rf value, purification/dangerous products, observation/description as text (`element_views.py` adapter)
 - WP7.2 Research plan: its body in order (rich text → readable text with headings/lists, tables as tables, images), read only
-- WP7.3 Wellplate (size, wells as a compact grid with the samples they hold), screen (conditions, requirements, wellplates), cell line, device description, vessel, SBMM sample (v401 only): main tab values
+- WP7.3 Wellplate (size, wells as a compact grid with the samples they hold), screen (conditions, requirements, wellplates), cell line, device description, SBMM sample (v401 only): main tab values (vessels are no Explorer element type: not in M7)
 - WP7.4 Rich-text helper (Quill delta → Pango markup / plain text), shared by descriptions everywhere
 **Acceptance criteria:**
 - Each built-in type of the test instance shows a view with the main-tab values of the web client; reactions show the scheme image and the materials table.
 - Types the installed chemotionapi line does not support show today's short card, not an error.
 - `pytest tests/` passes; one adapter test per type (test instance + recorded JSON).
 **Issues:** –
-**Open owner decisions:**
-- Materials of a reaction: link each to its sample's view (click → its details), or text only?
-  - Answer: Make it linked
+**Open owner decisions:** – (2026-11-17: material rows link to their sample's detail view, with a way back to the reaction)
 
 ## M8 – Element details: generic elements (LabIMotion)
 **Status:** planned
