@@ -815,3 +815,9 @@ def sample_images(data: dict) -> dict:
 
 ADAPTERS["sample"] = lambda data, images, url: sample_view(data, images.get("image"), url)
 IMAGE_REFS["sample"] = sample_images
+
+# The other built-in types (research plan, wellplate, screen, cell line, device description,
+# SBMM sample) register themselves into ADAPTERS/IMAGE_REFS; last, as it imports this module.
+import element_types  # noqa: E402  (it registers itself; may still be loading here)
+
+del element_types

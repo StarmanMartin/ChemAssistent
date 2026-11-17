@@ -521,3 +521,7 @@ ADAPTERS: dict[str, Adapter] = {
     "sequence_based_macromolecule_sample": sbmm_sample_view,
 }
 IMAGE_REFS: dict[str, Refs] = {"research_plan": research_plan_image_refs}
+
+# Registered here, not in element_views: either module may be imported first.
+ev.ADAPTERS.update(ADAPTERS)
+ev.IMAGE_REFS.update(IMAGE_REFS)

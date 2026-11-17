@@ -639,13 +639,13 @@ def test_details_images_other_than_svg_are_base64_and_failures_become_notes(serv
 
 def test_a_type_the_installed_api_has_no_getter_for_is_the_stub(server, monkeypatch):
     source, _ = source_for(server)
-    monkeypatch.setitem(element_views.ADAPTERS, "wellplate", lambda data, images, url: {"type": "wellplate"})
-    assert source.details("wellplate", 3, 10) == {"type": "wellplate", "id": 3, "unsupported": True}
+    monkeypatch.setitem(element_views.ADAPTERS, "vessel", lambda data, images, url: {"type": "vessel"})
+    assert source.details("vessel", 3, 10) == {"type": "vessel", "id": 3, "unsupported": True}
 
 
 def test_details_of_an_unsupported_type_is_the_stub_without_a_login(server):
     source, _ = source_for(server)
-    assert source.details("wellplate", 3) == {"type": "wellplate", "id": 3, "unsupported": True}
+    assert source.details("vessel", 3) == {"type": "vessel", "id": 3, "unsupported": True}
     assert server.logins == []
 
 

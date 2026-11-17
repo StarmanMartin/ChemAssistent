@@ -308,14 +308,14 @@ def test_details_goes_to_the_helper_but_a_stub_does_not(made):
     assert result["method"] == "details" and result["args"] == ["sample", 7, 3]
     assert p.details("sample", 7)["args"] == ["sample", 7, None]
     pid = result["pid"]
-    assert p.details("wellplate", 4) == {"type": "wellplate", "id": 4, "unsupported": True}
+    assert p.details("vessel", 4) == {"type": "vessel", "id": 4, "unsupported": True}
     assert p.details("sample", 8)["pid"] == pid  # the stub started no new helper
 
 
 def test_helper_answers_details_of_an_unsupported_type_without_a_login():
     login = {"url": "http://127.0.0.1:9", "user": "u", "password": "p"}  # nothing listens there
-    answers, _ = run_helper([{"id": 1, "method": "details", "args": ["wellplate", 2, None], "config": login}])
-    assert answers[0]["result"] == {"type": "wellplate", "id": 2, "unsupported": True}
+    answers, _ = run_helper([{"id": 1, "method": "details", "args": ["vessel", 2, None], "config": login}])
+    assert answers[0]["result"] == {"type": "vessel", "id": 2, "unsupported": True}
     answers, _ = run_helper([{"id": 2, "method": "details", "args": ["sample", 2, None], "config": login}])
     assert answers[0]["kind"] == "explorer" and "Cannot connect" in answers[0]["error"]
 

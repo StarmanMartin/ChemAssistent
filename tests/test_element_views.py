@@ -181,7 +181,7 @@ def test_image_limit_note():
 
 
 def test_unsupported_types_give_the_stub():
-    assert view("wellplate", {"id": 9, "name": "R"}) == {"type": "wellplate", "id": 9, "unsupported": True}
+    assert view("vessel", {"id": 9, "name": "R"}) == {"type": "vessel", "id": 9, "unsupported": True}
     assert view("my_generic", {}) == {"type": "my_generic", "id": None, "unsupported": True}
     assert "sample" in element_views.SUPPORTED
 
@@ -272,7 +272,7 @@ def test_details_through_the_real_helper(chemotion, test_collection, instance, c
         node = next(n for n in proxy.collections() if n["label"] == "AIExamples")["children"][0]
         item = next(i for i in proxy.page(node, "sample")["items"] if i["id"] == sample.id)
         assert item["updated_at"]
-        assert proxy.details("wellplate", 1) == {"type": "wellplate", "id": 1, "unsupported": True}
+        assert proxy.details("vessel", 1) == {"type": "vessel", "id": 1, "unsupported": True}
     finally:
         proxy.close()
 
@@ -451,9 +451,9 @@ def test_images_reach_the_view_and_big_ones_are_left_out():
 
 
 def test_supported_follows_the_adapters(monkeypatch):
-    assert "reaction" in element_views.SUPPORTED and "wellplate" not in element_views.SUPPORTED
-    monkeypatch.setitem(element_views.ADAPTERS, "wellplate", lambda data, images, url: {"type": "wellplate"})
-    assert "wellplate" in element_views.SUPPORTED and view("wellplate", {}) == {"type": "wellplate"}
+    assert "reaction" in element_views.SUPPORTED and "vessel" not in element_views.SUPPORTED
+    monkeypatch.setitem(element_views.ADAPTERS, "vessel", lambda data, images, url: {"type": "vessel"})
+    assert "vessel" in element_views.SUPPORTED and view("vessel", {}) == {"type": "vessel"}
 
 
 @pytest.mark.chemotion

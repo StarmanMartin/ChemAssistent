@@ -176,7 +176,7 @@ def test_wellplate_readouts_and_additive():
     wells = section(model, "Wells (4 of 4 filled)")
     assert wells["columns"][-3:] == ["Additive", "Readout1", "Readout2"]
     assert wells["rows"][2][-3:] == ["DMSO", "0.12 mg", "12 GW"]
-    assert wells["targets"] == [None] * 4
+    assert not any(wells.get("targets") or [])  # no well with a sample: no targets (the key is optional)
 
 
 def test_wellplate_without_filled_wells_has_no_wells_table():
