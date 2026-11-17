@@ -21,15 +21,24 @@ Format of a milestone:
 ```
 
 ## M1 – Prompt distillation
-**Status:** planned (draft – owner to confirm)
-**Goal:** extract teaching data from saved conversations for fine-tuning a small model (#21).
+**Status:** in progress
+**Goal:** with an opt-in setting, every conversation of the built-in agent records teaching
+data for fine-tuning a small model (#21): the trajectory, structured decisions per code card
+(run / edited / rejected / auto, outcome) and 👍/👎 ratings of answers; the settings export
+it as SFT, preference (DPO) and KTO datasets with basic curation and scrubbing.
 **Work packages:**
-- WP1.1 Export saved conversations (`history.py`) as training examples (to be designed)
+- WP1.1 Recording store and export (`training.py`, GTK-free, stdlib, tests): per-conversation record (messages, tool schemas, events, ratings, metadata), export to `sft.jsonl`, `preference.jsonl`, `kto.jsonl`, `meta.jsonl`, `README.md`; curation: outcome filter, edited code as gold, failed-then-fixed rewrite (flag), format check (`ast`/JSON), exact dedup, scrubbing (URL, login, paths, secrets asserted absent), train/validation/test split by conversation
+- WP1.2 Capture (`agent.py`, `app.py`): structured event per code card linked by tool call id, turn outcomes, metadata, record after every saved turn; 👍/👎 under the assistant's answers while recording is on
+- WP1.3 Settings (`config.py`, `settings.py`): `training_data` switch (default off) with what is stored, count, "Export training data…" and "Delete training data"
 **Acceptance criteria:**
-- to be defined with the owner
+- Off by default; while off nothing is written to `STATE_DIR/training` and no rating buttons show.
+- On (built-in agent only): after each turn the conversation's record holds the messages, the tools, one event per code card with original and executed code, decision, outcome; CLI-agent conversations are not recorded.
+- 👍/👎 under each finished answer of the session toggle a rating that is saved in the record.
+- Export writes the four JSONL files and a dataset card in a chosen folder; SFT samples use the user's edited code; preference pairs come from edited code and failed/rejected → fixed calls; KTO labels from run outcomes and ratings; splits never cut a conversation.
+- The export contains no Chemotion URL, login, home/state paths or secret values (tested), and its summary says how many samples, skipped conversations and replacements there are.
+- `pytest tests/` passes; `training.py` has tests for record, curation, formats and scrubbing.
 **Issues:** #21
-**Open owner decisions:**
-- Scope, output format and privacy rules (conversations contain ELN data).
+**Open owner decisions:** – (scope: record + export, CLI agents excluded, ratings in M1; 2026-11-17)
 
 ## M2 – Docking layout
 **Status:** done (#30)
