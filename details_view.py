@@ -6,12 +6,18 @@ fetched with `request("details", (type, id, collection_id), …)` on the
 Explorer's worker; cached by (type, id, updated_at)); several selected items
 (and collections) show short cards (icon and label, key/value grid from
 explorer.detail_rows(), "Open in Chemotion", "Mention in message"), an element
-card opens its detail view ("<- All selected" goes back). More than
+card opens its detail view ("<- All selected" goes back). A table row of a
+detail view with a target (`targets` of the view model: a reaction's materials,
+a screen's wellplates) has a button that opens the target's detail view; a
+navigation trail of the views left that way gives "<- <title>" back buttons
+(the first one in the trail returns to "All selected" again). More than
 MAX_DETAIL_ITEMS items show the first ones and a note. A selection change
 while loading drops the late answer (request counter).
 """
 from __future__ import annotations
 
+import base64
+import binascii
 from typing import Callable
 
 import gi
@@ -51,14 +57,29 @@ def cache_key(item: dict) -> tuple:
     return (item.get("type"), item.get("id"), item.get("updated_at"))
 
 
+def valid_markup(markup: str) -> bool:
+    """True when Pango accepts the view model's `markup` of a text section."""
+    try:
+        Pango.parse_markup(markup, -1, "\0")
+    except GLib.Error:
+        return False
+    return True
+
+
 def pixbuf_from_image(image: dict | None, max_width: int, max_height: int = MAX_IMAGE_HEIGHT):
-    """GdkPixbuf of a view model's `image` ({"mime", "data"}) scaled down to fit
+    """GdkPixbuf of a view model's `image` ({"mime", "data"[, "encoding": "base64"]}) scaled down to fit
     `max_width` x `max_height` (never up beyond its own size); None when there is
     none or it cannot be read."""
     if not image or not image.get("data"):
         return None
     data = image["data"]
-    raw = data.encode("utf-8") if isinstance(data, str) else bytes(data)
+    try:
+        if image.get("encoding") == "base64":
+            raw = base64.b64decode(data)
+        else:
+            raw = data.encode("utf-8") if isinstance(data, str) else bytes(data)
+    except (binascii.Error, ValueError, TypeError):
+        return None
     mime = image.get("mime") or "image/svg+xml"
     try:
         loader = GdkPixbuf.PixbufLoader.new_with_mime_type(mime)
@@ -92,6 +113,10 @@ class DetailsPanel(Gtk.Box):
         self.items: list[dict] = []
         self.counter = 0  # bumped by every view change; a late answer of an older one is dropped
         self.cache: dict[tuple, dict] = {}
+        self.trail: list[tuple[dict, bool, str]] = []  # (item, came from the cards, title) left through a target
+        self.current_title = ""
+        self.current_item: dict | None = None  # the detail view shown (the trail's next entry)
+        self.current_back = False
         self.content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         self.content.set_border_width(12)
         scroller = Gtk.ScrolledWindow()
@@ -107,6 +132,7 @@ class DetailsPanel(Gtk.Box):
     def show_items(self, items: list[dict]) -> None:
         """The selection changed: one element opens its detail view, else cards."""
         self.items = list(items)
+        self.trail = []
         target = detail_target(self.items) if self.request is not None else None
         if target is not None:
             self._open_detail(target, back=False)
@@ -115,6 +141,7 @@ class DetailsPanel(Gtk.Box):
 
     def _show_cards(self) -> None:
         self.counter += 1
+        self.trail = []
         self._clear()
         items = self.items
         if not items:
@@ -137,8 +164,9 @@ class DetailsPanel(Gtk.Box):
             self._render(item, cached, back)
             return
         self._clear()
-        if back:
-            self.content.pack_start(self._back_button(), False, False, 0)
+        self.current_title = item.get("label") or ""
+        if back or self.trail:
+            self.content.pack_start(self._back_button(back), False, False, 0)
         box = Gtk.Box(spacing=8)
         spinner = Gtk.Spinner()
         spinner.start()
@@ -163,18 +191,42 @@ class DetailsPanel(Gtk.Box):
         except Exception as exc:  # noqa: BLE001 - the panel must stay usable
             self._render_error(item, f"{type(exc).__name__}: {exc}", back)
 
-    def _back_button(self) -> Gtk.Widget:
+    def _back_button(self, back: bool = False) -> Gtk.Widget:
+        """"<- <title>" of the view left through a target, else "All selected"."""
         button = Gtk.Button.new_from_icon_name("go-previous-symbolic", Gtk.IconSize.BUTTON)
-        button.set_label("All selected")
+        label = self.trail[-1][2] if self.trail else "All selected"
+        button.set_label(label if len(label) <= 40 else label[:39] + "…")
+        button.set_tooltip_text(label)
         button.set_always_show_image(True)
         button.set_halign(Gtk.Align.START)
-        button.connect("clicked", lambda *_: self._show_cards())
+        button.connect("clicked", lambda *_: self._go_back())
         return button
+
+    def _go_back(self) -> None:
+        if self.trail:
+            item, back, _title = self.trail.pop()
+            self._open_detail(item, back)
+        else:
+            self._show_cards()
+
+    def open_target(self, target: dict, label: str = "") -> None:
+        """Open the detail view of a table row's target ({"type", "id"}); the
+        current view goes onto the trail (its back button returns to it)."""
+        if self.request is None or not target.get("type") or target.get("id") is None:
+            return
+        current = self.current_item
+        if current is None:
+            return
+        self.trail.append((current, self.current_back, self.current_title or current.get("label") or ""))
+        self._open_detail({"kind": ELEMENT, "type": target["type"], "id": target["id"],
+                           "collection_id": current.get("collection_id"),
+                           "label": label or f"{target['type'].replace('_', ' ')} {target['id']}"}, back=False)
 
     def _render_error(self, item: dict, message: str, back: bool) -> None:
         self._clear()
-        if back:
-            self.content.pack_start(self._back_button(), False, False, 0)
+        self.current_item, self.current_back = item, back
+        if back or self.trail:
+            self.content.pack_start(self._back_button(back), False, False, 0)
         self.content.pack_start(_label(item.get("label") or "", None), False, False, 0)
         error = _label(message, "dim", selectable=True)
         self.content.pack_start(error, False, False, 0)
@@ -188,14 +240,14 @@ class DetailsPanel(Gtk.Box):
 
     def _render(self, item: dict, model: dict, back: bool) -> None:
         self._clear()
+        self.current_item, self.current_back = item, back
+        self.current_title = model.get("title") or item.get("label") or ""
+        if back or self.trail:
+            self.content.pack_start(self._back_button(back), False, False, 0)
         if model.get("unsupported"):  # no view for this type yet: the short card
-            if back:
-                self.content.pack_start(self._back_button(), False, False, 0)
             self.content.pack_start(self._card(item), False, False, 0)
             self.content.show_all()
             return
-        if back:
-            self.content.pack_start(self._back_button(), False, False, 0)
         head = Gtk.Box(spacing=8)
         if item.get("icon"):
             head.pack_start(Gtk.Image.new_from_icon_name(item["icon"], Gtk.IconSize.MENU), False, False, 0)
@@ -237,11 +289,23 @@ class DetailsPanel(Gtk.Box):
         box.pack_start(heading, False, False, 0)
         kind = section.get("kind")
         if kind == "text":
-            box.pack_start(_label(section.get("text") or "", selectable=True), False, False, 0)
+            body = _label(section.get("text") or "", selectable=True)
+            markup = section.get("markup")
+            if markup and valid_markup(markup):
+                body.set_markup(markup)
+            box.pack_start(body, False, False, 0)
+            return box
+        if kind == "image":
+            image = self._image(section.get("image"))
+            if image is not None:
+                box.pack_start(image, False, False, 0)
+            else:
+                box.pack_start(_label("The image cannot be shown.", "dim"), False, False, 0)
             return box
         grid = Gtk.Grid(column_spacing=12, row_spacing=4)
         if kind == "table":
             columns = section.get("columns") or []
+            targets = section.get("targets") or []
             for col, name in enumerate(columns):
                 head = _label(name, "dim")
                 head.set_hexpand(col == len(columns) - 1)
@@ -249,6 +313,9 @@ class DetailsPanel(Gtk.Box):
             for row, cells in enumerate(section.get("rows") or [], start=1):
                 for col, cell in enumerate(cells):
                     grid.attach(_label(str(cell), selectable=True), col, row, 1, 1)
+                target = targets[row - 1] if row - 1 < len(targets) else None
+                if target:
+                    grid.attach(self._target_button(target, str(cells[0]) if cells else ""), len(columns), row, 1, 1)
         else:  # "fields"
             for row, entry in enumerate(section.get("rows") or []):
                 grid.attach(_label(entry.get("label") or "", "dim"), 0, row, 1, 1)
@@ -258,6 +325,14 @@ class DetailsPanel(Gtk.Box):
                 grid.attach(value_label, 1, row, 1, 1)
         box.pack_start(grid, False, False, 0)
         return box
+
+    def _target_button(self, target: dict, label: str) -> Gtk.Widget:
+        button = Gtk.Button.new_from_icon_name("go-next-symbolic", Gtk.IconSize.BUTTON)
+        button.set_relief(Gtk.ReliefStyle.NONE)
+        button.set_valign(Gtk.Align.START)
+        button.set_tooltip_text("Show details")
+        button.connect("clicked", lambda *_: self.open_target(target, label))
+        return button
 
     def _buttons(self, item: dict, url: str | None) -> Gtk.Widget:
         buttons = Gtk.Box(spacing=6)

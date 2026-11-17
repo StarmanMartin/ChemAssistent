@@ -1,0 +1,231 @@
+{
+ "can_update": true,
+ "id": 13,
+ "is_restricted": false,
+ "height": 8,
+ "width": 12,
+ "type": "wellplate",
+ "wells": [
+  {
+   "id": 1166,
+   "is_restricted": false,
+   "position": {
+    "x": 2,
+    "y": 2
+   },
+   "sample": {
+    "can_copy": true,
+    "can_publish": true,
+    "can_update": true,
+    "code_log": {
+     "id": "5241fe37-c4cf-405d-9c88-9c239bb0c8f6",
+     "value": "0109339351100665744710718312616133970166",
+     "source": "sample",
+     "source_id": 324,
+     "root_code": {},
+     "value_sm": "1093393511"
+    },
+    "decoupled": false,
+    "inventory_sample": false,
+    "external_label": "",
+    "id": 324,
+    "is_restricted": false,
+    "molecular_mass": 0.0,
+    "molecule": {
+     "boiling_point": null,
+     "cano_smiles": "B",
+     "cas": [],
+     "density": 0.0,
+     "exact_molecular_weight": 14.032780496,
+     "id": 2,
+     "inchikey": "UORVGPXVDQYIDP-UHFFFAOYSA-N",
+     "inchistring": "InChI=1S/BH3/h1H3",
+     "is_partial": false,
+     "iupac_name": "borane",
+     "melting_point": null,
+     "molecular_weight": 13.83482,
+     "molecule_svg_file": "33685bcfaf011a242c3dc29b5fb5d2889fd6041f0b3aae596af61cfa92581015e9f6adad8767f0ed8bdb482f030626a80b7a98ba188cd78c5db2070dbc75e7ba.svg",
+     "molfile_version": "V2000",
+     "names": [
+      "borane"
+     ],
+     "sum_formular": "BH3",
+     "molecule_names": [
+      {
+       "id": 4,
+       "description": "iupac_name",
+       "name": "borane",
+       "created_at": "20.11.2024, 06:12:29 +0000",
+       "updated_at": "20.11.2024, 06:12:29 +0000"
+      },
+      {
+       "id": 5,
+       "description": "sum_formular",
+       "name": "BH3",
+       "created_at": "20.11.2024, 06:12:29 +0000",
+       "updated_at": "20.11.2024, 06:12:29 +0000"
+      }
+     ]
+    },
+    "sum_formula": "",
+    "type": "sample",
+    "comments": [],
+    "comment_count": 0,
+    "dry_solvent": false,
+    "gas_type": null,
+    "gas_phase_data": null,
+    "user_labels": [],
+    "weight_percentage": null,
+    "molfile": "\n     RDKit          2D\n\n  1  0  0  0  0  0  0  0  0  0999 V2000\n    0.0000    0.0000    0.0000 B   0  0  0  0  0  0  0  0  0  0  0  0\nM  END",
+    "molecule_name_hash": {
+     "label": "borane",
+     "value": 4,
+     "desc": "iupac_name",
+     "mid": 2
+    },
+    "showed_name": "borane",
+    "_contains_residues": false,
+    "ancestor_ids": [
+     317
+    ],
+    "boiling_point": "-Infinity...Infinity",
+    "children_count": 0,
+    "density": 0.0,
+    "description": "",
+    "imported_readout": null,
+    "is_top_secret": false,
+    "location": "",
+    "melting_point": "-Infinity...Infinity",
+    "metrics": "mmmm",
+    "molarity_unit": "M",
+    "molarity_value": 0.0,
+    "name": "",
+    "parent_id": 317,
+    "pubchem_tag": {
+     "pubchem_cid": 6331,
+     "pubchem_lcss": false
+    },
+    "purity": 1.0,
+    "reaction_description": null,
+    "real_amount_unit": "g",
+    "real_amount_value": null,
+    "residues": [],
+    "sample_svg_file": null,
+    "segments": [],
+    "short_label": "API-259-2",
+    "solvent": [],
+    "stereo": {
+     "abs": "any",
+     "rel": "any"
+    },
+    "tag": {
+     "taggable_data": {
+      "collection_labels": [
+       {
+        "id": 206
+       }
+      ]
+     },
+     "taggable_id": 324,
+     "taggable_type": "Sample",
+     "created_at": "16.11.2026, 10:20:31 +0000",
+     "updated_at": "16.11.2026, 10:20:31 +0000"
+    },
+    "target_amount_unit": "g",
+    "target_amount_value": 0.29680286606487416,
+    "xref": {
+     "inventory_label": null
+    },
+    "sample_type": "Micromolecule",
+    "sample_details": null,
+    "components": [],
+    "created_at": "16.11.2026, 10:20:31 +0000",
+    "updated_at": "16.11.2026, 10:20:31 +0000"
+   },
+   "type": "well",
+   "readouts": [],
+   "additive": null,
+   "color_code": null,
+   "label": "Molecular structure"
+  },
+  {
+   "id": 1153,
+   "is_restricted": false,
+   "position": {
+    "x": 1,
+    "y": 1
+   },
+   "sample": null,
+   "type": "well",
+   "readouts": [],
+   "additive": null,
+   "color_code": null,
+   "label": "Molecular structure"
+  },
+  {
+   "id": 1154,
+   "is_restricted": false,
+   "position": {
+    "x": 2,
+    "y": 1
+   },
+   "sample": null,
+   "type": "well",
+   "readouts": [],
+   "additive": null,
+   "color_code": null,
+   "label": "Molecular structure"
+  },
+  {
+   "id": 1155,
+   "is_restricted": false,
+   "position": {
+    "x": 3,
+    "y": 1
+   },
+   "sample": null,
+   "type": "well",
+   "readouts": [],
+   "additive": null,
+   "color_code": null,
+   "label": "Molecular structure"
+  }
+ ],
+ "comment_count": 0,
+ "user_labels": [],
+ "readout_titles": [],
+ "code_log": {
+  "id": "de3c5068-ab85-4f8b-bec2-97bafaee52b5",
+  "value": "0295401783761343706517736063892454265525",
+  "source": "wellplate",
+  "source_id": 13,
+  "root_code": {},
+  "value_sm": "2954017837"
+ },
+ "description": {
+  "ops": [
+   {
+    "insert": "\n"
+   }
+  ]
+ },
+ "name": "Api Test WP",
+ "segments": [],
+ "short_label": "API-WP513",
+ "tag": {
+  "taggable_data": {
+   "user_labels": [],
+   "collection_labels": [
+    {
+     "id": 206
+    }
+   ]
+  },
+  "taggable_id": 13,
+  "taggable_type": "Wellplate",
+  "created_at": "16.11.2026, 10:20:30 +0000",
+  "updated_at": "16.11.2026, 10:20:31 +0000"
+ },
+ "created_at": "16.11.2026, 10:20:30 +0000",
+ "updated_at": "16.11.2026, 10:20:32 +0000"
+}

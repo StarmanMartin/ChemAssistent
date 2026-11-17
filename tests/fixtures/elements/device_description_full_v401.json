@@ -1,0 +1,109 @@
+{
+ "id": 2,
+ "device_id": null,
+ "name": "API test device 7a19f9d4",
+ "short_label": "API-Dev2",
+ "device_type_name": "",
+ "device_type_id": "",
+ "device_type_id_type": "",
+ "device_class": "setup",
+ "device_class_detail": "",
+ "operation_mode": "manual - walk in",
+ "vendor_device_name": "AV-400",
+ "vendor_device_id": "",
+ "serial_number": "SN-2",
+ "vendor_company_name": "Acme",
+ "vendor_id": "",
+ "description": "NMR spectrometer",
+ "general_tags": [
+  "nmr"
+ ],
+ "version_number": "1.1",
+ "version_installation_start_date": null,
+ "version_installation_end_date": null,
+ "version_identifier_type": "doi",
+ "version_doi": "10.1234/abc",
+ "version_doi_url": "",
+ "version_characterization": "",
+ "operators": [
+  {
+   "name": "A. Operator",
+   "phone": "123",
+   "email": "a@example.org",
+   "type": "technical",
+   "comment": ""
+  }
+ ],
+ "owner_institution": "Example University",
+ "owner_email": "",
+ "owner_id": "",
+ "owner_id_type": "",
+ "inventory_id": "",
+ "alternative_identifier": "",
+ "vendor_id_type": "",
+ "university_campus": "",
+ "institute": "",
+ "building": "B12",
+ "room": "101",
+ "infrastructure_assignment": "",
+ "access_options": "",
+ "access_comments": "",
+ "size": "1 x 2 x 3 m",
+ "weight": 450,
+ "weight_unit": "kg",
+ "application_name": "",
+ "application_version": "",
+ "vendor_url": "",
+ "helpers_uploaded": true,
+ "policies_and_user_information": "",
+ "description_for_methods_part": "",
+ "type": "device_description",
+ "changed": false,
+ "attachments": [],
+ "ontologies": [
+  {
+   "id": 1
+  }
+ ],
+ "segments": [],
+ "comments": [],
+ "comment_count": 0,
+ "tag": {
+  "taggable_data": {
+   "collection_labels": [
+    {
+     "id": 85
+    }
+   ]
+  },
+  "taggable_id": 2,
+  "taggable_type": "DeviceDescription",
+  "created_at": "16.11.2026, 10:17:14 +0000",
+  "updated_at": "16.11.2026, 10:17:14 +0000"
+ },
+ "can_copy": true,
+ "ancestor_ids": [],
+ "setup_descriptions": {},
+ "maintenance_contract_available": "yes",
+ "maintenance_scheduling": "yearly",
+ "contact_for_maintenance": [],
+ "planned_maintenance": [
+  {
+   "date": "2026-12-01",
+   "type": "inspection",
+   "details": "Yearly",
+   "status": "planned",
+   "costs": 120.5,
+   "time": 2,
+   "changes": ""
+  }
+ ],
+ "consumables_needed_for_maintenance": [],
+ "unexpected_maintenance": [],
+ "measures_after_full_shut_down": "",
+ "measures_after_short_shut_down": "",
+ "measures_to_plan_offline_period": "",
+ "restart_after_planned_offline_period": "",
+ "created_at": "16.11.2026, 10:17:14 +0000",
+ "updated_at": "16.11.2026, 10:17:15 +0000"
+}

@@ -1,0 +1,130 @@
+{
+ "can_update": true,
+ "id": 5,
+ "type": "screen",
+ "name": "API test screen",
+ "is_restricted": false,
+ "description": {
+  "ops": [
+   {
+    "insert": ""
+   }
+  ]
+ },
+ "conditions": "37 °C",
+ "requirements": "none",
+ "wellplates": [
+  {
+   "id": 16,
+   "name": "Plate 1-Split",
+   "short_label": "API-WP514",
+   "type": "wellplate",
+   "description": {
+    "ops": [
+     {
+      "insert": "Control plate\n"
+     }
+    ]
+   }
+  },
+  {
+   "id": 17,
+   "name": "Readout plate",
+   "short_label": "API-WP516",
+   "type": "wellplate",
+   "description": {
+    "ops": [
+     {
+      "insert": "\n"
+     }
+    ]
+   }
+  }
+ ],
+ "comment_count": 0,
+ "user_labels": [],
+ "collaborator": "Dr. Example",
+ "result": "All wells grew",
+ "code_log": {
+  "id": "a5331987-cb01-4cd0-a0c0-873d1347f232",
+  "value": "0219587944263165454623540930011673915954",
+  "source": "screen",
+  "source_id": 5,
+  "root_code": {},
+  "value_sm": "2195879442"
+ },
+ "container": {
+  "id": 824,
+  "name": null,
+  "container_type": "root",
+  "description": "",
+  "extended_metadata": {
+   "report": false,
+   "status": null,
+   "kind": null,
+   "index": null,
+   "instrument": null,
+   "preferred_thumbnail": null
+  },
+  "children": [
+   {
+    "id": 825,
+    "name": "new",
+    "container_type": "analyses",
+    "description": "",
+    "extended_metadata": {
+     "report": true,
+     "status": null,
+     "kind": null,
+     "index": null,
+     "instrument": null,
+     "preferred_thumbnail": null
+    },
+    "children": []
+   }
+  ]
+ },
+ "research_plans": [
+  {
+   "can_copy": true,
+   "can_update": true,
+   "body": [],
+   "id": 8,
+   "is_restricted": false,
+   "name": "New Research Plan",
+   "preview_attachment": null,
+   "type": "research_plan",
+   "comment_count": 0,
+   "user_labels": [],
+   "attachment_count": 0,
+   "research_plan_metadata": null,
+   "tag": {},
+   "wellplates": [],
+   "segments": [],
+   "short_label": "API-RP8",
+   "created_at": "16.11.2026, 10:19:57 +0000",
+   "updated_at": "16.11.2026, 10:19:57 +0000"
+  }
+ ],
+ "component_graph_data": {
+  "edges": [],
+  "nodes": []
+ },
+ "segments": [],
+ "tag": {
+  "taggable_data": {
+   "user_labels": [],
+   "collection_labels": [
+    {
+     "id": 171
+    }
+   ]
+  },
+  "taggable_id": 5,
+  "taggable_type": "Screen",
+  "created_at": "16.11.2026, 10:19:57 +0000",
+  "updated_at": "16.11.2026, 10:19:58 +0000"
+ },
+ "created_at": "16.11.2026, 10:19:57 +0000",
+ "updated_at": "16.11.2026, 10:19:58 +0000"
+}

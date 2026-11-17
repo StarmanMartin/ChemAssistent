@@ -1,0 +1,22 @@
+{
+ "id": 3,
+ "type": "research_plan",
+ "name": "Old plan",
+ "short_label": "RP3",
+ "body": [
+  {
+   "id": "x1",
+   "type": "richtext",
+   "title": "Text",
+   "value": {
+    "ops": [
+     {
+      "insert": "Hello\n"
+     }
+    ]
+   }
+  }
+ ],
+ "wellplates": [],
+ "updated_at": "01.01.2026"
+}
