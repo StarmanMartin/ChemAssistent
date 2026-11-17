@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import element_views
 import explorer
 from explorer import ExplorerError, ExplorerSource, ExplorerWorker
 
@@ -41,6 +42,9 @@ class FakeServer:
         self.unauthorized = 0  # the next n listings answer 401
         self.shared = [FakeCollection(50, "From Bob", [FakeCollection(51, "Spectra")])]
         self.login_error: Exception | None = None
+        self.sample_json: dict[int, dict] = {}
+        self.images: dict[str, bytes | int] = {}  # path -> content, or the HTTP status that fails
+        self.requested: list[str] = []
 
 
 class Unauthorized(Exception):
@@ -70,12 +74,28 @@ def fake_instance_factory(server: FakeServer):
             root._session = SimpleNamespace(server=server)
             return root
 
+        def get_sample(sample_id):
+            session = SimpleNamespace(get=lambda path: fake_response(server, path))
+            data = server.sample_json[sample_id]
+            return SimpleNamespace(
+                json_data=data, _session=session,
+                load_image=lambda: fake_response(server, f"/images/samples/{data['sample_svg_file']}"))
+
+        instance.get_sample = get_sample
         instance.test_connection = test_connection
         instance.login = login
         instance.get_root_collection = get_root_collection
         return instance
 
     return factory
+
+
+def fake_response(server: FakeServer, path: str):
+    server.requested.append(path)
+    found = server.images.get(path, 404)
+    if isinstance(found, int):
+        return SimpleNamespace(status_code=found, content=b"", text="")
+    return SimpleNamespace(status_code=200, content=found, text="")
 
 
 def make_listing(sync_parameter: bool):
@@ -200,7 +220,7 @@ def test_pages_of_ten_with_more(server):
     assert (first["total"], first["more"], first["page"], len(first["items"])) == (12, True, 1, 10)
     item = first["items"][0]
     assert item == {"id": 1, "type": "sample", "short_label": "S-1", "name": "Sample 1",
-                    "url": "https://eln.example/mydb/collection/10/sample/1",
+                    "updated_at": "2026-11-12", "url": "https://eln.example/mydb/collection/10/sample/1",
                     "tooltip": "Sample S-1\nSample 1\nid 1\nFormula C2H6O\nUpdated 2026-11-12"}
 
     second = source.page(collection, "sample", 2)
@@ -523,3 +543,62 @@ def test_worker_error_text_has_a_release_attribute():
     assert got == ["Install v401.1.1", "RuntimeError: bug"]
     assert [t.release for t in got] == ["v401.1.1", ""]
     worker.close()
+
+
+# -- details -------------------------------------------------------------------
+
+SAMPLE = {"id": 5, "name": "Ethanol", "short_label": "S-5", "updated_at": "2026-11-12", "sample_type": "Micromolecule",
+          "molecule": {"sum_formular": "C2H6O", "molecule_svg_file": "mol.svg", "iupac_name": "ethanol"}}
+
+
+def test_page_items_carry_updated_at(server):
+    source, _ = source_for(server)
+    server.elements[(10, "sample")] = samples(2)
+    items = source.page({"id": 10, "shared": False}, "sample")["items"]
+    assert [item["updated_at"] for item in items] == ["2026-11-12"] * 2
+
+
+def test_details_of_a_sample_with_the_molecule_image(server):
+    source, _ = source_for(server)
+    server.sample_json[5] = dict(SAMPLE, sample_svg_file=None)
+    server.images["/images/molecules/mol.svg"] = b"<svg>mol</svg>"
+    model = source.details("sample", 5, 10)
+    assert model["title"] == "Ethanol" and model["subtitle"] == "S-5 \u00b7 C2H6O"
+    assert model["url"] == "https://eln.example/mydb/collection/10/sample/5"
+    assert model["image"] == {"mime": "image/svg+xml", "data": "<svg>mol</svg>"}
+    assert server.requested == ["/images/molecules/mol.svg"]  # reading only
+    assert source.details("sample", 5)["url"] == ""
+
+
+def test_details_prefers_the_samples_own_drawing(server):
+    source, _ = source_for(server)
+    server.sample_json[5] = dict(SAMPLE, sample_svg_file="own.svg")
+    server.images["/images/samples/own.svg"] = b"<svg>own</svg>"
+    assert source.details("sample", 5)["image"]["data"] == "<svg>own</svg>"
+
+
+def test_details_without_an_image_still_work(server):
+    source, _ = source_for(server)
+    server.sample_json[5] = dict(SAMPLE, sample_svg_file=None)
+    model = source.details("sample", 5)  # 404 for the molecule file
+    assert model["image"] is None and model["notes"] == ["The structure image could not be loaded."]
+    assert model["title"] == "Ethanol"
+    server.images["/images/molecules/mol.svg"] = b"x" * (element_views.MAX_IMAGE_BYTES + 1)
+    model = source.details("sample", 5)
+    assert model["image"] is None and model["notes"] == [element_views.IMAGE_TOO_LARGE]
+    server.sample_json[6] = dict(SAMPLE, id=6, molecule={})
+    assert source.details("sample", 6)["image"] is None
+
+
+def test_details_of_an_unsupported_type_is_the_stub_without_a_login(server):
+    source, _ = source_for(server)
+    assert source.details("reaction", 3) == {"type": "reaction", "id": 3, "unsupported": True}
+    assert server.logins == []
+
+
+def test_details_errors_are_readable_and_a_401_logs_in_again(server):
+    source, _ = source_for(server)
+    with pytest.raises(ExplorerError, match="Chemotion answered with an error"):
+        source.details("sample", 404)  # not on the server
+    server.sample_json[5] = dict(SAMPLE, sample_svg_file=None)
+    assert source.details("sample", 5)["title"] == "Ethanol"
