@@ -47,6 +47,7 @@ class FakeServer:
         self.requested: list[str] = []
         self.content_types: dict[str, str] = {}  # path -> Content-Type of its answer
         self.reaction_json: dict[int, dict] = {}
+        self.generic_json: dict[tuple[str, int], dict] = {}
 
 
 class Unauthorized(Exception):
@@ -87,6 +88,12 @@ def fake_instance_factory(server: FakeServer):
             session = SimpleNamespace(get=lambda path: fake_response(server, path))
             return SimpleNamespace(json_data=server.reaction_json[reaction_id], _session=session)
 
+        def get_generic_by_name(name, element_id):
+            if (name, element_id) not in server.generic_json:
+                raise ValueError(f"the element {element_id} is not of the type {name}")
+            return SimpleNamespace(json_data=server.generic_json[(name, element_id)])
+
+        instance.get_generic_by_name = get_generic_by_name
         instance.get_sample = get_sample
         instance.get_reaction = get_reaction
         instance.test_connection = test_connection
@@ -643,10 +650,30 @@ def test_a_type_the_installed_api_has_no_getter_for_is_the_stub(server, monkeypa
     assert source.details("vessel", 3, 10) == {"type": "vessel", "id": 3, "unsupported": True}
 
 
-def test_details_of_an_unsupported_type_is_the_stub_without_a_login(server):
+def test_details_of_an_unsupported_type_is_the_stub(server):
+    """Not generic on the server: the stub (this takes a login now: the helper has to look at the server's types)."""
     source, _ = source_for(server)
     assert source.details("vessel", 3) == {"type": "vessel", "id": 3, "unsupported": True}
-    assert server.logins == []
+    assert len(server.logins) == 1 and server.requested == []
+
+
+def test_details_of_a_generic_element_come_from_its_layers(server):
+    source, _ = source_for(server)
+    layer = {"key": "one", "label": "Nr 1", "position": 10, "fields": [
+        {"type": "text", "field": "name_one", "label": "Name", "position": 1, "value": "first"}]}
+    server.generic_json[("wrk", 4)] = {"id": 4, "type": "wrk", "name": "Run 4", "short_label": "API-WRK4",
+                                       "properties": {"layers": {"one": layer}}}
+    model = source.details("wrk", 4, 10)
+    assert model["title"] == "Run 4" and model["type"] == "wrk" and model["url"].endswith("/mydb/collection/10/wrk/4")
+    assert model["subtitle"] == "Workflow · API-WRK4"  # the class label comes from all_classes: the JSON has no element_klass
+    assert model["sections"] == [{"title": "Nr 1", "kind": "fields",
+                                  "rows": [{"label": "Name", "value": "first", "unit": ""}]}]
+    assert source.details("wrk", 4)["url"] == ""
+    with pytest.raises(ExplorerError, match="not of the type"):
+        source.details("wrk", 5)  # the server answers with an element of another type
+    server.generic_json[("alpha", 6)] = {"id": 6, "name": "Alpha one", "properties": {"layers": {}}}
+    assert source.details("alpha", 6)["sections"] == []  # a generic element without fields
+    assert server.requested == []  # no image requests
 
 
 def test_details_errors_are_readable_and_a_401_logs_in_again(server):
