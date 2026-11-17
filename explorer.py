@@ -2,9 +2,11 @@
 types and one page of elements of one type in one collection, all through
 chemotion_api, plus the worker thread the tab runs them in.
 
-The tab is read-only and the user starts every request, so this runs in the
-app process (like the settings' "Test connection"), not through
-chemotion_runner.py and a confirmation card.
+The tab is read-only and the user starts every request, so there is no
+confirmation card. `ExplorerSource` runs inside the helper process
+(explorer_helper.py), not in the app: a Python process keeps the chemotion_api
+it imported first, so a newly installed release would not be used.
+`ExplorerProxy` (app side, no chemotion_api, no GTK) talks to that helper.
 
 Supported chemotion_api versions: the v4 line and v312 (ELN 3.x, the Windows
 bundle). They differ in how a shared collection is listed: v312's
@@ -19,14 +21,27 @@ with an image fails in the listing, v312) and the Explorer needs only labels.
 """
 from __future__ import annotations
 
+import collections
 import inspect
 import json
+import logging
+import os
 import queue
-from dataclasses import replace
+import signal
+import subprocess
 import threading
+import time
+from dataclasses import replace
 from typing import Any, Callable
 
+LOG = logging.getLogger("chem-assistent")
+
 PER_PAGE = 10
+# One request to the helper (a login and a listing); then the helper is killed.
+REQUEST_TIMEOUT_S = 120.0
+# The helper's stderr lines kept for error messages.
+STDERR_TAIL_LINES = 20
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 # Shown when nothing was chosen yet (config `explorer_types` empty).
 DEFAULT_TYPES = ("sample", "reaction", "research_plan", "wellplate", "screen")
 # chemotion_api's pseudo class for "any generic element": not a type of its own.
@@ -39,7 +54,25 @@ LOGIN_FAILED = "Login to Chemotion failed: check user and password in the settin
 
 
 class ExplorerError(Exception):
-    """A failure the tab shows as it is (the message is for the user)."""
+    """A failure the tab shows as it is (the message is for the user).
+    `release`: the chemotionapi release that fits the server, when the
+    message says the installed one does not ("Change to <release>")."""
+
+    def __init__(self, message: str = "", release: str = "") -> None:
+        super().__init__(message)
+        self.release = release
+
+
+class ErrorText(str):
+    """The error text ExplorerWorker passes to `on_error`: a str that also
+    carries `.release` ("" by default)."""
+
+    release: str = ""
+
+    def __new__(cls, text: str, release: str = ""):
+        obj = super().__new__(cls, text)
+        obj.release = release
+        return obj
 
 
 class _Row:
@@ -291,6 +324,291 @@ class ExplorerSource:
         return self._call(work)
 
 
+def _kill_tree(process: subprocess.Popen) -> None:
+    """Ends the helper and whatever it started."""
+    if process.poll() is None:
+        try:
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)], capture_output=True,
+                               creationflags=NO_WINDOW)
+            else:
+                os.killpg(process.pid, signal.SIGKILL)  # start_new_session: its own group
+        except OSError:
+            pass
+        process.kill()
+    for stream in (process.stdin, process.stdout, process.stderr):
+        try:
+            stream and stream.close()
+        except OSError:
+            pass
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+class _Helper:
+    """One running helper process with its reader threads."""
+
+    def __init__(self, command: list[str], stamp: Any) -> None:
+        self.stamp = stamp
+        self.stderr_tail: collections.deque = collections.deque(maxlen=STDERR_TAIL_LINES)
+        self.answers: queue.Queue = queue.Queue()  # parsed answers; None = stdout closed
+        kwargs: dict[str, Any] = {"creationflags": NO_WINDOW} if os.name == "nt" else {"start_new_session": True}
+        self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                                        errors="replace", bufsize=1, **kwargs)
+        threading.Thread(target=self._read_stdout, daemon=True, name="explorer-helper-out").start()
+        threading.Thread(target=self._read_stderr, daemon=True, name="explorer-helper-err").start()
+
+    def _read_stdout(self) -> None:
+        try:
+            for line in self.process.stdout:
+                try:
+                    answer = json.loads(line)
+                except ValueError:
+                    self.stderr_tail.append(line.strip())  # stray output, not an answer
+                    continue
+                if isinstance(answer, dict):
+                    self.answers.put(answer)
+        except (OSError, ValueError):
+            pass
+        self.answers.put(None)
+
+    def _read_stderr(self) -> None:
+        try:
+            for line in self.process.stderr:
+                if line.strip():
+                    self.stderr_tail.append(line.strip())
+        except (OSError, ValueError):
+            pass
+
+    @property
+    def alive(self) -> bool:
+        return self.process.poll() is None
+
+    def last_error_line(self) -> str:
+        return self.stderr_tail[-1] if self.stderr_tail else ""
+
+    def stop(self) -> None:
+        """Closes stdin (the helper then exits), kills it if it does not."""
+        try:
+            self.process.stdin.close()
+        except OSError:
+            pass
+        try:
+            self.process.wait(timeout=1.5)
+        except subprocess.TimeoutExpired:
+            pass
+        _kill_tree(self.process)
+
+
+def _check_versions(config: Any, installed: str) -> tuple[str, str]:
+    """(warning, release to install) when the server's ELN version does not
+    fit the installed chemotionapi, else ("", ""); ("", "") also when the
+    server's version cannot be read. The releases unknown (offline): the
+    warning without a release."""
+    import api_versions
+
+    try:
+        version = api_versions.server_eln_version(config.url, config.verify_tls)
+    except api_versions.VersionError:
+        return "", ""
+    try:
+        tags = api_versions.list_tags(timeout=20)
+    except api_versions.VersionError:
+        tags = None
+    text = api_versions.check_installed(version, tags, api_versions.installed_tag())
+    if not text:
+        return "", ""
+    release = ""
+    if tags is not None:
+        try:
+            release = api_versions.release_for(version, tags).tag
+        except api_versions.VersionError:
+            pass
+    return text, release
+
+
+class ExplorerProxy:
+    """The ExplorerSource's interface, answered by the helper process
+    (explorer_helper.py) so that chemotion_api never loads in the app. A
+    request goes to the helper with a fresh config (credentials on its stdin
+    only). The helper restarts when it died, a request timed out, or the
+    installed chemotionapi release changed (`release_stamp()`), so a newly
+    installed release is used at once.
+
+    When a request fails, the server's ELN version is compared with the
+    installed release (once per URL and release): on a mismatch the
+    ExplorerError carries that warning and `.release`, the one to install.
+    Requests run one at a time (the ExplorerWorker's thread); close() may
+    come from another thread."""
+
+    def __init__(self, load_config: Callable[[], Any] | None = None,
+                 save_setting: Callable[[str, Any], None] | None = None,
+                 command: list[str] | None = None, timeout: float = REQUEST_TIMEOUT_S,
+                 release_stamp: Callable[[], Any] | None = None,
+                 version_check: Callable[[Any, str], tuple[str, str]] | None = None) -> None:
+        self._load_config = load_config
+        self._save_setting = save_setting
+        self._command = command
+        self.timeout = timeout
+        self._release_stamp = release_stamp
+        self._version_check = version_check or _check_versions
+        self._config: Any = None
+        self._helper: _Helper | None = None
+        self._ids = 0
+        self._checks: dict[tuple, tuple[str, str]] = {}
+        self._lock = threading.Lock()
+
+    # -- the helper ----------------------------------------------------------
+
+    def _stamp(self) -> Any:
+        if self._release_stamp is not None:
+            return self._release_stamp()
+        import api_versions
+
+        return api_versions.installed_label()
+
+    def _helper_for(self, stamp: Any) -> _Helper:
+        helper = self._helper
+        if helper is not None and (not helper.alive or helper.stamp != stamp):
+            helper.stop()
+            helper = self._helper = None
+        if helper is None:
+            command = self._command
+            if command is None:
+                import workspace
+
+                command = workspace.command("explorer_helper.py", console=True)
+            try:
+                helper = self._helper = _Helper(command, stamp)
+            except OSError as exc:
+                raise ExplorerError(f"Could not start the Explorer's helper process: {exc}") from None
+        return helper
+
+    def _drop(self) -> None:
+        helper, self._helper = self._helper, None
+        if helper is not None:
+            helper.stop()
+
+    def close(self) -> None:
+        """Ends the helper (the next request starts a new one)."""
+        helper, self._helper = self._helper, None
+        if helper is not None:
+            threading.Thread(target=helper.stop, daemon=True).start()
+
+    # -- requests -------------------------------------------------------------
+
+    def _login(self) -> dict:
+        if self._load_config is None:
+            from config import load_config
+
+            self._load_config = load_config
+        try:
+            config = self._load_config()
+        except ValueError as exc:
+            raise ExplorerError(f"{NOT_CONFIGURED} ({exc})") from None
+        self._config = config
+        types = getattr(config, "explorer_types", None)
+        return {"url": config.url, "user": config.user, "password": config.password,
+                "verify_tls": config.verify_tls, "explorer_types": None if types is None else list(types)}
+
+    def _request(self, method: str, args: list) -> Any:
+        with self._lock:
+            login = self._login()
+            stamp = self._stamp()
+            try:
+                result = self._exchange(method, args, login, stamp)
+            except ExplorerError as exc:
+                raise self._explained(exc, stamp) from None
+            self._checks.pop((login["url"], stamp), None)
+            return result
+
+    def _exchange(self, method: str, args: list, login: dict, stamp: Any) -> Any:
+        helper = self._helper_for(stamp)
+        self._ids += 1
+        request_id = self._ids
+        line = json.dumps({"id": request_id, "method": method, "args": args, "config": login}, ensure_ascii=False)
+        try:
+            helper.process.stdin.write(line + "\n")
+            helper.process.stdin.flush()
+        except (OSError, ValueError):
+            self._drop()
+            raise ExplorerError(self._died(helper)) from None
+        deadline = time.monotonic() + self.timeout
+        while True:
+            try:
+                answer = helper.answers.get(timeout=max(0.0, deadline - time.monotonic()))
+            except queue.Empty:
+                self._drop()
+                raise ExplorerError(f"Chemotion did not answer within {self.timeout:g} s.") from None
+            if answer is None:
+                self._drop()
+                raise ExplorerError(self._died(helper))
+            if answer.get("id") != request_id:
+                continue  # an answer of an earlier, abandoned request
+            if "error" in answer:
+                text = str(answer["error"])
+                if answer.get("kind") != "explorer":
+                    LOG.warning("Explorer helper failed: %s", text)
+                raise ExplorerError(text)
+            return answer.get("result")
+
+    @staticmethod
+    def _died(helper: _Helper) -> str:
+        try:
+            helper.process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            pass
+        detail = helper.last_error_line()
+        return "The Explorer's helper process ended unexpectedly" + (f": {detail}" if detail else ".")
+
+    def _explained(self, exc: ExplorerError, stamp: Any) -> ExplorerError:
+        """`exc`, or the version warning when the installed release does not fit the server."""
+        text = str(exc)
+        if text == LOGIN_FAILED or text.startswith(NOT_CONFIGURED) or self._config is None:
+            return exc
+        key = (self._config.url, stamp)
+        if key not in self._checks:
+            try:
+                self._checks[key] = self._version_check(self._config, str(stamp))
+            except Exception as check_error:  # the check must not hide the real error
+                LOG.warning("Version check failed: %s", check_error)
+                self._checks[key] = ("", "")
+        warning, release = self._checks[key]
+        return ExplorerError(warning, release) if warning else exc
+
+    # -- what the tab asks for ----------------------------------------------
+
+    def collections(self) -> list[dict]:
+        return self._request("collections", [])
+
+    def types(self) -> list[dict]:
+        return self._request("types", [])
+
+    def page(self, collection: dict, type_name: str, page: int = 1, per_page: int = PER_PAGE) -> dict:
+        return self._request("page", [collection, type_name, page, per_page])
+
+    def save_types(self, shown: list[str], known: list[str]) -> None:
+        """As ExplorerSource.save_types(), in the app process."""
+        if self._save_setting is None:
+            from config import save_setting
+
+            self._save_setting = save_setting
+        chosen = getattr(self._config, "explorer_types", None)
+        others = [name for name in (DEFAULT_TYPES if chosen is None else chosen) if name not in known]
+        try:
+            self._save_setting("explorer_types", list(shown) + others)
+        except OSError as exc:
+            raise ExplorerError(f"The choice of types was not saved: {exc}") from None
+        if self._config is not None:
+            try:
+                self._config = replace(self._config, explorer_types=tuple(shown) + tuple(others))
+            except TypeError:  # not a dataclass (tests)
+                self._config.explorer_types = tuple(shown) + tuple(others)
+
+
 def mention_text(type_label: str, item: dict | None, collection: dict) -> str:
     """What "Mention in message" puts into the chat input: enough for the
     agent to find the element (type name and id) or the collection (path, id).
@@ -324,7 +642,7 @@ class ExplorerWorker:
     to the caller's thread (the tab: GLib.idle_add); answers that started
     before the last `reset()` are dropped there."""
 
-    def __init__(self, source: ExplorerSource, deliver: Callable[[Callable[[], None]], Any]) -> None:
+    def __init__(self, source: "ExplorerSource | ExplorerProxy", deliver: Callable[[Callable[[], None]], Any]) -> None:
         self.source = source
         self._deliver = deliver
         self._queue: queue.Queue = queue.Queue()
@@ -359,6 +677,9 @@ class ExplorerWorker:
         with self._lock:
             self.closed = True
             self._queue.put(None)
+        close = getattr(self.source, "close", None)
+        if close is not None:
+            close()  # ends the helper process
 
     def _run(self) -> None:
         while True:
@@ -371,9 +692,9 @@ class ExplorerWorker:
             try:
                 result = getattr(self.source, method)(*args)
             except ExplorerError as exc:
-                self._send(generation, on_error, str(exc))
+                self._send(generation, on_error, ErrorText(str(exc), getattr(exc, "release", "")))
             except Exception as exc:  # a bug here must not end the thread
-                self._send(generation, on_error, f"{type(exc).__name__}: {exc}")
+                self._send(generation, on_error, ErrorText(f"{type(exc).__name__}: {exc}"))
             else:
                 self._send(generation, on_done, result)
 

@@ -43,6 +43,9 @@ TAG_FILE = WORKSPACE_DIR / TAG_NAME
 TAG_ENV = "CHEMOTION_API_TAG"
 BRANCH_NAME = "chemotionapi.branch"
 BRANCH_FILE = WORKSPACE_DIR / BRANCH_NAME
+SETUP_WORKSPACE = Path(__file__).resolve().with_name("setup_workspace.sh")
+# Fetch, pip install and the API reference of another chemotion_api version.
+SETUP_TIMEOUT_S = 900
 
 
 class VersionError(Exception):
@@ -234,6 +237,30 @@ def check_installed(eln_version: str, tags: list[str] | None, installed: str) ->
     return (f"Your Chemotion runs ELN {version}, but chemotionapi {described} is installed, "
             f"so the assistant's code may fail. Install a release for ELN {version} or the "
             f"nearest lower ELN version (Settings \u2192 Chemotion).")
+
+
+def install(ref: str, timeout: float = SETUP_TIMEOUT_S, script: Path | None = None) -> tuple[bool, str]:
+    """Installs a release (`ref` = a tag, or "branch:<name>") into the
+    workspace with setup_workspace.sh, using this interpreter's venv. Blocks
+    (run it in a thread; Linux only). Returns (ok, the text the settings and
+    the Explorer show): setup_workspace.sh's last line ("chemotionapi <label>
+    (<commit>) installed, ...") or why it failed."""
+    script = script or SETUP_WORKSPACE
+    branch = ref.startswith("branch:")
+    label = f"branch {ref.removeprefix('branch:')}" if branch else ref
+    command = [str(script), str(script.parent), sys.executable]
+    command += ["--branch", ref.removeprefix("branch:")] if branch else [ref]
+    try:
+        done = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return False, f"Installing {label} took longer than {timeout:g} s and was stopped."
+    except OSError as exc:
+        return False, f"Installing {label} failed: {exc}"
+    if done.returncode == 0:
+        lines = done.stdout.strip().splitlines()
+        return True, lines[-1] if lines else f"chemotionapi {label} installed."
+    lines = (done.stderr or done.stdout).strip().splitlines()
+    return False, f"Installing {label} failed: {lines[-1] if lines else f'exit code {done.returncode}'}"
 
 
 def main(argv: list[str]) -> int:

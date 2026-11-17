@@ -345,6 +345,7 @@ FROZEN_PROGRAMS = {
     "settings.py": ["ChemAssistent.exe", "--settings"],
     "chemotion_runner.py": ["chem-assistent-runner.exe"],
     "mcp_bridge.py": ["chem-assistent-runner.exe", "--mcp-bridge"],
+    "explorer_helper.py": ["chem-assistent-runner.exe", "--explorer-helper"],
 }
 
 
