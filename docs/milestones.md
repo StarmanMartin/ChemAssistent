@@ -65,7 +65,7 @@ selected in the Explorer.
 **Open owner decisions:** –
 
 ## M3 – Open the conversation view without a message
-**Status:** planned
+**Status:** done (#32)
 **Goal:** the big conversation view (dock with Explorer, Details, Results, Conversation) can
 be opened without asking anything first, e.g. to browse the ELN in the Explorer and ask later.
 **Work packages:**
@@ -80,8 +80,8 @@ be opened without asking anything first, e.g. to browse the ELN in the Explorer 
 - "Ask Chemotion…", the hotkey, a second app start and continuing a saved conversation behave as before.
 - `pytest tests/` passes; the window change is checked from source with a capture.
 **Issues:** –
-**Open owner decisions:**
-- Should the header's "New conversation" button in the conversation view also open an empty view (consistent with the menu) instead of the small prompt?
+**Open owner decisions:** – (the header's "New conversation" button keeps going back to the small prompt; 2026-11-17) 
+  - Still small prompt
 
 ## M4 – Choose the Chemotion version, not the chemotionapi release
 **Status:** planned
@@ -104,10 +104,14 @@ tags and branches.
 - `pytest tests/` passes; CLAUDE.md describes the new flow.
 **Issues:** –
 **Open owner decisions:**
-- Reinstall with a selection: keep exactly the installed release, or update to the newest release of the same ELN line (e.g. `v312.0.1` → `v312.1.1`)? keep installed version
-- ELN version without its own release line (e.g. a future 3.1.3): show an error, or offer the nearest lower line? use nearest lower one
-- Should the app (not only the settings) warn when the detected server version does not match the installed release line? yes
-- Windows bundle: stays on its built-in release, or should it get per-version bundles later? get per-version later
+- Reinstall with a selection: keep exactly the installed release, or update to the newest release of the same ELN line (e.g. `v312.0.1` → `v312.1.1`)? 
+  - keep installed version
+- ELN version without its own release line (e.g. a future 3.1.3): show an error, or offer the nearest lower line? 
+  - use nearest lower one
+- Should the app (not only the settings) warn when the detected server version does not match the installed release line? 
+  - yes
+- Windows bundle: stays on its built-in release, or should it get per-version bundles later? 
+  - get per-version later
 
 ## M5 – Explorer: chemotionapi/ELN version mismatch message
 **Status:** planned
@@ -123,3 +127,4 @@ tags and branches.
 **Issues:** –
 **Open owner decisions:**
 - Depends on M4 (version mapping): do M4 first, or a simple button "Open settings" until then?
+  - Do M4 first. Then i need to check if M5 is fixed already!
