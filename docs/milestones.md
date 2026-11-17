@@ -129,3 +129,81 @@ chemotion_api's `UnsupportedServerVersion` text, v312 against ELN 4.0.1 only
 - `pytest tests/` passes; the helper protocol and the restart on a release change are tested.
 **Issues:** –
 **Open owner decisions:** – (2026-11-17: fix by an Explorer helper process, not a restart button or module reloading)
+
+## M6 – Element details: foundation and samples
+**Status:** planned
+**Goal:** selecting an element in the Explorer shows a detailed, read-only default view in the
+Details panel, starting with samples: their main properties as the ELN web client shows them,
+with the structure image. The view is built from a version-independent description, so it works
+with both chemotionapi lines (v312 for ELN 3.1, v401 for ELN 4.0).
+**Reference:** the web client in `~/Deveolop/KIT/chemotion_ELN` (`app/javascript/src/apps/mydb/elements/details/samples/`, `propertiesTab/`) decides which values are relevant and their order/units; chemotion_api (`chemotion_api/elements/sample.py`, both lines) how to read them.
+**Work packages:**
+- WP6.1 View model (`element_views.py`, GTK-free, tests): a JSON-able description `{type, title, subtitle, url, sections: [{title, rows: [{label, value, unit}] | table | text | image}], images, links}` plus per-line adapters (v312 / v401, chosen by what the installed chemotion_api offers, like `explorer._uses_sync_ids()`); sample adapter: name, short label, external label, IUPAC/molecule name, sum formula, molecular weight, exact mass, SMILES/InChI(Key), CAS, stereo, amount (mass/volume/mol), purity, density/molarity, melting/boiling point, location, description, solvents, the decoupled/mixture variants where present
+- WP6.2 Helper method `details(type, id)` (`explorer_helper.py`, `ExplorerProxy.details()`): loads the element in the helper process, runs the adapter, returns the view model; the structure SVG (`load_image()` / `sample_svg_file`) as text in the model, size-limited
+- WP6.3 Details panel (`details_view.py`): renders any view model generically (sections, key/value grids, tables, text, images: SVG via GdkPixbuf/librsvg, scaled to the panel), loading and error states, "Open in Chemotion" / "Mention in message" as now, a refresh button; one element in detail, several selected elements as today's short cards
+- WP6.4 Cache per (type, id, updated_at) in the app for the conversation; nothing written to the ELN
+**Acceptance criteria:**
+- Selecting a sample shows its structure image and the main properties in the web client's grouping and order; empty values are left out; units as in the web client.
+- Works against ELN 4.0.1 (v401) and ELN 3.1.2 (v312; checked with a scratch venv and recorded fixtures); a field one line does not have is simply absent.
+- Read only: no request that changes data (checked: only GET requests, or chemotion_api calls that do not save).
+- Large or missing images, slow servers and errors show a message, never block the window.
+- `pytest tests/` passes; adapters tested against the Chemotion test instance and against recorded JSON of both lines.
+**Issues:** –
+**Open owner decisions:**
+- Should "Mention in message" also put the shown values into the chat, or only the reference as today?
+- One element in detail: the first selected, or a list to pick from when several are selected?
+
+## M7 – Element details: reactions and the other built-in types
+**Status:** planned
+**Goal:** every built-in element type gets its default view on M6's foundation, with the same
+values as the web client's main tab.
+**Reference:** `chemotion_ELN/app/javascript/src/apps/mydb/elements/details/{reactions,researchPlans,wellplates,screens,cellLines,deviceDescriptions,vessels,sequenceBasedMacromoleculeSamples}/`; chemotion_api per line (v312 has fewer types: types the installed line or the server does not have are skipped).
+**Work packages:**
+- WP7.1 Reaction: the scheme image (stored `reaction_svg_file` / `load_image()`; v401 can also render it), materials table per role (starting materials, reactants, solvents, products: label, name, amount, equivalents, yield), conditions, temperature, duration, status, rf value, purification/dangerous products, observation/description as text (`element_views.py` adapter)
+- WP7.2 Research plan: its body in order (rich text → readable text with headings/lists, tables as tables, images), read only
+- WP7.3 Wellplate (size, wells as a compact grid with the samples they hold), screen (conditions, requirements, wellplates), cell line, device description, vessel, SBMM sample (v401 only): main tab values
+- WP7.4 Rich-text helper (Quill delta → Pango markup / plain text), shared by descriptions everywhere
+**Acceptance criteria:**
+- Each built-in type of the test instance shows a view with the main-tab values of the web client; reactions show the scheme image and the materials table.
+- Types the installed chemotionapi line does not support show today's short card, not an error.
+- `pytest tests/` passes; one adapter test per type (test instance + recorded JSON).
+**Issues:** –
+**Open owner decisions:**
+- Materials of a reaction: link each to its sample's view (click → its details), or text only?
+
+## M8 – Element details: generic elements (LabIMotion)
+**Status:** planned
+**Goal:** generic elements (and generic segments on built-in elements) are shown from their
+class definition, without code per class: layers in order, fields with label, value and unit.
+**Reference:** `~/Deveolop/KIT/LabIMotion` (field types and how the web client renders them), chemotion_api `generic_element.py` / `generic_segments.py` (both lines).
+**Work packages:**
+- WP8.1 Generic adapter (`element_views.py`): layers (`layers` with position/cols, `layers_without_fields`), fields by type — text, textarea, number/system-defined with unit, select (option labels), checkbox, date/datetime, integer, formula field, table (as a table), drag sample/element (label + link), upload (file names), text-formula — hidden/conditional fields and empty layers left out; the workflow/klass version as subtitle
+- WP8.2 Generic segments on samples/reactions/…: shown as extra sections in M6/M7 views
+- WP8.3 Tests with the generic classes of the test instance (created by the test fixtures if none exist, deleted afterwards) and recorded JSON of both lines
+**Acceptance criteria:**
+- Any generic element of the test instance shows all its filled fields in layer order with units, read only, without class-specific code.
+- Unknown field types show their raw value instead of failing.
+- `pytest tests/` passes.
+**Issues:** –
+**Open owner decisions:** –
+
+## M9 – Element details: analyses and datasets
+**Status:** planned
+**Goal:** the analyses of an element and their datasets and files are reachable from its view:
+see what was measured, preview images and spectra, and open or hand files to the assistant.
+**Reference:** `chemotion_ELN/app/javascript/src/apps/mydb/elements/details/analyses/`; chemotion_api `Analyses`, `Dataset`, attachments (`preview_image()`, `load_image()`, downloads; both lines).
+**Work packages:**
+- WP9.1 Analyses section in every element view (`element_views.py`, helper): analyses in order with kind (CHMO term label), status, description (rich text), and their datasets (name, instrument, metadata fields), each dataset's attachments (name, size, type)
+- WP9.2 Previews: the analysis/attachment preview images (size-limited, loaded on expand, cached)
+- WP9.3 Open a file: download through the helper into a per-conversation folder (the exchange folder when JupyterLab is on, else a temp folder under `STATE_DIR`), then open it with the system viewer; "Mention in message" for an analysis/dataset/file (so the agent can read the file via its roots or the exchange folder)
+- WP9.4 Limits: large files only on request with their size shown; nothing uploaded or changed
+**Acceptance criteria:**
+- A sample with analyses shows them with their datasets and file names; previews appear on expand; a file opens after one click.
+- Files the user opened can be read by the assistant when mentioned (they are inside its roots).
+- Works with both chemotionapi lines; read only.
+- `pytest tests/` passes; tests create an analysis with a small dataset on the test instance and delete it afterwards.
+**Issues:** –
+**Open owner decisions:**
+- Where downloaded files go: the conversation's exchange folder (visible to JupyterLab) or a separate download folder?
+- A size limit for automatic previews and downloads (e.g. 20 MB)?
+
