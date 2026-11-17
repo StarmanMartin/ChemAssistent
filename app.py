@@ -2176,11 +2176,18 @@ class AssistantWindow(Gtk.Window):
     def _submit(self) -> None:
         text = self.entry.get_text().strip()
         if not (text or self.prompt_attachments.paths):
+            self.start_empty()  # Enter on an empty prompt: the conversation view, nothing asked yet
             return
         config = self._ready_config()
         if config is not None:
             self._start_conversation(config, text or "Have a look at the attachments.",
                                      attachments=self.prompt_attachments.take())
+
+    def start_empty(self) -> None:
+        """The conversation view without a first message (a config problem stays in the prompt)."""
+        config = self._ready_config()
+        if config is not None:
+            self._start_conversation(config, None, empty=True)
 
     def resume(self, conversation_id: str) -> None:
         data = history.load(conversation_id)
@@ -2500,8 +2507,10 @@ class AssistantWindow(Gtk.Window):
             self.model_button.set_active(True)
 
     def _start_conversation(self, config: Config, text: str | None, conversation_id: str | None = None,
-                            saved: dict | None = None, attachments: list[str] | None = None) -> None:
-        """A new conversation starting with `text` (and `attachments`), or a `saved` one from the history."""
+                            saved: dict | None = None, attachments: list[str] | None = None,
+                            empty: bool = False) -> None:
+        """A new conversation starting with `text` (and `attachments`), an `empty` one that
+        waits for the first message, or a `saved` one from the history."""
         self.conversation_id = conversation_id = conversation_id or history.new_id()
         on_event = lambda kind, data: GLib.idle_add(self._on_agent_event, kind, data)  # noqa: E731
         # Started by the agent before its first request (a CLI agent's bridge asks for the tools).
@@ -2527,7 +2536,7 @@ class AssistantWindow(Gtk.Window):
                 mcp=self.mcp,
                 vision=self.app.vision(config, config.ai_model),
             )
-        self.conversation_title = str(saved.get("title") or "") if saved else text
+        self.conversation_title = str(saved.get("title") or "") if saved else (text or "")
         self.auto_run = config.auto_run  # the header menu can change it for this conversation
         self.recording = training.recording_enabled(config)
         self.training_models = [config.ai_model]
@@ -2548,7 +2557,8 @@ class AssistantWindow(Gtk.Window):
         self.set_keep_above(False)
         self.set_skip_taskbar_hint(False)
         self.set_skip_pager_hint(False)
-        self.set_title(f"ChemAssistent – {self.conversation_title[:60]}")
+        self.set_title(f"ChemAssistent – {self.conversation_title[:60]}" if self.conversation_title
+                       else "ChemAssistent")
         if saved:
             roots = [str(root) for root in saved.get("roots") or []]
             if isinstance(self.agent, CliAgent):
@@ -2564,10 +2574,13 @@ class AssistantWindow(Gtk.Window):
                 self.results.add_link("JupyterLab", "Notebook of this conversation", self.jupyter.notebook_url)
         # Set but unusable: say so, or the agent quietly works without it.
         problem = jupyter_problem(read_raw_config())
-        if text is not None:
+        if text is not None or empty:
             self._jupyter_note(problem)
-            self._grow()
-            self._send(text, attachments or ())
+            if empty:
+                self._grow(self.chat.focus_input)  # once grown: the layout may move the focus meanwhile
+            else:
+                self._grow()
+                self._send(text, attachments or ())
             return
         # The history is laid out once, at the final width (a long chat took seconds per width).
         self.loading = True
@@ -2659,6 +2672,9 @@ class AssistantWindow(Gtk.Window):
             return
         # Reports the agent has not had yet (e.g. cancelled jobs) go first.
         reports = self._reports()
+        if not self.conversation_title:  # first message of an empty conversation
+            self.conversation_title = text or ", ".join(Path(path).name for path in attachments)
+            self.set_title(f"ChemAssistent – {self.conversation_title[:60]}")
         # The Explorer's selection: what the message is about unless it says otherwise.
         selected = self.chat.selected_texts()
         typed = text + workspace.selection_note(selected)
@@ -2983,7 +2999,7 @@ class ChemAssistentApp:
         ask.connect("activate", lambda *_: self.open_prompt())
         menu.append(ask)
         new = Gtk.MenuItem(label="New conversation")
-        new.connect("activate", lambda *_: self.new_conversation())
+        new.connect("activate", lambda *_: self.new_conversation(empty=True))
         menu.append(new)
         menu.append(Gtk.SeparatorMenuItem())
         settings = Gtk.MenuItem(label="Settings…")
@@ -3216,10 +3232,17 @@ class ChemAssistentApp:
             GLib.idle_add(window._on_agent_event, "warning", problem)
         return {"tools": hub.mcp_tools()}
 
-    def new_conversation(self) -> None:
+    def new_conversation(self, empty: bool = False) -> None:
+        """Close the open conversation; then the small prompt, or with `empty` the empty conversation view."""
         if self.window is not None:
             self.window.close_conversation()
-        self.open_prompt()
+        if not empty:
+            self.open_prompt()
+            return
+        if self.window is None:
+            self.window = AssistantWindow(self)
+            self.window.open_prompt()  # shows the prompt page (and its error if the setup is incomplete)
+        self.window.start_empty()
 
     def window_closed(self, window: AssistantWindow) -> None:
         if self.window is window:
