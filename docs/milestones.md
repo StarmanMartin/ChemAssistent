@@ -21,7 +21,7 @@ Format of a milestone:
 ```
 
 ## M1 – Prompt distillation
-**Status:** in progress
+**Status:** done (#31)
 **Goal:** with an opt-in setting, every conversation of the built-in agent records teaching
 data for fine-tuning a small model (#21): the trajectory, structured decisions per code card
 (run / edited / rejected / auto, outcome) and 👍/👎 ratings of answers; the settings export
