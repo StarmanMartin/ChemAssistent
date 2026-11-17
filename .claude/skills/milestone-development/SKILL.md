@@ -54,9 +54,9 @@ all product, release and security decisions.
   then symlink the
   git-ignored `.venv` and `workspace/` (chemotionapi checkout + skills) from the main checkout.
   Sync before each round: `git -C ../wt-a/ChemAssistent merge --ff-only milestone/mN-<slug>`.
-- `.venv` (made from `/usr/bin/python3 --system-site-packages`) has chemotion_api v4: the
-  Chemotion tests skip there. Run them with a scratch venv on the `v312.0.1` tag against the
-  docker test instance (port 3579), see CLAUDE.md testing notes.
+- `.venv` (made from `/usr/bin/python3 --system-site-packages`) has chemotionapi `v401.1.1`, the
+  line of the docker test instance (ELN 4.0.1, port 3579). If the two do not match, conftest skips
+  every Chemotion test and names the line to install; see CLAUDE.md testing notes.
 - Jupyter tests need `JUPYTER_TEST_BIN` (scratch venv with `jupyter_server ipykernel`).
 - Design docs and round reports: git-ignored `dev/mN/`.
 
@@ -97,7 +97,7 @@ all product, release and security decisions.
    fold back into the owning module). Shared-file and CLAUDE.md updates as a separate commit.
 8. Gate, **serially**:
    - `.venv/bin/python -m pytest tests/ -q`;
-   - Chemotion instance up: `-m chemotion` with the v312 scratch venv; Jupyter tests with
+   - Chemotion instance up: `-m chemotion` (check it ran, not skipped for a version mismatch); Jupyter tests with
      `JUPYTER_TEST_BIN`;
    - GTK changes: run from source (`.venv/bin/python app.py --show`, or a test script with a
      stubbed `Agent.send` and throwaway paths per CLAUDE.md) and check a capture
