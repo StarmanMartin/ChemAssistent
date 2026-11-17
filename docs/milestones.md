@@ -152,7 +152,7 @@ with both chemotionapi lines (v312 for ELN 3.1, v401 for ELN 4.0).
 **Open owner decisions:** – (2026-11-17: "Mention in message" inserts the reference only, as today; several selected elements: their short cards, a click opens one in detail, with a way back)
 
 ## M7 – Element details: reactions and the other built-in types
-**Status:** in progress
+**Status:** done (#37)
 **Goal:** every built-in element type gets its default view on M6's foundation, with the same
 values as the web client's main tab.
 **Reference:** `chemotion_ELN/app/javascript/src/apps/mydb/elements/details/{reactions,researchPlans,wellplates,screens,cellLines,deviceDescriptions,vessels,sequenceBasedMacromoleculeSamples}/`; chemotion_api per line (v312 has fewer types: types the installed line or the server does not have are skipped).
@@ -176,6 +176,7 @@ class definition, without code per class: layers in order, fields with label, va
 **Work packages:**
 - WP8.1 Generic adapter (`element_views.py`): layers (`layers` with position/cols, `layers_without_fields`), fields by type — text, textarea, number/system-defined with unit, select (option labels), checkbox, date/datetime, integer, formula field, table (as a table), drag sample/element (label + link), upload (file names), text-formula — hidden/conditional fields and empty layers left out; the workflow/klass version as subtitle
 - WP8.2 Generic segments on samples/reactions/…: shown as extra sections in M6/M7 views
+- WP8.4 "Mention in message" also on detail views opened from a link (a reaction's material, a research plan's sample, a wellplate's samples, …): the reference is built from the view model (type, id, short label, name) and the collection of the element the link came from (owner request, 2026-11-17)
 - WP8.3 Tests with the generic classes of the test instance (created by the test fixtures if none exist, deleted afterwards) and recorded JSON of both lines
 **Acceptance criteria:**
 - Any generic element of the test instance shows all its filled fields in layer order with units, read only, without class-specific code.
