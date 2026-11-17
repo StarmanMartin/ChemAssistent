@@ -6,7 +6,7 @@
 # Usage: setup_workspace.sh <app dir> <venv python> [<tag> | --branch <branch>]
 # The app dir is where app.py lives; the workspace is <app dir>/workspace.
 # Without a tag: the installed one if it is still released, else the newest
-# (api_versions.py; CHEMOTION_API_TAG preselects one). --branch installs the
+# (api_versions.py default; CHEMOTION_API_TAG chooses another). --branch installs the
 # head of a branch instead (the settings' developer mode).
 set -euo pipefail
 
