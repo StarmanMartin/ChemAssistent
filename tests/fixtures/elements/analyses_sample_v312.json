@@ -1,0 +1,79 @@
+{
+ "id": 7,
+ "type": "sample",
+ "short_label": "API-7",
+ "name": "Old line",
+ "container": {
+  "id": 1,
+  "name": null,
+  "container_type": "root",
+  "description": "",
+  "extended_metadata": {
+   "report": false
+  },
+  "children": [
+   {
+    "id": 2,
+    "name": "new",
+    "container_type": "analyses",
+    "description": "",
+    "extended_metadata": {
+     "report": true
+    },
+    "children": [
+     {
+      "id": 3,
+      "name": "13C scan",
+      "container_type": "analysis",
+      "description": "<plain>",
+      "extended_metadata": {
+       "report": true,
+       "status": "Confirmed",
+       "kind": "CHMO:0000595 | 13C NMR",
+       "index": "1",
+       "instrument": null,
+       "content": "{\"ops\": [{\"insert\": \"Peak \"}, {\"insert\": \"A\", \"attributes\": {\"bold\": true}}, {\"insert\": \"\\n\"}]}"
+      },
+      "children": [
+       {
+        "id": 4,
+        "name": "raw",
+        "container_type": "dataset",
+        "description": "",
+        "extended_metadata": {
+         "report": true,
+         "instrument": "Bruker 400"
+        },
+        "dataset": null,
+        "attachments": [
+         {
+          "id": 11,
+          "filename": "fid.zip",
+          "identifier": "uuid-11",
+          "content_type": "application/zip",
+          "thumb": false,
+          "aasm_state": "non_jcamp",
+          "filesize": 2048,
+          "created_at": "01.02.2024, 10:00:00 +0000",
+          "updated_at": "01.02.2024, 10:00:00 +0000"
+         },
+         {
+          "id": 12,
+          "filename": "spectrum.png",
+          "identifier": "uuid-12",
+          "content_type": "image/png",
+          "thumb": true,
+          "aasm_state": "non_jcamp",
+          "filesize": 5000,
+          "created_at": "01.02.2024, 10:05:00 +0000",
+          "updated_at": "01.02.2024, 10:05:00 +0000"
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ }
+}

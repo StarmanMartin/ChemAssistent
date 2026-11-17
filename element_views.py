@@ -39,6 +39,10 @@ from html import escape
 from typing import Any
 
 MAX_IMAGE_BYTES = 2_000_000
+# Analyses: a preview image (thumbnail) above this size is not loaded; a file above this size is
+# downloaded only after the user confirmed it (explorer_helper's "download").
+MAX_PREVIEW_BYTES = 5_000_000
+MAX_DOWNLOAD_BYTES = 50_000_000
 IMAGE_MIME = "image/svg+xml"
 # Web client: MWPrecision (SampleDetails.js) and the numInput precisions of the amounts.
 MW_DIGITS = 6
@@ -319,11 +323,151 @@ def view(type_name: str, data: dict, images: dict | str | None = None, url: str 
         extra = SEGMENT_SECTIONS(data)
         if extra:
             model["sections"] = list(model.get("sections") or []) + extra
+    if isinstance(data, dict) and isinstance(data.get("container"), dict):
+        analyses = analyses_section(data)
+        if analyses:
+            model["sections"] = list(model.get("sections") or []) + [analyses]
     # What "Mention in message" of a linked view names (details_logic.linked_mention()).
     if isinstance(data, dict):
         model.setdefault("short_label", str(data.get("short_label") or ""))
         model.setdefault("name", str(data.get("name") or "") or str(model.get("title") or ""))
     return model
+
+
+# -- analyses ---------------------------------------------------------------------
+
+def _children(container: Any, kind: str) -> list[dict]:
+    """The children of a container JSON of one `container_type`, deleted ones left out."""
+    if not isinstance(container, dict):
+        return []
+    return [child for child in container.get("children") or []
+            if isinstance(child, dict) and child.get("container_type") == kind and not child.get("is_deleted")]
+
+
+def _analysis_containers(data: dict) -> list[dict]:
+    """The analysis containers of an element JSON: root -> "analyses" -> "analysis" (the web
+    client's order, the order stored)."""
+    found: list[dict] = []
+    for group in _children(data.get("container"), "analyses"):
+        found += _children(group, "analysis")
+    return found
+
+
+def _attachments(dataset: dict) -> list[dict]:
+    return [att for att in dataset.get("attachments") or [] if isinstance(att, dict) and not att.get("is_deleted")
+            and not att.get("is_new") and att.get("id") not in (None, "")]
+
+
+def _updated_key(att: dict) -> tuple:
+    """Sort key of an attachment's "updated_at" ("17.11.2026, 20:33:07 +0000", imageHelper.js'
+    DD.MM.YYYY, HH:mm:ss Z); text that does not parse sorts first."""
+    import re
+
+    found = re.match(r"\s*(\d+)\.(\d+)\.(\d+),?\s+(\d+):(\d+):(\d+)", str(att.get("updated_at") or ""))
+    if not found:
+        return (0, 0, 0, 0, 0, 0)
+    day, month, year, hour, minute, second = (int(part) for part in found.groups())
+    return (year, month, day, hour, minute, second)
+
+
+def _can_preview(att: dict) -> bool:
+    """imageHelper.js isPreviewableAttachment: only `previewable: false` excludes a file."""
+    return att.get("previewable") is not False
+
+
+def analysis_preview_attachment(analysis: dict) -> int | None:
+    """The id of the attachment whose thumbnail is the analysis' preview, as the web client picks
+    it (imageHelper.js getAttachmentFromContainer / getContainerImageData): the preferred thumbnail
+    when it is still a previewable attachment of the analysis, else among the attachments with a
+    thumbnail (previewable ones first) the one named "combined", else the latest; None without."""
+    atts = [att for dataset in _children(analysis, "dataset") for att in _attachments(dataset)]
+    preferred = (analysis.get("extended_metadata") or {}).get("preferred_thumbnail")
+    if preferred not in (None, ""):
+        for att in atts:
+            if _can_preview(att) and str(att.get("id")) == str(preferred).strip():
+                return int(att["id"])
+    thumbed = [att for att in atts if att.get("thumb")]
+    candidates = [att for att in thumbed if _can_preview(att)] or thumbed
+    combined = [att for att in candidates if "combined" in str(att.get("filename") or "").lower()]
+    pool = combined or candidates
+    if not pool:
+        return None
+    return int(max(pool, key=_updated_key)["id"])
+
+
+def _kind_label(kind: Any) -> str:
+    """"CHMO:0000593 | 1H NMR" -> "1H NMR" (the part after the bar, as the web client shows it)."""
+    text = str(kind or "").strip()
+    return (text.split("|", 1)[1].strip() if "|" in text else text)
+
+
+def _dataset_rows(dataset: dict) -> list[dict]:
+    """The metadata of a dataset (LabIMotion's `dataset.properties`, layers as for a generic element)
+    as flat rows: the dataset type, then every filled field ("Layer · Field" when there are several
+    layers). Tables and linked elements of a layer are left out."""
+    meta = dataset.get("dataset")
+    if not isinstance(meta, dict):
+        return []
+    rows: list[dict] = []
+    if meta.get("klass_label"):
+        rows.append({"label": "Type", "value": str(meta["klass_label"]), "unit": ""})
+    properties = meta.get("properties")
+    if isinstance(properties, dict) and isinstance(properties.get("layers"), dict):
+        import element_generic
+
+        options = element_generic.merged_select_options(properties, meta.get("properties_release"))
+        sections = [s for s in element_generic.properties_sections(properties, options) if s.get("kind") == "fields"]
+        for section in sections:
+            for row in section["rows"]:
+                label = row["label"] if len(sections) == 1 else f"{section['title']} · {row['label']}"
+                rows.append(dict(row, label=label))
+    return rows
+
+
+def analyses_section(data: dict) -> dict | None:
+    """The "analyses" section of an element JSON (None without analyses):
+
+        {"title": "Analyses", "kind": "analyses", "analyses": [
+           {"id", "name", "kind", "status", "text", "markup", "preview": bool, "preview_attachment": id | None,
+            "datasets": [{"id", "name", "instrument", "rows": [{"label", "value", "unit"}],
+                          "files": [{"id", "name", "size", "mime", "thumb": bool}]}]}]}
+
+    Web client: details/analyses/AnalysesOrderRow.js (type = the kind label after the bar, status,
+    content), components/container/ContainerComponent.js (description, content), ContainerDatasets.js
+    and ContainerDatasetModalContent.js (dataset name, instrument, attachments), LabIMotion's dataset
+    properties for the metadata. Deleted analyses, datasets and files are left out. `thumb` = the file
+    has a thumbnail or the server says it is previewable as an image."""
+    if not isinstance(data, dict):
+        return None
+    analyses = []
+    for analysis in _analysis_containers(data):
+        meta = analysis.get("extended_metadata") if isinstance(analysis.get("extended_metadata"), dict) else {}
+        texts = [delta_text(analysis.get("description")), delta_text(meta.get("content"))]
+        markups = [delta_markup(analysis.get("description")), delta_markup(meta.get("content"))]
+        datasets = []
+        for dataset in _children(analysis, "dataset"):
+            dmeta = dataset.get("extended_metadata") if isinstance(dataset.get("extended_metadata"), dict) else {}
+            files = []
+            for att in _attachments(dataset):
+                mime = str(att.get("content_type") or "")
+                size = att.get("filesize")
+                files.append({"id": att["id"], "name": str(att.get("filename") or ""),
+                              "size": size if isinstance(size, int) and not isinstance(size, bool) else None,
+                              "mime": mime,
+                              "thumb": bool(att.get("thumb")) or (att.get("previewable") is True
+                                                                  and mime.startswith("image/"))})
+            item = {"id": dataset.get("id"), "name": str(dataset.get("name") or ""),
+                    "instrument": str(dmeta.get("instrument") or "").strip(), "rows": _dataset_rows(dataset),
+                    "files": files}
+            if item["name"] or item["instrument"] or item["rows"] or files:
+                datasets.append(item)
+        preview = analysis_preview_attachment(analysis)
+        analyses.append({"id": analysis.get("id"), "name": str(analysis.get("name") or "").strip() or "Analysis",
+                         "kind": _kind_label(meta.get("kind")), "status": str(meta.get("status") or "").strip(),
+                         "text": "\n\n".join(part for part in texts if part),
+                         "markup": "\n\n".join(part for part in markups if part),
+                         "preview": preview is not None, "preview_attachment": preview, "datasets": datasets})
+    return {"title": "Analyses", "kind": "analyses", "analyses": analyses} if analyses else None
 
 
 def _has_layers(data: dict) -> bool:
