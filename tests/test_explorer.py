@@ -505,3 +505,21 @@ def test_only_the_desktop_prompt_explains_the_selection(workspace):
 
     assert 'A message may end with "Selected in the Explorer:"' in workspace_module.system_prompt()
     assert "Selected in the Explorer" not in workspace_module.system_prompt(headless=True)
+
+
+def test_worker_error_text_has_a_release_attribute():
+    class Source:
+        def types(self):
+            raise ExplorerError("Install v401.1.1", release="v401.1.1")
+
+        def collections(self):
+            raise RuntimeError("bug")
+
+    got, done = [], threading.Event()
+    worker = ExplorerWorker(Source(), lambda fn: fn())
+    worker.request("types", (), lambda r: None, lambda t: got.append(t))
+    worker.request("collections", (), lambda r: None, lambda t: (got.append(t), done.set()))
+    assert done.wait(5)
+    assert got == ["Install v401.1.1", "RuntimeError: bug"]
+    assert [t.release for t in got] == ["v401.1.1", ""]
+    worker.close()

@@ -202,3 +202,39 @@ def test_choose_is_default(monkeypatch, tmp_path, capsys):
         assert api_versions.main(["api_versions.py", mode, str(tmp_path)]) == 0
         assert capsys.readouterr().out == "v312.0.1\n"
     assert not hasattr(api_versions, "ask_on_stderr")
+
+
+# -- install() -------------------------------------------------------------------
+
+def fake_script(tmp_path, body: str):
+    script = tmp_path / "setup_workspace.sh"
+    script.write_text("#!/usr/bin/env bash\n" + body)
+    script.chmod(0o755)
+    return script
+
+
+def test_install_a_tag(tmp_path):
+    script = fake_script(tmp_path, 'echo "$@" > "$(dirname "$0")/args"; echo noise; '
+                                   'echo "chemotionapi v401.1.1 (abc1234) installed, reference written"\n')
+    ok, text = api_versions.install("v401.1.1", script=script)
+    assert ok and text == "chemotionapi v401.1.1 (abc1234) installed, reference written"
+    app_dir, python, ref = (tmp_path / "args").read_text().split()
+    assert app_dir == str(tmp_path) and python == sys.executable and ref == "v401.1.1"
+
+
+def test_install_a_branch(tmp_path):
+    script = fake_script(tmp_path, 'echo "$@" > "$(dirname "$0")/args"; echo done\n')
+    assert api_versions.install("branch:version-3", script=script) == (True, "done")
+    assert (tmp_path / "args").read_text().split()[2:] == ["--branch", "version-3"]
+
+
+def test_install_failure_and_timeout(tmp_path):
+    ok, text = api_versions.install("v999.1.1", script=fake_script(tmp_path, 'echo "no such tag" >&2; exit 1\n'))
+    assert not ok and text == "Installing v999.1.1 failed: no such tag"
+    ok, text = api_versions.install("v312.1.1", script=fake_script(tmp_path, 'exit 7\n'))
+    assert not ok and text == "Installing v312.1.1 failed: exit code 7"
+    ok, text = api_versions.install("branch:x", timeout=0.3, script=fake_script(tmp_path, 'exec sleep 30\n'))
+    assert not ok and text == "Installing branch x took longer than 0.3 s and was stopped."
+    ok, text = api_versions.install("v312.1.1", script=tmp_path / "missing.sh")
+    assert not ok and text.startswith("Installing v312.1.1 failed:")
+    assert api_versions.SETUP_TIMEOUT_S == 900
