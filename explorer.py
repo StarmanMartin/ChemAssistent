@@ -42,6 +42,10 @@ LOG = logging.getLogger("chem-assistent")
 PER_PAGE = 10
 # One request to the helper (a login and a listing); then the helper is killed.
 REQUEST_TIMEOUT_S = 120.0
+# A file download (explorer_helper's "download") may take long.
+DOWNLOAD_TIMEOUT_S = 600.0
+# What the helper reads per chunk of a download.
+DOWNLOAD_CHUNK = 1 << 20
 # The helper's stderr lines kept for error messages.
 STDERR_TAIL_LINES = 20
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -111,6 +115,18 @@ def _uses_sync_ids(listing) -> bool:
     return "collection_is_sync" in inspect.signature(listing.__init__).parameters
 
 
+def size_text(size: int) -> str:
+    """"12 B", "3.4 kB", "5.0 MB" (decimal units, as the ELN shows file sizes)."""
+    if size < 1000:
+        return f"{size} B"
+    value = float(size)
+    for unit in ("kB", "MB", "GB"):
+        value /= 1000
+        if value < 1000 or unit == "GB":
+            return f"{value:.1f} {unit}"
+    return f"{size} B"
+
+
 def _is_unauthorized(exc: BaseException) -> bool:
     return isinstance(exc, PermissionError) or getattr(exc, "status_code", None) == 401
 
@@ -146,6 +162,9 @@ class ExplorerSource:
         self._login_key: tuple | None = None
         self._root = None
         self._classes: dict[str, dict] | None = None
+        # analysis id -> the attachment whose thumbnail is its preview (filled by details(); the
+        # ELN has no route to ask a container for it)
+        self._analysis_previews: dict[int, int] = {}
 
     # -- login ---------------------------------------------------------------
 
@@ -359,8 +378,126 @@ class ExplorerSource:
             else:
                 images, notes = self._load_images(element, type_name, data)
             model = element_views.view(type_name, data, images, url)
+            self._remember_previews(model)
             model["notes"] = list(model.get("notes") or []) + notes
             return model
+
+        return self._call(work)
+
+    def _remember_previews(self, model: dict) -> None:
+        if len(self._analysis_previews) > 5000:
+            self._analysis_previews.clear()
+        for section in model.get("sections") or []:
+            if section.get("kind") != "analyses":
+                continue
+            for analysis in section.get("analyses") or []:
+                try:
+                    if analysis.get("preview_attachment") is not None:
+                        self._analysis_previews[int(analysis["id"])] = int(analysis["preview_attachment"])
+                except (TypeError, ValueError):
+                    pass
+
+    def preview(self, kind: str, item_id: int) -> dict | None:
+        """The preview image (an IMAGE, element_views.py) of an analysis (`kind` "analysis": its
+        preview attachment from the last details() of its element) or the thumbnail of an attachment
+        (`kind` "attachment"), loaded as the web client does (GET /api/v1/attachments/thumbnail/<id>,
+        a base64 PNG; without one GET .../image/<id>, e.g. an image the server made no thumbnail of).
+        None when there is none; one over MAX_PREVIEW_BYTES raises ExplorerError."""
+        if kind not in ("analysis", "attachment"):
+            raise ExplorerError(f"Unknown preview kind {kind!r}.")
+        try:
+            item_id = int(item_id)
+        except (TypeError, ValueError):
+            raise ExplorerError("The preview needs a numeric id.") from None
+        if kind == "analysis":
+            attachment = self._analysis_previews.get(item_id)
+            if attachment is None:
+                return None
+        else:
+            attachment = item_id
+        limit = element_views.MAX_PREVIEW_BYTES
+        too_large = ExplorerError(f"The preview is larger than {limit // 1_000_000} MB.")
+
+        def work(instance):
+            con = instance._con
+            response = con.get(f"/api/v1/attachments/thumbnail/{attachment}")
+            if response.status_code == 401:
+                raise PermissionError("401")
+            if response.status_code == 200:
+                try:
+                    encoded = response.json()
+                except ValueError:
+                    encoded = None
+                if isinstance(encoded, str) and encoded:
+                    if len(encoded) // 4 * 3 > limit + 3:
+                        raise too_large
+                    return _image_of("thumbnail.png", base64.b64decode(encoded), None)
+            response = con.get(f"/api/v1/attachments/image/{attachment}", stream=True)
+            try:
+                if response.status_code == 401:
+                    raise PermissionError("401")
+                if response.status_code != 200:
+                    return None
+                length = response.headers.get("Content-Length")
+                if length and length.isdigit() and int(length) > limit:
+                    raise too_large
+                content = b"".join(response.iter_content(DOWNLOAD_CHUNK))
+                if len(content) > limit:
+                    raise too_large
+                try:
+                    return _image_of("image", content, response.headers)
+                except ValueError:  # a PDF or another type the panel cannot show
+                    return None
+            finally:
+                response.close()
+
+        return self._call(work)
+
+    def download(self, attachment_id: int, path: str, max_bytes: int | None = None) -> dict:
+        """Streams an attachment (GET /api/v1/attachments/<id>) to `path` (missing folders are
+        created, the file is 0600) and answers {"path", "size"}. A file larger than `max_bytes`
+        (None: no limit) raises ExplorerError naming its size and writes nothing; a partial file is
+        removed on any error."""
+        try:
+            attachment_id = int(attachment_id)
+        except (TypeError, ValueError):
+            raise ExplorerError("The download needs a numeric attachment id.") from None
+        if not path:
+            raise ExplorerError("The download needs a target path.")
+
+        def over(size: int) -> ExplorerError:
+            return ExplorerError(f"The file is {size_text(size)}, over the limit of {size_text(max_bytes or 0)}.")
+
+        def work(instance):
+            response = instance._con.get(f"/api/v1/attachments/{attachment_id}", stream=True)
+            partial = f"{path}.part"
+            try:
+                if response.status_code == 401:
+                    raise PermissionError("401")
+                if response.status_code != 200:
+                    raise ExplorerError(f"Chemotion answered the download with {response.status_code}.")
+                length = response.headers.get("Content-Length")
+                if max_bytes is not None and length and length.isdigit() and int(length) > max_bytes:
+                    raise over(int(length))
+                try:
+                    os.makedirs(os.path.dirname(os.path.abspath(path)), mode=0o700, exist_ok=True)
+                    size = 0
+                    with os.fdopen(os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb") as out:
+                        for chunk in response.iter_content(DOWNLOAD_CHUNK):
+                            size += len(chunk)
+                            if max_bytes is not None and size > max_bytes:
+                                raise over(size)
+                            out.write(chunk)
+                    os.replace(partial, path)
+                except OSError as exc:
+                    raise ExplorerError(f"Could not write {path}: {exc}") from None
+                return {"path": path, "size": size}
+            finally:
+                response.close()
+                try:
+                    os.remove(partial)
+                except OSError:
+                    pass
 
         return self._call(work)
 
@@ -542,12 +679,14 @@ class ExplorerProxy:
     def __init__(self, load_config: Callable[[], Any] | None = None,
                  save_setting: Callable[[str, Any], None] | None = None,
                  command: list[str] | None = None, timeout: float = REQUEST_TIMEOUT_S,
+                 download_timeout: float = DOWNLOAD_TIMEOUT_S,
                  release_stamp: Callable[[], Any] | None = None,
                  version_check: Callable[[Any, str], tuple[str, str]] | None = None) -> None:
         self._load_config = load_config
         self._save_setting = save_setting
         self._command = command
         self.timeout = timeout
+        self.download_timeout = download_timeout
         self._release_stamp = release_stamp
         self._version_check = version_check or _check_versions
         self._config: Any = None
@@ -609,18 +748,18 @@ class ExplorerProxy:
         return {"url": config.url, "user": config.user, "password": config.password,
                 "verify_tls": config.verify_tls, "explorer_types": None if types is None else list(types)}
 
-    def _request(self, method: str, args: list) -> Any:
+    def _request(self, method: str, args: list, timeout: float | None = None) -> Any:
         with self._lock:
             login = self._login()
             stamp = self._stamp()
             try:
-                result = self._exchange(method, args, login, stamp)
+                result = self._exchange(method, args, login, stamp, timeout or self.timeout)
             except ExplorerError as exc:
                 raise self._explained(exc, stamp) from None
             self._checks.pop((login["url"], stamp), None)
             return result
 
-    def _exchange(self, method: str, args: list, login: dict, stamp: Any) -> Any:
+    def _exchange(self, method: str, args: list, login: dict, stamp: Any, timeout: float) -> Any:
         helper = self._helper_for(stamp)
         self._ids += 1
         request_id = self._ids
@@ -631,13 +770,13 @@ class ExplorerProxy:
         except (OSError, ValueError):
             self._drop()
             raise ExplorerError(self._died(helper)) from None
-        deadline = time.monotonic() + self.timeout
+        deadline = time.monotonic() + timeout
         while True:
             try:
                 answer = helper.answers.get(timeout=max(0.0, deadline - time.monotonic()))
             except queue.Empty:
                 self._drop()
-                raise ExplorerError(f"Chemotion did not answer within {self.timeout:g} s.") from None
+                raise ExplorerError(f"Chemotion did not answer within {timeout:g} s.") from None
             if answer is None:
                 self._drop()
                 raise ExplorerError(self._died(helper))
@@ -688,6 +827,13 @@ class ExplorerProxy:
     def details(self, type_name: str, element_id: int, collection_id: int | str | None = None) -> dict:
         # Always the helper: only it knows whether the server's type is a generic one (it answers the stub otherwise).
         return self._request("details", [type_name, element_id, collection_id])
+
+    def preview(self, kind: str, item_id: int) -> dict | None:
+        return self._request("preview", [kind, item_id])
+
+    def download(self, attachment_id: int, path: str, max_bytes: int | None = None) -> dict:
+        # a file may be big: its own, longer timeout
+        return self._request("download", [attachment_id, path, max_bytes], timeout=self.download_timeout)
 
     def save_types(self, shown: list[str], known: list[str]) -> None:
         """As ExplorerSource.save_types(), in the app process."""
