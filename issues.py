@@ -72,11 +72,11 @@ def eln_version(config: Config) -> str:
             page = response.read(500_000).decode("utf-8", errors="replace")
     except (OSError, ValueError) as exc:
         return f"unknown (/about: {exc})"
-    version = re.search(r"Version:\s*([^<\s]+)", page)
+    version = api_versions.parse_eln_version(page)
     revision = re.search(r"Current revision:\s*([0-9a-f]{7,40})", page)
     if not version:
         return "unknown (/about names no version)"
-    return version.group(1) + (f", revision {revision.group(1)[:9]}" if revision else "")
+    return f"v{version}" + (f", revision {revision.group(1)[:9]}" if revision else "")
 
 
 def api_version() -> str:
