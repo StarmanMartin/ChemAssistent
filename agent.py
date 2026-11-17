@@ -962,6 +962,7 @@ class Agent:
         self.cancelled = threading.Event()
         self.busy = False
         self.failed_run = False  # an execute_* run failed since the user's last message
+        self.current_call_id = ""  # id of the tool call being dispatched ("" outside a call)
         self._response = None
         self._call_counter = 0
         self._drop_reasoning = False  # set_model(): strip reasoning_content before the next request
@@ -1306,7 +1307,11 @@ class Agent:
         except ValueError as exc:
             result = f"Invalid JSON arguments ({exc}); call {name} again with a JSON object."
         else:
-            result = self._dispatch(name, arguments)
+            self.current_call_id = str(call.get("id") or "")
+            try:
+                result = self._dispatch(name, arguments)
+            finally:
+                self.current_call_id = ""
         self.messages.append({"role": "tool", "tool_call_id": call["id"], "content": result})
 
     def _dispatch(self, name: str, arguments: dict) -> str:

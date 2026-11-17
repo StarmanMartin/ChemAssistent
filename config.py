@@ -197,6 +197,9 @@ class Config:
     # The agent may read the saved conversations (history.py) when the user
     # asks about them; off: they are no root of its read-only tools.
     history_access: bool = False
+    # Record the built-in agent's conversations as teaching data (training.py);
+    # stays on this computer until the user exports it.
+    training_data: bool = False
     # MCP servers the user added (settings, or the agent after "/mcp"):
     # normalized dicts (mcp_servers()), the disabled ones included.
     mcp_servers: tuple = ()
@@ -238,6 +241,7 @@ EXAMPLE = {
     "developer_mode": False,
     "github_token": "",
     "history_access": False,
+    "training_data": False,
     "mcp_servers": [],
     "use_keyring": True,
 }
@@ -753,6 +757,7 @@ def load_config(keyring_required: bool = True) -> Config:
         developer_mode=bool(data.get("developer_mode", False)),
         github_token=str(data.get("github_token") or "").strip(),
         history_access=bool(data.get("history_access", False)),
+        training_data=bool(data.get("training_data", False)),
         mcp_servers=tuple(mcp_servers(data)),
         explorer_types=None if (types := explorer_types(data)) is None else tuple(types),
     )
