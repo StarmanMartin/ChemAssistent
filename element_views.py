@@ -304,7 +304,8 @@ def view(type_name: str, data: dict, images: dict | str | None = None, url: str 
     IMAGEs by key (see IMAGE_REFS); a str is SVG text for the key "image"
     (a sample's structure). A type without an adapter gives the generic view
     when the JSON carries layers (element_generic.py), else the stub. The
-    element's generic segments are appended as sections."""
+    element's generic segments are appended as sections; every model gets
+    `short_label` and `name` (for the mention of a view opened from a link)."""
     adapter = ADAPTERS.get(type_name)
     if adapter is None:
         if GENERIC_ADAPTER is not None and isinstance(data, dict) and _has_layers(data):
@@ -318,6 +319,10 @@ def view(type_name: str, data: dict, images: dict | str | None = None, url: str 
         extra = SEGMENT_SECTIONS(data)
         if extra:
             model["sections"] = list(model.get("sections") or []) + extra
+    # What "Mention in message" of a linked view names (details_logic.linked_mention()).
+    if isinstance(data, dict):
+        model.setdefault("short_label", str(data.get("short_label") or ""))
+        model.setdefault("name", str(data.get("name") or "") or str(model.get("title") or ""))
     return model
 
 

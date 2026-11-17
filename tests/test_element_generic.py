@@ -563,3 +563,19 @@ def test_generic_element_and_segment_through_the_real_helper(chemotion, test_col
                 item.delete(delete_subsamples=True)
             except Exception:  # cleanup must not fail a passing test
                 pass
+
+
+def test_every_model_names_its_short_label_and_name_for_the_mention():
+    """details_logic.linked_mention() must not take the class version for the short label."""
+    import details_logic
+    from element_views import view
+
+    data = {"id": 7, "short_label": "TRY-7", "name": "Run 7", "element_klass": {"label": "Tryout", "version": "1.2"},
+            "properties": {"layers": {"one": {"key": "one", "label": "One", "position": 1, "fields": [
+                {"type": "text", "field": "f", "label": "F", "value": "x", "position": 1}]}}}}
+    model = view("try", data)
+    assert (model["short_label"], model["name"]) == ("TRY-7", "Run 7")
+    item = {"type": "try", "id": 7, "collection": "A/B", "shared": False, "collection_id": 3}
+    text = details_logic.linked_mention(item, model)
+    assert "TRY-7" in text and "Run 7" in text and "1.2" not in text
+
