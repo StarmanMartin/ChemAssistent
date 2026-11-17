@@ -39,7 +39,10 @@ from urllib.parse import parse_qs, quote, urlsplit, urlunsplit
 
 import requests
 
-from config import Config, write_private_json
+if __package__:  # the headless package (chemassistent)
+    from .config import Config, write_private_json
+else:
+    from config import Config, write_private_json
 
 
 NOTEBOOK = "analysis.ipynb"

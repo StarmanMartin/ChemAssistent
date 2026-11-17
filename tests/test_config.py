@@ -293,7 +293,7 @@ def test_config_is_hashable():
 
 def test_explorer_types(tmp_path, monkeypatch, keyring):
     """The Explorer's type choice: absent = its defaults, saved without
-    touching the secrets, refused while the keyring does not give them."""
+    touching the secrets, also while the keyring does not give them."""
     use_config_file(tmp_path, monkeypatch)
     save_raw_config(SETTINGS)
     assert load_config().explorer_types is None
@@ -309,11 +309,29 @@ def test_explorer_types(tmp_path, monkeypatch, keyring):
 
     path = app_config.CONFIG_FILE
     write_private_json(path, {**json.loads(path.read_text()), "user": "v"})  # no cached secrets
-    keyring.fail = True
-    with pytest.raises(OSError, match="cannot be saved now"):
-        app_config.save_setting("explorer_types", ["sample"])
+    keyring.fail = True  # the keyring is not needed: only the one key changes
+    app_config.save_setting("explorer_types", ["sample"])
     keyring.fail = False
     assert keyring.secrets["password"] == "p"
+    raw = json.loads(path.read_text())
+    assert raw["explorer_types"] == ["sample"] and raw["user"] == "v" and raw["password"] == ""
+    assert raw[app_config.SECRET_STORE_KEY] == app_config.KEYRING
+    assert load_config().password == "p"
+    with pytest.raises(ValueError):
+        app_config.save_setting("password", "x")
+
+
+def test_save_setting_keeps_the_cached_secrets(tmp_path, monkeypatch, keyring):
+    """A UI setting saved again and again does not read the keyring again."""
+    use_config_file(tmp_path, monkeypatch)
+    save_raw_config(SETTINGS)
+    assert load_config().password == "p"
+    reads = []
+    keyring.on_read = lambda: reads.append(1)
+    for n in range(3):
+        app_config.save_setting("dock_layout", {"n": n})
+        assert load_config().password == "p"
+    assert reads == []
 
 
 def test_setup_ai_moves_the_secrets_into_the_keyring(tmp_path, monkeypatch, keyring, capsys):

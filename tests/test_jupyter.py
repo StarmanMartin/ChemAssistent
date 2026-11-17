@@ -336,3 +336,32 @@ def test_a_file_too_large_is_noted_on_every_sync(tmp_path, monkeypatch):
         bridge.sync_down(notes)
         assert any("big.bin" in note and "larger than" in note for note in notes)
     assert not (bridge.local_dir / "big.bin").exists()
+
+
+# --- the headless interface with JupyterLab --------------------------------------
+def test_headless_execute_jupyter(jupyter_url, fake_ai, tmp_path):
+    from chemassistent import ChemAssistent
+    from chemassistent.agent import RAN_TEXT
+
+    config = app_config.Config(url="http://chemotion.invalid", user="u", password="p", ai_url=fake_ai.url,
+                               ai_model="test", jupyter_url=jupyter_url, jupyter_token=TOKEN,
+                               jupyter_folder="Tests")
+    assistant = ChemAssistent(config, approve=lambda purpose, code: True, jupyter=True, exchange_dir=tmp_path)
+    conversation = assistant.conversations.new_conversation()
+    assert conversation.exchange.parent == tmp_path
+    names = [tool["function"]["name"] for tool in conversation._agent.tools]
+    assert "execute_jupyter" in names and "start_jupyter_job" not in names and "jupyter_jobs" not in names
+    assert "no background jobs" in conversation._agent.messages[0]["content"]
+    fake_ai.script_next({"tool_calls": [{"name": "execute_jupyter", "arguments": {
+        "purpose": "compute", "code": "(exchange / 'out.txt').write_text('hi')\nprint('printed')\n6 * 7"}}]},
+        {"content": "done"})
+    assert conversation.prompt("go") == "done"
+    answer = [m["content"] for m in conversation._agent.messages if m["role"] == "tool"][0]
+    assert answer.startswith(RAN_TEXT)
+    assert "printed" in answer and "Value of the last expression: 42" in answer and "out.txt" in answer
+    assert (conversation.exchange / "out.txt").read_text() == "hi"
+    client = jupyter_module.JupyterClient(config)
+    notebook = f"Tests/{conversation.id}/{NOTEBOOK}"
+    assert any(s["path"] == notebook for s in client.request("GET", "api/sessions"))
+    conversation.close()
+    assert not any(s["path"] == notebook for s in client.request("GET", "api/sessions"))

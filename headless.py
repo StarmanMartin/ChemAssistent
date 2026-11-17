@@ -7,12 +7,15 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 
 from .agent import Agent, AgentError, FAILED_TEXT, RAN_TEXT, clip
-from .config import AI_TOKEN_ENV, WINDOWS, Config, agent_of, ai_token, load_config, read_raw_config
+from .config import (AI_TOKEN_ENV, WINDOWS, Config, agent_of, ai_token, jupyter_problem, load_config,
+                     read_raw_config)
 from . import workspace
 
 
@@ -38,6 +41,15 @@ def _kill_tree(process: subprocess.Popen) -> None:
         pass
     process.kill()
     process.wait()
+
+
+def _free_name(folder: Path, pattern: str) -> Path:
+    """The first folder/pattern.format(n), n = 1, 2, ..., that does not exist."""
+    folder.mkdir(parents=True, exist_ok=True)
+    number = 1
+    while (folder / pattern.format(number)).exists():
+        number += 1
+    return folder / pattern.format(number)
 
 
 def saved_config() -> Config:
@@ -70,10 +82,16 @@ class ChemAssistent:
     ``report_bugs``: the agent reports chemotion_api bugs it finds with
     report_api_bug (developer mode: a public GitHub issue with the config's
     github_token, else a draft in issues.ISSUES_DIR).
+    ``jupyter``: the agent also gets execute_jupyter in the config's
+    JupyterLab (needs websocket-client, the extra ``jupyter``); each
+    conversation has its own notebook and kernel and an exchange folder
+    below ``exchange_dir`` (default: a new temporary folder, kept), see
+    ``Conversation.exchange``. There are no background jobs.
     """
 
     def __init__(self, config: Config | str = "", *,
-                 approve: Callable[[str, str], bool] | None = None, report_bugs: bool = False) -> None:
+                 approve: Callable[[str, str], bool] | None = None, report_bugs: bool = False,
+                 jupyter: bool = False, exchange_dir: str | os.PathLike | None = None) -> None:
         if config == "":
             config = saved_config()
         if not isinstance(config, Config):
@@ -84,6 +102,13 @@ class ChemAssistent:
         # a script must not read the desktop's saved conversations.
         self.config = dataclasses.replace(config, developer_mode=report_bugs, history_access=False)
         self.approve = approve
+        if jupyter:
+            problem = jupyter_problem(dataclasses.asdict(config)) if config.jupyter else "jupyter_url is empty"
+            if problem:
+                raise ValueError(f"jupyter=True needs a JupyterLab in the config: {problem}")
+            exchange_dir = Path(exchange_dir) if exchange_dir else Path(tempfile.mkdtemp(prefix="chemassistent-"))
+        self.jupyter = jupyter
+        self.exchange_dir = Path(exchange_dir).expanduser().resolve() if jupyter else None
         self.conversations = Conversations(self)
 
 
@@ -105,9 +130,33 @@ class Conversation:
         # headless: no save_lesson (a prompt, maybe from an untrusted document,
         # must not write into the lessons every desktop conversation reads),
         # and a prompt that knows there is no window or result panel.
+        # With JupyterLab: the exchange folder both tools share, and the
+        # notebook (kernel) of this conversation.
+        self.id = uuid.uuid4().hex
+        self.exchange: Path | None = None
+        self._bridge = None
+        if assistant.jupyter:
+            if __package__:
+                from .jupyter import JupyterBridge
+            else:
+                from jupyter import JupyterBridge
+            self.exchange = assistant.exchange_dir / self.id
+            self._bridge = JupyterBridge(assistant.config, self.id, self.exchange)
         self._agent = Agent(assistant.config,
-                            workspace.system_prompt(developer=assistant.config.developer_mode, headless=True),
-                            self._execute, self._event, headless=True)
+                            workspace.system_prompt(self.exchange, developer=assistant.config.developer_mode,
+                                                    headless=True),
+                            self._execute, self._event, exchange=self.exchange, headless=True)
+
+    @property
+    def notebook_url(self) -> str:
+        """The conversation's notebook in JupyterLab ("" without)."""
+        return self._bridge.notebook_url if self._bridge is not None else ""
+
+    def close(self) -> None:
+        """Shuts the conversation's JupyterLab kernel down (the notebook and
+        the exchange folder stay). Without JupyterLab nothing to do."""
+        if self._bridge is not None:
+            self._bridge.client.close_session(self._bridge.notebook)
 
     def _event(self, kind: str, data) -> None:
         if kind == "error":
@@ -119,9 +168,14 @@ class Conversation:
         approve = self._assistant.approve
         if cancelled.is_set() or approve is None or approve(purpose, code) is not True:
             return "Not run: code execution was not approved by the caller."
+        if target == "jupyter" and self._bridge is not None:
+            return self._execute_jupyter(purpose, code, cancelled)
+        if target != "chemotion":
+            return f"{FAILED_TEXT}\nThe headless interface cannot run {target!r} code."
         config = self._assistant.config
         request = {"url": config.url, "user": config.user, "password": config.password,
-                   "verify_tls": config.verify_tls, "code": code}
+                   "verify_tls": config.verify_tls, "code": code,
+                   "exchange": str(self.exchange) if self.exchange is not None else None}
         try:
             process = subprocess.Popen([sys.executable, str(RUNNER)], stdin=subprocess.PIPE,
                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
@@ -149,6 +203,53 @@ class Conversation:
             parts.append("Printed output:\n" + str(outcome["stdout"]))
         if outcome.get("ok"):
             parts.append("result = " + json.dumps(outcome.get("result"), ensure_ascii=False))
+            if self.exchange is not None and outcome.get("result") is not None:
+                # As in the app: the result is a file for execute_jupyter.
+                path = _free_name(self.exchange, "chemotion_result_{}.json")
+                try:
+                    path.write_text(json.dumps(outcome["result"], ensure_ascii=False, indent=1), encoding="utf-8")
+                    parts.append(f"Saved in `exchange`: {path.name}")
+                except OSError as exc:
+                    parts.append(f"The result could not be saved in `exchange`: {exc}")
+        return clip("\n\n".join(parts))
+
+    def _execute_jupyter(self, purpose: str, code: str, cancelled: threading.Event) -> str:
+        """execute_jupyter: runs in the conversation's kernel (JupyterBridge);
+        figures are saved in the exchange folder as figure_<n>.png."""
+        import base64
+
+        if __package__:
+            from .jupyter import JupyterError
+        else:
+            from jupyter import JupyterError
+        try:
+            outcome = self._bridge.run(code, purpose, self._assistant.config.execution_timeout, cancelled)
+        except JupyterError as exc:
+            return f"{FAILED_TEXT}\n{exc}"
+        figures = []
+        for image in outcome.get("images") or []:
+            path = _free_name(self.exchange, "figure_{}.png")
+            try:
+                path.write_bytes(base64.b64decode(image))
+                figures.append(path)
+            except (OSError, ValueError):
+                pass
+        if figures:
+            self._bridge.mark_local(figures)
+        parts = []
+        if outcome.get("new_kernel"):
+            parts.append("The JupyterLab kernel is new (restarted): variables of earlier runs are gone.")
+        parts.append(RAN_TEXT if outcome.get("ok") else f"{FAILED_TEXT}\n{outcome.get('error', '')}")
+        if str(outcome.get("stdout") or "").strip():
+            parts.append(f"Printed output:\n{outcome['stdout']}")
+        if outcome.get("ok"):
+            result = outcome.get("result")
+            parts.append("Value of the last expression: " + (str(result) if result is not None else "none"))
+        exchanged = [("Figures shown, saved in `exchange`", [path.name for path in figures]),
+                     ("Sent from `exchange` to JupyterLab", outcome.get("uploaded")),
+                     ("New or changed in `exchange` from JupyterLab", outcome.get("downloaded"))]
+        parts.extend(f"{title}: {', '.join(names)}" for title, names in exchanged if names)
+        parts.extend(outcome.get("notes") or [])
         return clip("\n\n".join(parts))
 
     def prompt(self, text: str, attachments: list | tuple = ()) -> str:

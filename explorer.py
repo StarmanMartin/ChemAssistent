@@ -307,6 +307,17 @@ def mention_text(type_label: str, item: dict | None, collection: dict) -> str:
     return f"{' '.join(words)} ({item['type']} id {item['id']} in {where} {path})"
 
 
+def detail_rows(item: dict) -> list[tuple[str, str]]:
+    """(label, value) rows of the Details panel for one describe() dict:
+    Type, Short label, Name, Collection, Shared (only when true), ID. Empty
+    values are left out."""
+    rows = [("Type", item.get("type_label") or ""), ("Short label", item.get("short_label") or ""),
+            ("Name", item.get("name") or ""), ("Collection", item.get("collection") or ""),
+            ("Shared", "yes" if item.get("shared") else ""),
+            ("ID", "" if item.get("id") is None else str(item["id"]))]
+    return [(name, value) for name, value in rows if value]
+
+
 class ExplorerWorker:
     """Runs the source's requests one after another in one thread (one
     chemotion_api session). `deliver(fn)` brings a finished request's callback

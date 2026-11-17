@@ -150,6 +150,20 @@ def skill_lines(jupyter: bool = False) -> str:
 
 # Appended with JupyterLab configured (config.jupyter_url); {exchange} is the
 # conversation's local exchange folder.
+# The background-job bullet of JUPYTER_PROMPT (not headless: nothing there
+# delivers a job's report).
+JUPYTER_JOBS_TEXT = """\
+- `execute_jupyter` must finish within the user's time limit (a few minutes).
+  Longer calculations go to `start_jupyter_job`: a background job in its own
+  kernel that may run for hours or days. Its code must be self-contained
+  (imports, input from `exchange`, results saved into `exchange`). After
+  starting it, end your answer; a message with the job's outcome arrives when
+  it ends, and you continue from there. Several jobs may run at once.
+"""
+HEADLESS_JUPYTER_JOBS_TEXT = """\
+- `execute_jupyter` must finish within the caller's time limit (a few
+  minutes); there are no background jobs here.
+"""
 JUPYTER_PROMPT = """
 JupyterLab (for analyses):
 - `execute_jupyter` runs Python in the user's JupyterLab, in the kernel of this
@@ -176,13 +190,7 @@ JupyterLab (for analyses):
   `figure_<n>.png`, and a Chemotion snippet's `result` as
   `chemotion_result_<n>.json`. Only for `read_file` and `list_files`: the
   folder is {exchange} on this computer.
-- `execute_jupyter` must finish within the user's time limit (a few minutes).
-  Longer calculations go to `start_jupyter_job`: a background job in its own
-  kernel that may run for hours or days. Its code must be self-contained
-  (imports, input from `exchange`, results saved into `exchange`). After
-  starting it, end your answer; a message with the job's outcome arrives when
-  it ends, and you continue from there. Several jobs may run at once.
-- For calculations (3D structures, conformers, optimisations, frequencies,
+{jobs}- For calculations (3D structures, conformers, optimisations, frequencies,
   free energies, redox potentials, pKa, spectra, NMR, ML potentials, crystals)
   read the jupyter-calculations skill first: it lists what is possible with pip
   packages, the tested recipes and their accuracy.
@@ -316,7 +324,9 @@ def system_prompt(exchange: Path | None = None, developer: bool = False, history
     version = f" (branch {branch})" if branch else f" (tag {tag})" if tag else ""
     prompt = SYSTEM_PROMPT.format(skills=skill_lines(jupyter=exchange is not None), api_version=version,
                                   **(HEADLESS_TEXT if headless else DESKTOP_TEXT))
-    prompt += JUPYTER_PROMPT.format(exchange=exchange) if exchange is not None else NO_JUPYTER_PROMPT
+    prompt += (JUPYTER_PROMPT.format(exchange=exchange,
+                                    jobs=HEADLESS_JUPYTER_JOBS_TEXT if headless else JUPYTER_JOBS_TEXT)
+               if exchange is not None else NO_JUPYTER_PROMPT)
     if developer:
         prompt += DEVELOPER_PROMPT.format(api_version=api_versions.installed_label() or "unknown")
     if history:

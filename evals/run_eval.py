@@ -81,6 +81,8 @@ PRELUDE = """\
 import json as _json
 _vars = _json.loads({variables!r})
 run, collection_path, setup, answer = _vars["run"], _vars["collection"], _vars["setup"], _vars["answer"]
+from pathlib import Path as _Path
+exchange = _Path(_vars["exchange"]) if _vars.get("exchange") else None
 _parts = [part for part in collection_path.split("/") if part]
 for _level in range(1, len(_parts) + 1):  # get_or_create_collection() creates the last level only
     collection = instance.get_root_collection().get_or_create_collection("/" + "/".join(_parts[:_level]))
@@ -97,14 +99,27 @@ SNAPSHOT_CODE = """\
 result = {{kind: [element.id for element in getattr(collection, getter)(per_page=100)]
           for kind, (getter, _) in {kinds!r}.items()}}
 """
+# The ELN's own "delete selection" (DELETE ui_state): it also deletes research
+# plans (ELN 3.1 has no REST DELETE for them) and the material samples of a
+# deleted reaction (the collection's sample list leaves those out). The
+# per-element REST DELETE is the fallback.
 DELETE_CODE = """\
+import requests
+_new = {new!r}
+_state = {{kind: {{"checkedAll": False, "checkedIds": ids, "uncheckedIds": []}} for kind, ids in _new.items()}}
+_state.update(currentCollection={{"id": collection.id}}, options={{"deleteSubsamples": True}}, selecteds=[])
 problems = []
-for kind, ids in {new!r}.items():
-    for element_id in ids:
-        try:
-            delete_element({kinds!r}[kind][1], element_id)
-        except Exception as exc:
-            problems.append(f"{{kind}} {{element_id}}: {{exc}}")
+try:
+    _response = requests.delete(f"{{instance.host_url}}/api/v1/ui_state/", json=_state, timeout=120,
+                                headers={{"Authorization": f"Bearer {{instance.token}}"}})
+    _response.raise_for_status()
+except Exception:
+    for kind, ids in _new.items():
+        for element_id in ids:
+            try:
+                delete_element({kinds!r}[kind][1], element_id)
+            except Exception as exc:
+                problems.append(f"{{kind}} {{element_id}}: {{exc}}")
 result = problems
 """
 
@@ -135,7 +150,7 @@ def load_tasks(path: Path, only: list[str] | None = None) -> tuple[dict, list[di
         if missing_files:
             raise ValueError(f"{path}: {task['id']}: attachment not found: {', '.join(missing_files)}")
         unknown = set(task.get("expect") or {}) - {"answer_contains", "answer_regex", "answer_not_contains",
-                                                   "check"}
+                                                   "check", "files"}
         if unknown:
             raise ValueError(f"{path}: {task['id']}: unknown expect keys {sorted(unknown)}")
     if only:
@@ -179,6 +194,16 @@ def answer_checks(expect: dict, answer: str) -> list[dict]:
     for pattern in [patterns] if isinstance(patterns, str) else patterns:
         checks.append({"check": f"answer matches /{pattern}/",
                        "ok": re.search(pattern, unicodedata.normalize("NFKC", answer or ""), re.I) is not None})
+    return checks
+
+
+def file_checks(expect: dict, exchange: str) -> list[dict]:
+    """`files`: glob patterns that must each match a file in the run's
+    exchange folder (what the agent saved there or in JupyterLab)."""
+    checks = []
+    for pattern in expect.get("files") or []:
+        found = sorted(path.name for path in Path(exchange).glob(pattern) if path.is_file()) if exchange else []
+        checks.append({"check": f"exchange has {pattern}", "ok": bool(found), "detail": ", ".join(found)})
     return checks
 
 
@@ -246,6 +271,9 @@ class Options:
     extra_body: dict = dataclasses.field(default_factory=lambda: dict(NO_CACHE))
     # The agent reports chemotion_api bugs it finds (report_api_bug, issues.py).
     report_bugs: bool = True
+    # Where the exchange folders of tasks with "jupyter": true go (one per
+    # run); None = no JupyterLab: those tasks are skipped.
+    exchange_dir: Path | None = None
 
 
 def _approver(mode: str):
@@ -292,7 +320,7 @@ def run_task(config: Config, task: dict, model: str, index: int, chemotion: Chem
              options: Options) -> dict:
     """One run of `task`; never raises for problems of the run itself."""
     run_tag = f"ev{secrets.token_hex(3)}"
-    variables = {"run": run_tag, "collection": options.collection, "setup": {}, "answer": ""}
+    variables = {"run": run_tag, "collection": options.collection, "setup": {}, "answer": "", "exchange": ""}
     record: dict = {"task": task["id"], "model": model, "run": index, "run_tag": run_tag,
                     "started": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
                     "success": False, "reasons": [], "error": "", "timed_out": False}
@@ -317,9 +345,18 @@ def run_task(config: Config, task: dict, model: str, index: int, chemotion: Chem
                    (task["prompt"] if isinstance(task["prompt"], list) else [task["prompt"]])]
         record["prompts"] = prompts
 
-        assistant = headless.ChemAssistent(dataclasses.replace(config, ai_model=model),
-                                           approve=_approver(options.approve), report_bugs=options.report_bugs)
+        jupyter = bool(task.get("jupyter"))
+        if jupyter and options.exchange_dir is None:
+            raise RuntimeError("the task needs JupyterLab (--jupyter)")
+        assistant = headless.ChemAssistent(
+            dataclasses.replace(config, ai_model=model), approve=_approver(options.approve),
+            report_bugs=options.report_bugs, jupyter=jupyter,
+            exchange_dir=options.exchange_dir / f"{task['id']}_{run_tag}" if jupyter else None)
         conversation = assistant.conversations.new_conversation()
+        if conversation.exchange is not None:
+            variables["exchange"] = str(conversation.exchange)
+            record["exchange"] = str(conversation.exchange)
+            record["notebook_url"] = conversation.notebook_url
         conversation._agent.extra_body = dict(options.extra_body)
         conversation._agent.report_origin = f"in an eval run (task `{task['id']}`, evals/run_eval.py)"
         execute = conversation._agent.execute
@@ -350,6 +387,11 @@ def run_task(config: Config, task: dict, model: str, index: int, chemotion: Chem
         record["error"] = (f"timed out after {int(task.get('timeout_s') or options.timeout_s)} s"
                            if record["timed_out"] else f"{type(exc).__name__}: {exc}")
     record["seconds"] = round(time.monotonic() - started, 3)
+    if conversation is not None:
+        try:
+            conversation.close()  # its JupyterLab kernel
+        except Exception as exc:
+            record["kernel_problem"] = f"{type(exc).__name__}: {exc}"
 
     usage = conversation._agent.usage if conversation is not None else []
     record["tokens"] = agent_module.usage_total(usage)
@@ -365,6 +407,7 @@ def run_task(config: Config, task: dict, model: str, index: int, chemotion: Chem
     if not record["error"]:
         variables["answer"] = record.get("answer", "")
         checks = answer_checks(expect, record["answer"])
+        checks += file_checks(expect, variables["exchange"])
         if expect.get("check"):
             outcome = chemotion.run(expect["check"], variables)
             verdict = outcome.get("result")
@@ -511,6 +554,23 @@ def test_instance_login() -> dict | None:
     return None
 
 
+def _with_jupyter(base: Config, choice: str | None) -> Config:
+    """--jupyter: a URL (token from …?token= or JUPYTER_TOKEN), "saved" for
+    the app's JupyterLab, or none (jupyter_url empty)."""
+    if not choice:
+        return dataclasses.replace(base, jupyter_url="")
+    if choice == "saved":
+        if not base.jupyter:
+            raise SystemExit("--jupyter saved: the app has no (complete) JupyterLab settings")
+        return base
+    from chemassistent.jupyter import split_url
+    url, token = split_url(choice)
+    token = token or os.environ.get("JUPYTER_TOKEN", "")
+    if not token:
+        raise SystemExit("--jupyter: give the token in the URL (…/lab?token=…) or as JUPYTER_TOKEN")
+    return dataclasses.replace(base, jupyter_url=url, jupyter_token=token, jupyter_password="")
+
+
 def build_config(args) -> Config:
     """The AI from the saved settings (or --ai-url / KI_TOOLBOX_API_KEY), the
     Chemotion of the test instance unless --saved-chemotion."""
@@ -529,6 +589,7 @@ def build_config(args) -> Config:
     # For the bug reports: the settings' token (Developer tab), else GITHUB_TOKEN.
     github_token = os.environ.get("GITHUB_TOKEN") or base.github_token or str(raw.get("github_token") or "")
     base = dataclasses.replace(base, github_token=github_token)
+    base = _with_jupyter(base, args.jupyter)
     if args.no_chemotion:
         return dataclasses.replace(base, url="", user="", password="")
     if args.saved_chemotion:
@@ -582,6 +643,9 @@ def parse_args(argv=None):
                            help="use the app's saved Chemotion instead of the test instance (tasks write data!)")
     chemotion.add_argument("--no-chemotion", action="store_true",
                            help="no Chemotion: only tasks without setup/check/cleanup can pass")
+    parser.add_argument("--jupyter", metavar="URL",
+                        help="JupyterLab for the tasks with \"jupyter\": true (…/lab?token=… or the URL with "
+                             "JUPYTER_TOKEN set), or \"saved\" for the app's; without it those tasks are skipped")
     parser.add_argument("--keep", action="store_true", help="do not delete what the runs created")
     parser.add_argument("--with-lessons", action="store_true",
                         help="give the agent the app's saved lessons (default: none, for reproducible runs)")
@@ -604,6 +668,13 @@ def main(argv=None) -> int:
     args = parse_args(argv)
     settings, tasks = load_tasks(args.tasks, args.only)
     config = build_config(args)
+    if not config.jupyter:
+        skipped = [t["id"] for t in tasks if t.get("jupyter")]
+        tasks = [t for t in tasks if not t.get("jupyter")]
+        if skipped:
+            print(f"Skipped (they need --jupyter): {', '.join(skipped)}", flush=True)
+        if not tasks:
+            raise SystemExit("No tasks left to run.")
     chemotion = None if args.no_chemotion else Chemotion(config)
     options = Options(approve=args.approve, timeout_s=args.timeout,
                       collection=str(settings.get("collection") or DEFAULT_COLLECTION), keep=args.keep,
@@ -615,11 +686,14 @@ def main(argv=None) -> int:
     now = datetime.datetime.now().astimezone()
     slug = re.sub(r"[^A-Za-z0-9.-]+", "-", "+".join(args.model))[:60]
     out = args.out or ROOT / "evals" / "results" / f"{now:%Y%m%d-%H%M%S}_{slug}"
+    if config.jupyter:
+        options.exchange_dir = out / "exchange"
     task_bytes = args.tasks.read_bytes()
     meta = {"started": now.isoformat(timespec="seconds"), "models": args.model, "runs": args.runs,
             "tasks_file": str(args.tasks), "tasks_sha256": hashlib.sha256(task_bytes).hexdigest()[:16],
             "tasks": [t["id"] for t in tasks], "approve": args.approve, "timeout_s": args.timeout,
             "ai_url": config.ai_url, "chemotion_url": config.url if chemotion else "",
+            "jupyter_url": config.jupyter_url,
             "collection": options.collection, "chemotionapi": _chemotionapi_label(), "commit": _git_commit(),
             "lessons": args.with_lessons, "extra_body": options.extra_body, "python": sys.version.split()[0],
             "report_bugs": options.report_bugs, "github_token": bool(config.github_token),

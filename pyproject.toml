@@ -13,6 +13,8 @@ dependencies = ["chemotion-api>=312,<500"]
 [project.optional-dependencies]
 # PDF text and page images for read_file/grep/view_page (documents.py).
 pdf = ["pypdfium2>=4.30,<6"]
+# execute_jupyter in a JupyterLab (ChemAssistent(jupyter=True), jupyter.py).
+jupyter = ["websocket-client>=1.6,<2"]
 
 [tool.setuptools]
 packages = ["chemassistent"]
