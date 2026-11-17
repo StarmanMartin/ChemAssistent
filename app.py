@@ -2276,7 +2276,7 @@ class AssistantWindow(Gtk.Window):
                     bridge.sync_up(notes)
                 return notes
             jupyter = (self.exchange, sync)
-        return {"jupyter": jupyter, "downloads": STATE_DIR / "downloads" / (self.conversation_id or "explorer")}
+        return {"jupyter": jupyter, "downloads": history.downloads_dir(self.conversation_id or "explorer")}
 
     def _explorer_selected(self, items: list[dict]) -> None:
         """The Explorer's selection: the chat's chip and the Details panel."""

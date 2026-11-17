@@ -33,6 +33,7 @@ from details_logic import (  # noqa: E402
     MAX_DOWNLOAD_BYTES, analysis_mention, file_mention, human_size, inherit_collection, jupyter_path, linked_mention,
     needs_confirmation, open_path, relative_to_exchange, sanitize_name,
 )
+import history  # noqa: E402
 from explorer import detail_rows  # noqa: E402
 
 MAX_DETAIL_ITEMS = 20
@@ -438,7 +439,11 @@ class DetailsPanel(Gtk.Box):
             if not expander.get_expanded() or loaded:
                 return
             loaded.append(True)
-            if analysis.get("preview"):
+            # By the preview's attachment id (stateless); ("analysis", id) only as a fallback:
+            # the helper knows that mapping only from its last details() answer.
+            if analysis.get("preview_attachment"):
+                self._load_preview("attachment", analysis["preview_attachment"], show_preview, number)
+            elif analysis.get("preview"):
                 self._load_preview("analysis", analysis.get("id"), show_preview, number)
             for file, slot in thumbs:
                 def show_thumb(image: dict, slot=slot) -> None:
@@ -560,7 +565,7 @@ class DetailsPanel(Gtk.Box):
                 return
             path = jupyter_path(jupyter[0], item, analysis, file)
         else:
-            downloads = targets.get("downloads") or Path(GLib.get_user_cache_dir()) / "chem-assistent" / "downloads"
+            downloads = targets.get("downloads") or history.downloads_dir("explorer")
             path = open_path(downloads, file)
             if path.exists() and file.get("size") is not None and path.stat().st_size == file.get("size"):
                 self._finished(path, mode, say, targets)

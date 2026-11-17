@@ -59,6 +59,20 @@ def test_delete_removes_the_exchange_folder(state_dir, monkeypatch):
     assert not folder.exists()
 
 
+def test_delete_removes_the_downloads_folder(state_dir):
+    """Files the Details panel downloaded for "Open" (M9) go with the conversation."""
+    conversation = new_id()
+    folder = history.downloads_dir(conversation)
+    folder.mkdir(parents=True)
+    (folder / "x.jdx").write_text("data")
+    save(conversation, "With a download", "m", [], [])
+
+    delete(conversation)
+
+    assert not folder.exists()
+    assert history.DOWNLOADS_DIR == state_dir / "downloads"  # never the real STATE_DIR
+
+
 def test_clear_counts_and_removes_everything(state_dir):
     for _ in range(3):
         save(new_id(), "A conversation", "m", [], [])
@@ -68,6 +82,7 @@ def test_clear_counts_and_removes_everything(state_dir):
     assert entries() == []
     assert list(history.HISTORY_DIR.glob("*.json")) == []
     assert not history.EXCHANGE_DIR.exists()
+    assert not history.DOWNLOADS_DIR.exists()
 
 
 def test_ids_cannot_leave_the_directory():
