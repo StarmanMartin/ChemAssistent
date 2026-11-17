@@ -210,7 +210,7 @@ class DetailsPanel(Gtk.Box):
         self.content.pack_start(head, False, False, 0)
         if model.get("subtitle"):
             self.content.pack_start(_label(model["subtitle"], "dim", selectable=True), False, False, 0)
-        self.content.pack_start(self._buttons(item, model.get("url") or item.get("url")), False, False, 0)
+        self.content.pack_start(self._buttons(item, item.get("url") or model.get("url"))  # the listing knows the route of shared collections, False, False, 0)
         image = self._image(model.get("image"))
         if image is not None:
             self.content.pack_start(image, False, False, 0)

@@ -594,7 +594,7 @@ class ExplorerPanel(Gtk.Box):
         """An element or collection row as {text (mention_text()), label,
         icon, url} plus the fields the Details panel shows (kind, id, type,
         type_label, short_label, name, collection = the collection's path,
-        shared); None for other rows."""
+        shared, and for elements collection_id and updated_at); None for other rows."""
         kind, data = self.store[row][KIND], self.store[row][DATA]
         if kind == ELEMENT:
             collection = self.store[self.store.iter_parent(row)][DATA]
@@ -604,7 +604,9 @@ class ExplorerPanel(Gtk.Box):
                     "icon": self.store[row][ICON], "url": data["url"], "kind": ELEMENT, "id": data["id"],
                     "type": data["type"], "type_label": type_label, "short_label": data.get("short_label") or "",
                     "name": data.get("name") or "", "collection": collection.get("path") or "",
-                    "shared": bool(collection.get("shared"))}
+                    "shared": bool(collection.get("shared")),
+                    # For the Details panel's detail view: its link and cache key.
+                    "collection_id": collection.get("id"), "updated_at": data.get("updated_at") or ""}
         if kind == COLLECTION:
             return {"text": mention_text("", None, data), "label": data["path"], "icon": self.store[row][ICON],
                     "url": data.get("url"), "kind": COLLECTION, "id": data.get("id"), "type": "",

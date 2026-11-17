@@ -449,7 +449,8 @@ store = Gtk.TreeStore(str, str, str, str, object)
 panel.store = store
 node = {"id": 3, "label": "B", "path": "A/B", "shared": True, "url": "u/c"}
 parent = store.append(None, ["", "", None, v.COLLECTION, node])
-element = {"id": 9, "type": "sample", "short_label": "API-9", "name": "Water", "url": "u/s"}
+element = {"id": 9, "type": "sample", "short_label": "API-9", "name": "Water", "url": "u/s",
+           "updated_at": "2026-11-17T10:00:00Z"}
 child = store.append(parent, ["", "", None, v.ELEMENT, element])
 print(json.dumps([panel.describe(parent), panel.describe(child)]))
 """
@@ -464,6 +465,8 @@ print(json.dumps([panel.describe(parent), panel.describe(child)]))
     assert (element["short_label"], element["name"], element["collection"], element["shared"]) == \
         ("API-9", "Water", "A/B", True)
     assert element["label"] == "API-9 Water" and element["url"] == "u/s"
+    # The Details panel's detail view: request args and cache key.
+    assert (element["collection_id"], element["updated_at"]) == (3, "2026-11-17T10:00:00Z")
 
 
 def test_icons_are_in_adwaita():
