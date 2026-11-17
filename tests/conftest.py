@@ -99,7 +99,37 @@ def chemotion(chemotion_login) -> dict:
                                                                  chemotion_login["password"])
     except Exception as exc:  # down, not set up, other credentials
         pytest.skip(f"the Chemotion test instance is not usable: {type(exc).__name__}: {exc}")
+    problem = version_mismatch(chemotion_login["url"])
+    if problem:
+        pytest.skip(problem)
     return chemotion_login
+
+
+def version_mismatch(url: str) -> str:
+    """Why the installed chemotion_api does not fit the instance's ELN, or "".
+
+    A release line vXYZ is made for ELN X.Y.Z (v312 -> 3.1.2, v401 -> 4.0.1).
+    The other client logs in fine and fails on later requests (e.g. v312
+    against ELN 4.0.1: 400 "id is invalid"), so the version is checked here.
+    "" also when either version is unknown.
+    """
+    import re
+    import urllib.request
+    from importlib import metadata
+
+    try:
+        package = metadata.version("chemotion_api")
+        with urllib.request.urlopen(f"{url}/about", timeout=10) as response:
+            page = response.read(500_000).decode("utf-8", errors="replace")
+    except (OSError, ValueError, metadata.PackageNotFoundError):
+        return ""
+    line = re.match(r"(\d{3,})", package)
+    server = re.search(r"Version:\s*v?(\d+)\.(\d+)\.(\d+)", page)
+    if not line or not server or line.group(1) == "".join(server.groups()):
+        return ""
+    return (f"chemotion_api {package} is made for ELN {'.'.join(line.group(1))}, the test instance runs "
+            f"{'.'.join(server.groups())}: install the matching chemotionapi release line "
+            f"(v{''.join(server.groups())}.*, e.g. ./setup_workspace.sh with that tag)")
 
 
 @pytest.fixture
