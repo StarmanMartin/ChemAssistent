@@ -2236,7 +2236,8 @@ class AssistantWindow(Gtk.Window):
         self.results = ResultsPanel()
         self.explorer = ExplorerPanel(open_url, open_settings, mention=self.chat.insert_mention,
                                       on_select=self._explorer_selected)
-        self.details = DetailsPanel(open_url, self.chat.insert_mention)
+        self.details = DetailsPanel(open_url, self.chat.insert_mention,
+                                   request=self.explorer.worker.request)
         saved = self.app.layout_saver.latest  # the last window's, even if not written yet
         if saved is None:
             try:  # the saved layout, without waiting for the keyring (no secrets needed)
