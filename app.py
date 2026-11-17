@@ -80,6 +80,7 @@ import app_control  # noqa: E402
 import history  # noqa: E402
 import hotkey  # noqa: E402
 import ipc  # noqa: E402
+import training  # noqa: E402
 import workspace  # noqa: E402
 from agent import (  # noqa: E402
     ATTACHMENT_NOTE, FAILED_TEXT, IMAGES_NOTE, MAX_ANSWER_CHARS, RAN_TEXT, STOPPED_NOTE, Agent, AgentError, clip,
@@ -387,6 +388,11 @@ class PendingRequest:
         # auto_reason says why auto-run was skipped (shown on the card).
         self.auto: str | None = None
         self.auto_reason = ""
+        # Teaching-data capture (training.py), a side channel: the agent's tool
+        # call id and function name, and the event the card fills in (None = not recorded).
+        self.call_id = ""
+        self.tool_name = ""
+        self.event: dict | None = None
 
     def answer(self, ok: bool, text: str) -> None:
         if not self.done.is_set():
@@ -656,6 +662,9 @@ TARGETS = {
                    "Remove this server from the settings", "change"),
 }
 MCP_TARGETS = ("mcp", "mcp-add", "mcp-remove")
+# The agent's function name per target (teaching data); "mcp" calls carry their own.
+TOOL_NAMES = {"chemotion": "execute_python", "jupyter": "execute_jupyter", "job": "start_jupyter_job",
+              "mcp-add": "add_mcp_server", "mcp-remove": "remove_mcp_server"}
 
 
 # --- result widgets ----------------------------------------------------------
@@ -1019,6 +1028,8 @@ class RequestCard(Gtk.Box):
             return
         reason = (reason if reason is not None else self.reason.get_text()).strip()
         self._lock()
+        if self.pending.event is not None:
+            training.decide(self.pending.event, "rejected", reject_reason=reason)
         self._set_state("failed", f"Rejected{': ' + reason if reason else ''}. The {self.noun} did not run.")
         self.pending.answer(
             False,
@@ -1056,6 +1067,10 @@ class RequestCard(Gtk.Box):
         result = outcome.get("result")
 
         self.outcome = outcome
+        if self.pending.event is not None:
+            decision = "auto" if self.pending.auto else "edited" if code != self.pending.code else "run"
+            training.decide(self.pending.event, decision, executed_code=code, ok=ok, error=error[:500],
+                            duration_s=round(elapsed, 3), auto_mode=self.pending.auto or "")
         self.on_result(self, result_page(stdout, error, result if ok else None, outcome))
 
         abandoned = self.pending.done.is_set() and self.pending.reply is None
@@ -1802,6 +1817,36 @@ class ChatPanel(Gtk.Box):
         for widget in self.user_widgets(text, attachments, selected):
             self._add(widget)
 
+    def add_rating(self, callback, value: int = 0) -> None:
+        """Good/Bad buttons below the current answer; `callback(1 | -1 | 0)`
+        (0 = taken back). Nothing when there is no answer widget."""
+        if self.answer is None:
+            return
+        self._render()
+        row = Gtk.Box(spacing=4)
+        buttons = {}
+        busy = False
+
+        def clicked(button: Gtk.ToggleButton, mine: int) -> None:
+            nonlocal busy
+            if busy:
+                return
+            busy = True
+            for other, widget in buttons.items():
+                widget.set_active(other == mine and button.get_active())
+            busy = False
+            callback(mine if button.get_active() else 0)
+
+        for mine, icon, tip in ((1, "face-smile-symbolic", "Good answer"), (-1, "face-sad-symbolic", "Bad answer")):
+            button = Gtk.ToggleButton(relief=Gtk.ReliefStyle.NONE, tooltip_text=tip)
+            button.set_image(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.MENU))
+            button.set_active(value == mine)
+            button.connect("toggled", clicked, mine)
+            buttons[mine] = button
+            row.pack_start(button, False, False, 0)
+        row.set_halign(Gtk.Align.START)
+        self._add(row)
+
     def append_text(self, delta: str) -> None:
         if self.answer is None:
             self.answer = self.answer_label()
@@ -1944,6 +1989,13 @@ class AssistantWindow(Gtk.Window):
         self.conversation_id: str | None = None
         self.conversation_title = ""
         self.saved_messages = 0  # how many messages history has; saves only on change
+        # Teaching data (training.py): recorded only for the built-in agent and while the setting is on.
+        self.recording = False
+        self.training_events: dict[str, dict] = {}
+        self.training_ratings: dict[int, int] = {}
+        self.training_turns: list[dict] = []
+        self.training_models: list[str] = []
+        self.training_dirty = False  # something besides the messages changed since the last record
         self.expanded = False
         self.closed = False
         self.loading = False  # a saved conversation waits for _grow() to be shown
@@ -2435,6 +2487,8 @@ class AssistantWindow(Gtk.Window):
         if self.agent is None or model == self.agent.config.ai_model:
             return
         self.agent.set_model(model)
+        if model not in self.training_models:
+            self.training_models.append(model)
         if self.model_label is not None:
             self.model_label.set_text(self._model_text(model))
         if self.chat is not None:
@@ -2475,6 +2529,17 @@ class AssistantWindow(Gtk.Window):
             )
         self.conversation_title = str(saved.get("title") or "") if saved else text
         self.auto_run = config.auto_run  # the header menu can change it for this conversation
+        self.recording = training.recording_enabled(config)
+        self.training_models = [config.ai_model]
+        if self.recording and saved:
+            record = training.load(self.conversation_id)
+            if record:
+                self.training_events = dict(record.get("events") or {})
+                self.training_ratings = {int(i): int(v) for i, v in (record.get("ratings") or {}).items()}
+                self.training_turns = list(record.get("turns") or [])
+                self.training_models = list((record.get("meta") or {}).get("models") or []) or self.training_models
+                if config.ai_model not in self.training_models:
+                    self.training_models.append(config.ai_model)
         self.stack.add_named(self._build_conversation(config.ai_model), "conversation")
         self.app.load_models(config)
         self.stack.show_all()
@@ -2531,7 +2596,11 @@ class AssistantWindow(Gtk.Window):
             return
         # Without the system prompt, view_page's images as text notes (no base64 on disk).
         messages = without_images(self.agent.messages[1:])
-        if len(messages) == self.saved_messages or not any(message.get("role") == "user" for message in messages):
+        if not any(message.get("role") == "user" for message in messages):
+            return
+        if self.recording and (len(messages) != self.saved_messages or self.training_dirty):
+            self._save_training()
+        if len(messages) == self.saved_messages:
             return
         roots = [str(path) for path in self.agent.attachments]  # not the agent's own roots
         try:
@@ -2541,6 +2610,49 @@ class AssistantWindow(Gtk.Window):
             LOG.warning("Could not save the conversation: %s", exc)
         else:
             self.saved_messages = len(messages)
+
+    def _save_training(self) -> None:
+        """Write the teaching-data record of this conversation (a small local
+        file, like the history); failures are only logged."""
+        agent = self.agent
+        if not self.recording or not isinstance(agent, Agent) or self.conversation_id is None:
+            return
+        try:
+            messages = without_images(agent.messages)
+            system_prompt = str(messages[0].get("content") or "") if messages else ""
+            meta = training.conversation_meta(
+                config=agent.config, model=agent.config.ai_model, models=list(self.training_models),
+                auto_run=self.auto_run, jupyter=self.jupyter is not None, system_prompt=system_prompt)
+            training.record(self.conversation_id, messages=messages, tools=agent.current_tools(),
+                            events=self.training_events, ratings=self.training_ratings,
+                            turns=self.training_turns, meta=meta)
+        except Exception as exc:  # noqa: BLE001 - recording must never disturb the conversation
+            LOG.warning("Could not record the training data: %s", exc)
+        else:
+            self.training_dirty = False
+
+    def _offer_rating(self) -> None:
+        """Under the answer that ended a turn: Good/Bad buttons (teaching data)."""
+        if not self.recording or self.agent is None:
+            return
+        for index in range(len(self.agent.messages) - 1, 0, -1):
+            message = self.agent.messages[index]
+            if message.get("role") == "assistant":
+                if not str(message.get("content") or "").strip():
+                    return
+                break
+        else:
+            return
+
+        def rate(value: int) -> None:
+            if value:
+                self.training_ratings[index] = value
+            else:
+                self.training_ratings.pop(index, None)
+            self.training_dirty = True
+            self._save_training()
+
+        self.chat.add_rating(rate, self.training_ratings.get(index, 0))
 
     def _send(self, text: str, attachments: list[str] | tuple[str, ...] = ()) -> None:
         if self.agent is None or self.agent.busy:
@@ -2600,6 +2712,11 @@ class AssistantWindow(Gtk.Window):
         elif kind == "done":
             self.chat.set_busy(False)
         if kind in ("done", "error", "stopped"):
+            if self.recording:
+                self.training_turns.append({"outcome": kind, "at": time.time()})
+                self.training_dirty = True
+                if kind == "done":
+                    self._offer_rating()
             self._save_history()
         if kind == "done":
             GLib.idle_add(self._deliver_jobs)  # a job may have ended during the turn
@@ -2613,6 +2730,8 @@ class AssistantWindow(Gtk.Window):
         result panel; returns the text for the model once the user ran or rejected it."""
         # Runs in the agent's thread: GTK only through GLib.idle_add.
         pending = PendingRequest(purpose, code, target, tool)
+        pending.call_id = str(getattr(self.agent, "current_call_id", "") or "")
+        pending.tool_name = tool if target == "mcp" else TOOL_NAMES.get(target, "execute_python")
         GLib.idle_add(self._show_request, pending)
         while not pending.done.wait(0.2):
             if cancelled.is_set():
@@ -2680,6 +2799,11 @@ class AssistantWindow(Gtk.Window):
                 pending.auto = "readonly"
             else:
                 pending.auto_reason = reason
+        if self.recording and pending.call_id:
+            pending.event = training.new_event(pending.call_id, pending.tool_name, pending.target,
+                                               pending.purpose, pending.code)
+            self.training_events[pending.call_id] = pending.event
+            self.training_dirty = True
         card = self.results.add_request(pending)
         if not pending.auto:
             self.dock.present("results")  # a waiting card is never hidden

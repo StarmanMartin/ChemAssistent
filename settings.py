@@ -20,6 +20,7 @@ import history  # noqa: E402
 import hotkey  # noqa: E402
 import issues  # noqa: E402
 import lessons  # noqa: E402
+import training  # noqa: E402
 import mcp_client  # noqa: E402
 from agent import AgentError, list_models  # noqa: E402
 from cli_agent import check_command, cli_models  # noqa: E402
@@ -384,6 +385,32 @@ class SettingsWindow(Gtk.Window):
         row = self._add_row(grid, row, "Conversation history", history_row)
         self._update_history_note()
 
+        self.training_data = Gtk.Switch(halign=Gtk.Align.START)
+        self.training_data.set_active(bool(self.data.get("training_data", False)))
+        row = self._add_row(grid, row, "Record teaching data (built-in agent)", self.training_data)
+        training_info = Gtk.Label(
+            label="Stores whole conversations of the built-in agent (not the CLI agents) for training smaller "
+                  "models: including ELN data the assistant saw, the code, your Run, Edit and Reject decisions "
+                  f"and your ratings. It stays on this computer in {training.TRAINING_DIR} until you export it. "
+                  "The export removes the Chemotion URL, your login and local paths, but not the ELN data "
+                  "itself (names, structures, values): check it before sharing.",
+            xalign=0, wrap=True, max_width_chars=60)
+        training_info.get_style_context().add_class("dim-label")
+        grid.attach(training_info, 1, row, 1, 1)
+        row += 1
+        self.training_note = Gtk.Label(xalign=0, wrap=True, max_width_chars=60, selectable=True)
+        self.training_note.get_style_context().add_class("dim-label")
+        self.export_button = Gtk.Button(label="Export training data…")
+        self.export_button.connect("clicked", self._on_export_training)
+        self.delete_training_button = Gtk.Button(label="Delete training data")
+        self.delete_training_button.connect("clicked", self._on_delete_training)
+        training_row = Gtk.Box(spacing=10)
+        training_row.pack_start(self.export_button, False, False, 0)
+        training_row.pack_start(self.delete_training_button, False, False, 0)
+        training_row.pack_start(self.training_note, False, False, 0)
+        row = self._add_row(grid, row, "Teaching data", training_row)
+        self._update_training_note()
+
         grid = self._page("Lessons", "What the assistant learned about its tools (chemotion_api, packages, "
                                      "JupyterLab): every conversation gets these notes. The assistant adds "
                                      "them after it fixed a failing snippet; edit or delete what is wrong.")
@@ -588,6 +615,7 @@ class SettingsWindow(Gtk.Window):
             "developer_mode": self.developer_mode.get_active(),
             "github_token": self.github_token.get_text().strip(),
             "history_access": self.history_access.get_active(),
+            "training_data": self.training_data.get_active(),
             "use_keyring": self.use_keyring.get_active(),
             "mcp_servers": [dict(spec) for spec in self.mcp_servers],
         }
@@ -1161,6 +1189,66 @@ class SettingsWindow(Gtk.Window):
         else:
             self._set_status(f"Deleted {deleted} conversation{'' if deleted == 1 else 's'}.")
         self._update_history_note()
+
+    def _update_training_note(self, text: str = "") -> None:
+        count = training.count()
+        self.training_note.set_text(text or f"{count} conversation{'' if count == 1 else 's'} recorded")
+        self.delete_training_button.set_sensitive(count > 0)
+
+    def _secret_values(self) -> list[str]:
+        """The secrets as the form holds them (they must not appear in an export)."""
+        self._store_agent_fields()
+        values = [entry.get_text() for entry in self.secret_entries.values()]
+        values += [str(self.agent_values.get(key) or "") for key in self.token_keys]
+        return [value for value in values if value]
+
+    def _on_export_training(self, _button: Gtk.Button) -> None:
+        chooser = Gtk.FileChooserNative.new("Export training data to…", self, Gtk.FileChooserAction.SELECT_FOLDER,
+                                            "Export", "Cancel")
+        if chooser.run() != Gtk.ResponseType.ACCEPT:
+            return
+        folder = chooser.get_filename()
+        if not folder:
+            return
+        private = {"url": self.url.get_text().strip(), "user": self.user.get_text().strip()}
+        secrets = self._secret_values()
+        self.export_button.set_sensitive(False)
+        self._update_training_note("Exporting…")
+
+        def worker() -> None:
+            try:
+                text = training.export(Path(folder), private=private, secrets=secrets).text()
+            except Exception as exc:  # noqa: BLE001 - shown to the user
+                text = f"Export failed: {exc}"
+            GLib.idle_add(self._export_done, text)
+
+        threading.Thread(target=worker, name="training-export", daemon=True).start()
+
+    def _export_done(self, text: str) -> bool:
+        self.export_button.set_sensitive(True)
+        self._update_training_note(text)
+        return False
+
+    def _on_delete_training(self, _button: Gtk.Button) -> None:
+        dialog = Gtk.MessageDialog(
+            transient_for=self, modal=True, message_type=Gtk.MessageType.QUESTION,
+            buttons=Gtk.ButtonsType.NONE, text="Delete all recorded training data?",
+        )
+        dialog.format_secondary_text("The recorded conversations in the training folder are deleted. "
+                                     "Exports you made earlier stay where you put them.")
+        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Delete", Gtk.ResponseType.ACCEPT).get_style_context().add_class("destructive-action")
+        answer = dialog.run()
+        dialog.destroy()
+        if answer != Gtk.ResponseType.ACCEPT:
+            return
+        try:
+            deleted = training.clear()
+        except OSError as exc:
+            self._set_status(f"Could not delete the training data: {exc}")
+        else:
+            self._set_status(f"Deleted {deleted} recorded conversation{'' if deleted == 1 else 's'}.")
+        self._update_training_note()
 
     def _save_lessons(self) -> str | None:
         """Write the edited lessons; a problem, or None."""
