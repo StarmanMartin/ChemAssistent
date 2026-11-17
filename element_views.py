@@ -4,13 +4,24 @@ a plain dict out that the panel only has to lay out.
 
     {"type", "id", "updated_at", "title", "subtitle", "url", "image": {"mime", "data"} | None,
      "sections": [{"title", "kind": "fields", "rows": [{"label", "value", "unit"}]}
-                  | {"title", "kind": "table", "columns": [...], "rows": [[...]]}
-                  | {"title", "kind": "text", "text"}],
+                  | {"title", "kind": "table", "columns": [...], "rows": [[...]],
+                     "targets": [{"type", "id"} | None, ...]}      # targets: optional, one per row
+                  | {"title", "kind": "text", "text", "markup"}   # markup: optional Pango markup
+                  | {"title", "kind": "image", "image": IMAGE}],
      "notes": [...]}
+
+    IMAGE = {"mime": "image/svg+xml", "data": "<svg...>"}
+          | {"mime": "image/png" | "image/jpeg" | "image/gif", "data": "<base64>", "encoding": "base64"}
 
 Every value is a string, already formatted; empty values and empty sections
 are left out here, never in the panel. A type without an adapter gives the
 stub `{"type", "id", "unsupported": True}`.
+
+Adapters are `(data, images, url) -> view model` in `ADAPTERS`; `IMAGE_REFS[type](data)`
+names the server paths the helper loads for it (`{key: "/images/..."}`, the loaded IMAGEs
+come back as `images[key]`). More types are added to both dicts by element_types.py.
+The shared builders (`fields`, `table`, `text`, `image_section`, `delta_markup`) are for
+every adapter.
 
 The sample follows the web client (ELN 4.0.1, details/samples/SampleDetails.js
 and propertiesTab/SampleForm.js): its labels, grouping, order, units and the
@@ -22,9 +33,10 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Callable
+from html import escape
 from typing import Any
 
-SUPPORTED = ("sample",)  # grows with the next milestones
 MAX_IMAGE_BYTES = 2_000_000
 IMAGE_MIME = "image/svg+xml"
 # Web client: MWPrecision (SampleDetails.js) and the numInput precisions of the amounts.
@@ -32,7 +44,7 @@ MW_DIGITS = 6
 PRECISION = {"g": 4, "l": 5, "mol": 4}
 # The metric prefix letters of Sample.metrics (utilities/metricPrefix.js): factor and symbol.
 PREFIXES = {"m": (1e3, "m"), "u": (1e6, "µ"), "n": (1.0, "")}
-IMAGE_TOO_LARGE = "The structure image is larger than 2 MB and is not shown."
+IMAGE_TOO_LARGE = "The structure image is larger than 2 MB and is not shown."  # = image_too_large("structure")
 
 
 def fmt_number(value: Any, digits: int = 4) -> str:
@@ -117,37 +129,201 @@ def _row(label: str, value: Any, unit: str = "") -> dict | None:
     return {"label": label, "value": text, "unit": unit}
 
 
-def _fields(title: str, rows: list) -> dict | None:
-    rows = [row for row in rows if row]
-    return {"title": title, "kind": "fields", "rows": rows} if rows else None
+def fields(title: str, rows: list) -> dict | None:
+    """A "fields" section from (label, value, unit) tuples (the unit may be
+    left out; a row can also be the dict `_row()` makes). Empty values and
+    None rows are dropped; None when nothing is left."""
+    made = []
+    for row in rows:
+        if isinstance(row, (tuple, list)):
+            row = _row(*row)
+        if row:
+            made.append(row)
+    return {"title": title, "kind": "fields", "rows": made} if made else None
 
 
-def _table(title: str, columns: list[str], rows: list[list[str]]) -> dict | None:
-    rows = [row for row in rows if any(cell for cell in row)]
-    return {"title": title, "kind": "table", "columns": columns, "rows": rows} if rows else None
+def table(title: str, columns: list[str], rows: list[list], targets: list | None = None) -> dict | None:
+    """A "table" section; cells become text, rows without any text are dropped
+    (their `targets` entry with them). `targets` = one `{"type", "id"}` or
+    None per row: a row with a target is clickable in the panel."""
+    kept, kept_targets = [], []
+    for index, row in enumerate(rows):
+        cells = [cell if isinstance(cell, str) else _text(cell) for cell in row]
+        if any(cell.strip() for cell in cells):
+            kept.append(cells)
+            kept_targets.append(targets[index] if targets and index < len(targets) else None)
+    if not kept:
+        return None
+    section: dict[str, Any] = {"title": title, "kind": "table", "columns": list(columns), "rows": kept}
+    if any(kept_targets):
+        section["targets"] = kept_targets
+    return section
+
+
+def text(title: str, value: Any) -> dict | None:
+    """A "text" section from a Quill delta (also as JSON text) or a string:
+    `text` is the plain text, `markup` the Pango markup; None when empty."""
+    plain = delta_text(value)
+    if not plain:
+        return None
+    return {"title": title, "kind": "text", "text": plain, "markup": delta_markup(value)}
+
+
+def image_section(title: str, image: dict | None) -> dict | None:
+    """An "image" section from an IMAGE dict (None when there is none)."""
+    if not image or not image.get("data"):
+        return None
+    return {"title": title, "kind": "image", "image": image}
+
+
+_fields = fields
+_table = table
+
+
+# -- Quill delta -> Pango markup ------------------------------------------------
+
+LINK_SCHEMES = ("http://", "https://", "mailto:")
+INLINE_TAGS = (("bold", "b"), ("italic", "i"), ("underline", "u"), ("strike", "s"), ("code", "tt"))
+
+
+def _span_markup(chunk: str, attributes: dict) -> str:
+    """One run of text with its inline attributes (Quill: bold, italic,
+    underline, strike, script sub/super, code, link)."""
+    out = escape(chunk, quote=False)
+    if not out:
+        return ""
+    opened, closed = [], []
+    for key, tag in INLINE_TAGS:
+        if attributes.get(key):
+            opened.append(f"<{tag}>")
+            closed.append(f"</{tag}>")
+    script = attributes.get("script")
+    if script in ("sub", "super"):
+        tag = "sub" if script == "sub" else "sup"
+        opened.append(f"<{tag}>")
+        closed.append(f"</{tag}>")
+    link = attributes.get("link")
+    if isinstance(link, str) and link.strip().lower().startswith(LINK_SCHEMES):
+        opened.append(f'<a href="{escape(link.strip(), quote=True)}">')
+        closed.append("</a>")
+    return "".join(opened) + out + "".join(reversed(closed))
+
+
+def _delta_ops(value: Any) -> list | None:
+    """The ops list of a delta / JSON text of one; None for a plain string."""
+    if isinstance(value, str):
+        stripped = value.lstrip()
+        if not (stripped.startswith("{") and '"ops"' in stripped):
+            return None
+        try:
+            value = json.loads(value, strict=False)
+        except ValueError:
+            return None
+    if isinstance(value, dict):
+        value = value.get("ops")
+    return value if isinstance(value, list) else None
+
+
+def delta_markup(value: Any) -> str:
+    """Pango markup of a Quill delta (`{"ops": [...]}`, also as JSON text) or
+    a plain string, everything escaped. Paragraphs are lines, headers bold
+    lines, bullet/ordered lists get "• " / "1. " (indented by `indent`),
+    code blocks and quotes stay lines; bold, italic, underline, strike,
+    sub/superscript, code and http(s)/mailto links are tags; embeds (images,
+    formulas) are left out. Empty lines at the end are dropped."""
+    if value is None or isinstance(value, bool):
+        return ""
+    ops = _delta_ops(value)
+    if ops is None:
+        if isinstance(value, (dict, list)):
+            return ""
+        return escape(str(value).strip(), quote=False)
+    lines: list[tuple[str, dict]] = []
+    current = ""
+    for op in ops:
+        insert = op.get("insert") if isinstance(op, dict) else op
+        if not isinstance(insert, str):
+            continue  # an embed
+        attributes = op.get("attributes") if isinstance(op, dict) and isinstance(op.get("attributes"), dict) else {}
+        parts = insert.split("\n")
+        for index, part in enumerate(parts):
+            current += _span_markup(part, attributes)
+            if index < len(parts) - 1:  # a line ends: its attributes are on this "\n"
+                lines.append((current, attributes))
+                current = ""
+    if current:
+        lines.append((current, {}))
+    out: list[str] = []
+    counters: dict[int, int] = {}
+    for body, attributes in lines:
+        list_kind = attributes.get("list")
+        indent = attributes.get("indent") if isinstance(attributes.get("indent"), int) else 0
+        if list_kind:
+            counters = {level: n for level, n in counters.items() if level <= indent}
+            if list_kind == "ordered":
+                counters[indent] = counters.get(indent, 0) + 1
+                marker = f"{counters[indent]}. "
+            else:
+                marker = "• "
+            body = "    " * indent + marker + body
+        else:
+            counters = {}
+            header = attributes.get("header")
+            if header and body:
+                body = f"<b>{body}</b>"
+        out.append(body)
+    while out and not out[-1].strip():
+        out.pop()
+    while out and not out[0].strip():
+        out.pop(0)
+    return "\n".join(out)
 
 
 def stub(type_name: str, data: dict | None = None) -> dict:
     return {"type": type_name, "id": (data or {}).get("id"), "unsupported": True}
 
 
-def view(type_name: str, data: dict, image: str | None = None, url: str = "") -> dict:
-    """The view model of one element from its raw JSON. `image` = SVG text or
-    None; a type without an adapter gives the stub."""
-    if type_name not in SUPPORTED:
+# adapter: the raw JSON, the loaded images ({key: IMAGE}) and the element's url -> view model
+Adapter = Callable[[dict, dict, str], dict]
+# which images to load for an element: its JSON -> {key: relative server path}
+Refs = Callable[[dict], dict]
+ADAPTERS: dict[str, Adapter] = {}
+IMAGE_REFS: dict[str, Refs] = {}
+SUPPORTED = ADAPTERS.keys()  # a live view: types added to ADAPTERS count at once
+# What the notes call each type's image ("The structure image could not be loaded.").
+IMAGE_NAMES = {"sample": "structure", "reaction": "scheme"}
+
+
+def view(type_name: str, data: dict, images: dict | str | None = None, url: str = "") -> dict:
+    """The view model of one element from its raw JSON. `images` = the loaded
+    IMAGEs by key (see IMAGE_REFS); a str is SVG text for the key "image"
+    (a sample's structure). A type without an adapter gives the stub."""
+    adapter = ADAPTERS.get(type_name)
+    if adapter is None:
         return stub(type_name, data)
-    if type_name == "sample":
-        return sample_view(data, image, url)
-    return stub(type_name, data)  # pragma: no cover - SUPPORTED and the branches above agree
+    if isinstance(images, str):
+        images = {"image": {"mime": IMAGE_MIME, "data": images}}
+    return adapter(data, images or {}, url)
 
 
-def _image(svg: str | None, notes: list[str]) -> dict | None:
-    if not svg:
+def _image(image: Any, notes: list[str], name: str = "structure") -> dict | None:
+    """An IMAGE for the model from SVG text or an IMAGE dict; one over the
+    size limit is left out with a note."""
+    if not image:
         return None
-    if len(svg.encode("utf-8")) > MAX_IMAGE_BYTES:
-        notes.append(IMAGE_TOO_LARGE)
+    if isinstance(image, str):
+        image = {"mime": IMAGE_MIME, "data": image}
+    data = image.get("data") or ""
+    if not data:
         return None
-    return {"mime": IMAGE_MIME, "data": svg}
+    if len(data.encode("utf-8")) > MAX_IMAGE_BYTES:
+        notes.append(image_too_large(name))
+        return None
+    return image
+
+
+def image_too_large(name: str) -> str:
+    return f"The {name} image is larger than 2 MB and is not shown."
 
 
 # -- sample -------------------------------------------------------------------
@@ -360,7 +536,7 @@ def _custom_fields(xref: dict) -> list:
     return rows
 
 
-def sample_view(data: dict, image: str | None = None, url: str = "") -> dict:
+def sample_view(data: dict, image: str | dict | None = None, url: str = "") -> dict:
     """The view model of a sample (see the module docstring)."""
     molecule = data.get("molecule") if isinstance(data.get("molecule"), dict) else {}
     xref = data.get("xref") if isinstance(data.get("xref"), dict) else {}
@@ -431,9 +607,7 @@ def sample_view(data: dict, image: str | None = None, url: str = "") -> dict:
         _fields("Other fields", _custom_fields(xref)),
         _solvent_section(data),
     ]
-    description = delta_text(data.get("description"))
-    if description:
-        sections.append({"title": "Description", "kind": "text", "text": description})
+    sections.append(text("Description", data.get("description")))
     sections += [
         # SampleDetails: the "Chemical identifiers" accordion (InChI, canonical SMILES) and the elemental composition
         _fields("Chemical identifiers", [
@@ -450,3 +624,194 @@ def sample_view(data: dict, image: str | None = None, url: str = "") -> dict:
             "title": sample_title(data), "subtitle": subtitle, "url": url or "",
             "image": _image(image, notes), "sections": [section for section in sections if section],
             "notes": notes}
+
+
+# -- reaction -----------------------------------------------------------------
+# details/reactions/: schemeTab (ReactionDetailsScheme: material groups, conditions,
+# temperature/pH/vessel/duration, type, role, description, purification, "Additional
+# information for publication and purification details" = observation) and
+# propertiesTab (dangerous products, TLC-Control).
+
+MATERIAL_GROUPS = (("starting_materials", "Starting materials"), ("reactants", "Reactants"),
+                   ("solvents", "Solvents"), ("products", "Products"),
+                   ("purification_solvents", "Purification solvents"))
+
+
+def _list_text(value: Any) -> str:
+    """purification / dangerous_products: a list (ELN 4) or text (ELN 3.1)."""
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(item).strip() for item in value if str(item).strip())
+    return _text(value)
+
+
+def _material_name(data: dict) -> str:
+    molecule = data.get("molecule") if isinstance(data.get("molecule"), dict) else {}
+    hash_ = data.get("molecule_name_hash") if isinstance(data.get("molecule_name_hash"), dict) else {}
+    for candidate in (data.get("name"), data.get("external_label"), hash_.get("label"), data.get("showed_name"),
+                      molecule.get("iupac_name")):
+        if candidate and str(candidate).strip():
+            return str(candidate).strip()
+    return ""
+
+
+def _material_kind(data: dict) -> str:
+    """Sample.js defaultAmountType: the target amount until a real one is set."""
+    return "target" if _number(data.get("target_amount_value")) and not _number(data.get("real_amount_value")) \
+        else "real"
+
+
+def _material_row(data: dict, product: bool) -> dict[str, str]:
+    kind = _material_kind(data)
+    value, unit = _stored_amount(data, kind)
+    cells = {"Label": _text(data.get("short_label")), "Name": _material_name(data),
+             "Ref": "yes" if data.get("reference") else "", "T/R": "", "Mass": "", "Volume": "",
+             "Amount": "", "Equiv.": "", "Yield": ""}
+    if value:
+        cells["T/R"] = "T" if kind == "target" else "R"
+        metrics = str(data.get("metrics") or "mmmm")
+        metrics = metrics if len(metrics) > 3 else "mmmm"
+        amounts = derived_amounts(data, value, unit)
+        for key, column, prefix in (("g", "Mass", metrics[0]), ("l", "Volume", metrics[3]),
+                                    ("mol", "Amount", metrics[2])):
+            number, shown = _scaled(amounts[key], key, prefix, PRECISION[key])
+            cells[column] = f"{number} {shown}" if number else ""
+    equivalent = _number(data.get("equivalent"))
+    if equivalent:
+        if product:  # the stored equivalent of a product is its yield (a fraction)
+            cells["Yield"] = f"{fmt_number(equivalent * 100, 0)} %"
+        else:
+            cells["Equiv."] = fmt_number(equivalent, 4)
+    return cells
+
+
+def _materials_table(title: str, materials: Any, product: bool) -> dict | None:
+    if not isinstance(materials, list):
+        return None
+    items = [item for item in materials if isinstance(item, dict)]
+    rows = [_material_row(item, product) for item in items]
+    columns = ["Label", "Name", "Ref", "T/R", "Mass", "Volume", "Amount", "Yield" if product else "Equiv."]
+    columns = [column for column in columns if column in ("Label", "Name") or any(row[column] for row in rows)]
+    targets = [{"type": "sample", "id": item["id"]} if isinstance(item.get("id"), int) else None for item in items]
+    return table(title, columns, [[row[column] for column in columns] for row in rows], targets)
+
+
+def _sbmm_table(data: dict) -> dict | None:
+    items = [item for item in data.get("reactant_sbmm_samples") or [] if isinstance(item, dict)]
+    rows = [[_text(item.get("short_label")), _text(item.get("name"))] for item in items]
+    targets = [{"type": "sequence_based_macromolecule_sample", "id": item["id"]}
+               if isinstance(item.get("id"), int) else None for item in items]
+    return table("Macromolecule reactants", ["Label", "Name"], rows, targets)
+
+
+def _temperature(data: dict) -> tuple[str, str]:
+    """Reaction.js temperature_display(_with_unit): the user's text, else the
+    lowest ~ highest value of the chart; a unit only for numbers."""
+    temperature = data.get("temperature") if isinstance(data.get("temperature"), dict) else {}
+    unit = str(temperature.get("valueUnit") or "\u00b0C")
+    user = str(temperature.get("userText") or "").strip()
+    if user:
+        numeric = all(_number(part.strip()) is not None for part in user.split("~"))
+        return user, unit if numeric else ""  # "reflux" has no unit
+    values = [_number(point.get("value")) for point in temperature.get("data") or [] if isinstance(point, dict)]
+    values = [value for value in values if value is not None]
+    if not values:
+        return "", ""
+    low, high = min(values), max(values)
+    return (fmt_number(low) if low == high else f"{fmt_number(low)} ~ {fmt_number(high)}"), unit
+
+
+def _duration(data: dict) -> str:
+    duration = _text(data.get("duration"))
+    if duration:
+        return duration
+    display = data.get("durationDisplay") if isinstance(data.get("durationDisplay"), dict) else {}
+    value = _text(display.get("dispValue"))
+    return f"{value} {display.get('dispUnit') or ''}".strip() if value else ""
+
+
+def _ph(data: dict) -> str:
+    value = fmt_number(data.get("ph_value"), 2)
+    if not value:
+        return ""
+    operator = str(data.get("ph_operator") or "=")
+    return value if operator == "=" else f"{operator} {value}"
+
+
+def _vessel(data: dict) -> tuple[str, str]:
+    vessel = data.get("vessel_size") if isinstance(data.get("vessel_size"), dict) else {}
+    amount = fmt_number(vessel.get("amount"), 4)
+    return (amount, str(vessel.get("unit") or "ml")) if amount and _number(vessel.get("amount")) else ("", "")
+
+
+def reaction_title(data: dict) -> str:
+    return str(data.get("name") or "").strip() or str(data.get("short_label") or "").strip()
+
+
+def reaction_view(data: dict, images: dict | None = None, url: str = "") -> dict:
+    """The view model of a reaction (see the module docstring); the scheme is
+    `images["scheme"]` (IMAGE_REFS). The variations are only counted."""
+    notes: list[str] = []
+    short_label = str(data.get("short_label") or "").strip()
+    status = str(data.get("status") or "").strip()
+    temperature, temperature_unit = _temperature(data)
+    vessel, vessel_unit = _vessel(data)
+    rf_value = data.get("rf_value")
+    sections = [_materials_table(title, data.get(role), role == "products") for role, title in MATERIAL_GROUPS
+                if role != "purification_solvents"]
+    sections += [
+        _sbmm_table(data),
+        text("Conditions", str(data.get("conditions") or "")),
+        fields("Reaction", [
+            ("Status", status),
+            ("Type (Name Reaction)", data.get("rxno")),
+            ("Role", data.get("role")),
+            ("Temperature", temperature, temperature_unit),
+            ("Time (duration)", _duration(data)),
+            ("Start", data.get("timestamp_start")),
+            ("Stop", data.get("timestamp_stop")),
+            ("pH", _ph(data)),
+            ("Vessel size", vessel, vessel_unit),
+            ("Labels", _user_labels(data)),
+        ]),
+        text("Description", data.get("description")),
+        fields("Purification", [("Purification", _list_text(data.get("purification")))]),
+        _materials_table("Purification solvents", data.get("purification_solvents"), False),
+        text("Additional information for publication and purification details", data.get("observation")),
+        fields("Safety", [("Dangerous products", _list_text(data.get("dangerous_products")))]),
+        fields("TLC-Control", [
+            ("Solvents (parts)", data.get("tlc_solvents")),
+            ("Rf-Value", "" if _number(rf_value) == 0 else rf_value),  # a new reaction stores 0.0
+        ]),
+        text("TLC-Description", data.get("tlc_description")),
+    ]
+    variations = data.get("variations")
+    if isinstance(variations, list) and variations:
+        notes.append(f"The reaction has {len(variations)} variation{'s' if len(variations) != 1 else ''}; "
+                     "they are not shown yet.")
+    subtitle = " \u00b7 ".join(part for part in (short_label, status) if part)
+    return {"type": "reaction", "id": data.get("id"), "updated_at": str(data.get("updated_at") or ""),
+            "title": reaction_title(data), "subtitle": subtitle, "url": url or "",
+            "image": _image((images or {}).get("scheme"), notes, IMAGE_NAMES["reaction"]),
+            "sections": [section for section in sections if section], "notes": notes}
+
+
+def reaction_images(data: dict) -> dict:
+    """The scheme the ELN stored (`reaction_svg_file`)."""
+    name = data.get("reaction_svg_file")
+    return {"scheme": f"/images/reactions/{name}"} if name else {}
+
+
+ADAPTERS["reaction"] = lambda data, images, url: reaction_view(data, images, url)
+IMAGE_REFS["reaction"] = reaction_images
+
+
+def sample_images(data: dict) -> dict:
+    """The sample's own drawing, else its molecule's (the key "image")."""
+    if data.get("sample_svg_file"):
+        return {"image": f"/images/samples/{data['sample_svg_file']}"}
+    molecule = data.get("molecule") if isinstance(data.get("molecule"), dict) else {}
+    return {"image": f"/images/molecules/{molecule['molecule_svg_file']}"} if molecule.get("molecule_svg_file") else {}
+
+
+ADAPTERS["sample"] = lambda data, images, url: sample_view(data, images.get("image"), url)
+IMAGE_REFS["sample"] = sample_images

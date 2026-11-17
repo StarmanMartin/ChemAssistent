@@ -45,6 +45,8 @@ class FakeServer:
         self.sample_json: dict[int, dict] = {}
         self.images: dict[str, bytes | int] = {}  # path -> content, or the HTTP status that fails
         self.requested: list[str] = []
+        self.content_types: dict[str, str] = {}  # path -> Content-Type of its answer
+        self.reaction_json: dict[int, dict] = {}
 
 
 class Unauthorized(Exception):
@@ -81,7 +83,12 @@ def fake_instance_factory(server: FakeServer):
                 json_data=data, _session=session,
                 load_image=lambda: fake_response(server, f"/images/samples/{data['sample_svg_file']}"))
 
+        def get_reaction(reaction_id):
+            session = SimpleNamespace(get=lambda path: fake_response(server, path))
+            return SimpleNamespace(json_data=server.reaction_json[reaction_id], _session=session)
+
         instance.get_sample = get_sample
+        instance.get_reaction = get_reaction
         instance.test_connection = test_connection
         instance.login = login
         instance.get_root_collection = get_root_collection
@@ -94,8 +101,9 @@ def fake_response(server: FakeServer, path: str):
     server.requested.append(path)
     found = server.images.get(path, 404)
     if isinstance(found, int):
-        return SimpleNamespace(status_code=found, content=b"", text="")
-    return SimpleNamespace(status_code=200, content=found, text="")
+        return SimpleNamespace(status_code=found, content=b"", text="", headers={})
+    headers = {"Content-Type": server.content_types[path]} if path in server.content_types else {}
+    return SimpleNamespace(status_code=200, content=found, text="", headers=headers)
 
 
 def make_listing(sync_parameter: bool):
@@ -593,9 +601,51 @@ def test_details_without_an_image_still_work(server):
     assert source.details("sample", 6)["image"] is None
 
 
+REACTION = {"id": 3, "name": "Esterification", "short_label": "R-3", "status": "Done", "reaction_svg_file": "r.svg",
+            "starting_materials": [{"id": 31, "short_label": "S-31", "name": "Acid", "target_amount_value": 1.0,
+                                    "target_amount_unit": "g", "equivalent": 1.0, "reference": True,
+                                    "molecule": {"molecular_weight": 122.0}}]}
+
+
+def test_details_of_a_reaction_loads_the_scheme_and_links_the_materials(server):
+    source, _ = source_for(server)
+    server.reaction_json[3] = dict(REACTION)
+    server.images["/images/reactions/r.svg"] = b"<svg>scheme</svg>"
+    model = source.details("reaction", 3, 10)
+    assert model["title"] == "Esterification" and model["subtitle"] == "R-3 \u00b7 Done"
+    assert model["url"] == "https://eln.example/mydb/collection/10/reaction/3"
+    assert model["image"] == {"mime": "image/svg+xml", "data": "<svg>scheme</svg>"}
+    starting = next(s for s in model["sections"] if s["title"] == "Starting materials")
+    assert starting["targets"] == [{"type": "sample", "id": 31}]
+    assert server.requested == ["/images/reactions/r.svg"]  # reading only
+
+
+def test_details_images_other_than_svg_are_base64_and_failures_become_notes(server):
+    source, _ = source_for(server)
+    server.reaction_json[3] = dict(REACTION, reaction_svg_file="r.png")
+    server.images["/images/reactions/r.png"] = b"\x89PNG\r\n"
+    server.content_types["/images/reactions/r.png"] = "image/png; charset=binary"
+    assert source.details("reaction", 3)["image"] == {"mime": "image/png", "data": "iVBORw0K", "encoding": "base64"}
+    server.images["/images/reactions/r.png"] = b"GIF"  # no known type and a name without an extension
+    server.reaction_json[3] = dict(REACTION, reaction_svg_file="r")
+    server.images["/images/reactions/r"] = b"data"
+    model = source.details("reaction", 3)
+    assert model["image"] is None and model["notes"] == ["The scheme image could not be loaded."]
+    server.reaction_json[3] = dict(REACTION, reaction_svg_file="gone.svg")
+    assert source.details("reaction", 3)["notes"] == ["The scheme image could not be loaded."]
+    server.images["/images/reactions/gone.svg"] = b"x" * (element_views.MAX_IMAGE_BYTES + 1)
+    assert source.details("reaction", 3)["notes"] == ["The scheme image is larger than 2 MB and is not shown."]
+
+
+def test_a_type_the_installed_api_has_no_getter_for_is_the_stub(server, monkeypatch):
+    source, _ = source_for(server)
+    monkeypatch.setitem(element_views.ADAPTERS, "wellplate", lambda data, images, url: {"type": "wellplate"})
+    assert source.details("wellplate", 3, 10) == {"type": "wellplate", "id": 3, "unsupported": True}
+
+
 def test_details_of_an_unsupported_type_is_the_stub_without_a_login(server):
     source, _ = source_for(server)
-    assert source.details("reaction", 3) == {"type": "reaction", "id": 3, "unsupported": True}
+    assert source.details("wellplate", 3) == {"type": "wellplate", "id": 3, "unsupported": True}
     assert server.logins == []
 
 
