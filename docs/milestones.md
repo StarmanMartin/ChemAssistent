@@ -131,7 +131,7 @@ chemotion_api's `UnsupportedServerVersion` text, v312 against ELN 4.0.1 only
 **Open owner decisions:** – (2026-11-17: fix by an Explorer helper process, not a restart button or module reloading)
 
 ## M6 – Element details: foundation and samples
-**Status:** planned
+**Status:** in progress
 **Goal:** selecting an element in the Explorer shows a detailed, read-only default view in the
 Details panel, starting with samples: their main properties as the ELN web client shows them,
 with the structure image. The view is built from a version-independent description, so it works
@@ -149,9 +149,7 @@ with both chemotionapi lines (v312 for ELN 3.1, v401 for ELN 4.0).
 - Large or missing images, slow servers and errors show a message, never block the window.
 - `pytest tests/` passes; adapters tested against the Chemotion test instance and against recorded JSON of both lines.
 **Issues:** –
-**Open owner decisions:**
-- Should "Mention in message" also put the shown values into the chat, or only the reference as today?
-- One element in detail: the first selected, or a list to pick from when several are selected?
+**Open owner decisions:** – (2026-11-17: "Mention in message" inserts the reference only, as today; several selected elements: their short cards, a click opens one in detail, with a way back)
 
 ## M7 – Element details: reactions and the other built-in types
 **Status:** planned
@@ -170,6 +168,7 @@ values as the web client's main tab.
 **Issues:** –
 **Open owner decisions:**
 - Materials of a reaction: link each to its sample's view (click → its details), or text only?
+  - Answer: Make it linked
 
 ## M8 – Element details: generic elements (LabIMotion)
 **Status:** planned
@@ -205,5 +204,7 @@ see what was measured, preview images and spectra, and open or hand files to the
 **Issues:** –
 **Open owner decisions:**
 - Where downloaded files go: the conversation's exchange folder (visible to JupyterLab) or a separate download folder?
+  -  Answer: Make a dropdown (1 - download to JupyterLab 2 - download to ...)
 - A size limit for automatic previews and downloads (e.g. 20 MB)?
+  -  Answer: yes 20MB is fine 
 
