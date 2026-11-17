@@ -131,7 +131,7 @@ chemotion_api's `UnsupportedServerVersion` text, v312 against ELN 4.0.1 only
 **Open owner decisions:** – (2026-11-17: fix by an Explorer helper process, not a restart button or module reloading)
 
 ## M6 – Element details: foundation and samples
-**Status:** in progress
+**Status:** done (#36)
 **Goal:** selecting an element in the Explorer shows a detailed, read-only default view in the
 Details panel, starting with samples: their main properties as the ELN web client shows them,
 with the structure image. The view is built from a version-independent description, so it works
