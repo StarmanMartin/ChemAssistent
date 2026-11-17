@@ -1,0 +1,54 @@
+{
+ "id": 4,
+ "type": "wellplate",
+ "name": "Old plate",
+ "short_label": "WP4",
+ "size": 96,
+ "description": {
+  "ops": [
+   {
+    "insert": "d\n"
+   }
+  ]
+ },
+ "readout_titles": [
+  "pH"
+ ],
+ "wells": [
+  {
+   "id": 1,
+   "position": {
+    "x": 1,
+    "y": 1
+   },
+   "sample": {
+    "id": 9,
+    "short_label": "S-9",
+    "external_label": "ext",
+    "decoupled": true,
+    "sum_formula": "C2H6O",
+    "molarity_value": 0.5
+   },
+   "readouts": [
+    {
+     "value": "7.2",
+     "unit": "pH"
+    }
+   ]
+  },
+  {
+   "id": 2,
+   "position": {
+    "x": 2,
+    "y": 1
+   },
+   "sample": null,
+   "readouts": [
+    {
+     "value": "",
+     "unit": ""
+    }
+   ]
+  }
+ ]
+}

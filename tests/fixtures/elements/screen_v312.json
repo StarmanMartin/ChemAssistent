@@ -1,0 +1,18 @@
+{
+ "id": 2,
+ "type": "screen",
+ "name": "Old screen",
+ "description": {
+  "ops": [
+   {
+    "insert": "\n"
+   }
+  ]
+ },
+ "conditions": "rt",
+ "requirements": "",
+ "collaborator": "",
+ "result": "",
+ "wellplates": [],
+ "research_plans": []
+}

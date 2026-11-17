@@ -1,0 +1,142 @@
+{
+ "can_copy": true,
+ "can_update": true,
+ "body": [
+  {
+   "id": "4d353e85-dc21-4b76-827a-2ec9c9266ed7",
+   "type": "richtext",
+   "title": "Text",
+   "value": {
+    "ops": [
+     {
+      "insert": "Main Header",
+      "attributes": {
+       "header": 2
+      }
+     }
+    ]
+   }
+  },
+  {
+   "id": "8a2e584d-01a7-4160-a594-865408b4ccfd",
+   "type": "image",
+   "value": {
+    "file_name": "kadi.png",
+    "public_name": "7a90991f-6016-4f2e-bd10-7d6e94906504"
+   }
+  },
+  {
+   "id": "e50b0c08-4360-4588-88c3-f37c9167c152",
+   "type": "richtext",
+   "title": "Text",
+   "value": {
+    "ops": [
+     {
+      "insert": "Super Text"
+     }
+    ]
+   }
+  },
+  {
+   "id": "10d60e90-010d-4bc6-a9c9-a52a6529b51f",
+   "type": "table",
+   "value": {
+    "rows": [
+     {
+      "a": "Mr. X",
+      "b": 30,
+      "c": false
+     },
+     {
+      "a": "Mr. Y",
+      "b": 40,
+      "c": ""
+     }
+    ],
+    "columns": [
+     {
+      "colId": "a",
+      "field": "a",
+      "headerName": "Name"
+     },
+     {
+      "colId": "b",
+      "field": "b",
+      "headerName": "Age"
+     },
+     {
+      "colId": "c",
+      "field": "c",
+      "headerName": "Is Developer"
+     }
+    ],
+    "startCollapsed": false
+   }
+  }
+ ],
+ "id": 7,
+ "is_restricted": false,
+ "name": "New Research Plan",
+ "preview_attachment": {
+  "id": 24,
+  "filename": "kadi.png",
+  "identifier": "7a90991f-6016-4f2e-bd10-7d6e94906504",
+  "content_type": "image/png",
+  "thumb": true,
+  "previewable": true,
+  "aasm_state": "non_jcamp",
+  "root_id": 24,
+  "filesize": 13310,
+  "edit_state": "not_editing",
+  "created_at": "16.11.2026, 10:19:41 +0000",
+  "updated_at": "16.11.2026, 10:19:41 +0000"
+ },
+ "type": "research_plan",
+ "comment_count": 0,
+ "user_labels": [],
+ "attachment_count": 2,
+ "research_plan_metadata": {
+  "id": null,
+  "research_plan_id": 7,
+  "title": "New Research Plan",
+  "doi": null,
+  "url": null,
+  "landing_page": null,
+  "type": null,
+  "description": null,
+  "publisher": null,
+  "publication_year": null,
+  "dates": null,
+  "creator": null,
+  "affiliation": null,
+  "contributor": null,
+  "language": null,
+  "rights": null,
+  "format": null,
+  "version": null,
+  "geo_location": null,
+  "funding_reference": null,
+  "subject": "",
+  "alternate_identifier": null,
+  "related_identifier": null
+ },
+ "tag": {
+  "taggable_data": {
+   "user_labels": [],
+   "collection_labels": [
+    {
+     "id": 157
+    }
+   ]
+  },
+  "taggable_id": 7,
+  "taggable_type": "ResearchPlan",
+  "created_at": "16.11.2026, 10:19:41 +0000",
+  "updated_at": "16.11.2026, 10:19:41 +0000"
+ },
+ "wellplates": [],
+ "segments": [],
+ "short_label": "API-RP7",
+ "created_at": "16.11.2026, 10:19:41 +0000",
+ "updated_at": "16.11.2026, 10:19:41 +0000"
+}
