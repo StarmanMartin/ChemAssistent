@@ -1,16 +1,18 @@
 """The chemotionapi versions the workspace can be set up with (stdlib).
 
 A version is a release tag of the chemotionapi repository that starts with
-"v" and at least three digits (v312.0.1); other tags (0.3.32, ...) are older
-releases the app does not support. setup_workspace.sh records the installed
-tag in TAG_FILE. Run as a script it serves the installers:
+"v" and at least three digits (v312.1.1); other tags (0.3.32, ...) are older
+releases the app does not support. A tag vXYZ.a.b belongs to the release line
+XYZ, made for the Chemotion ELN X.Y.Z (v312.1.1 -> ELN 3.1.2): users pick the
+ELN version (or it is read from the server's /about page) and release_for()
+finds the release. setup_workspace.sh records the installed tag in TAG_FILE.
+Run as a script it serves the installers:
 
-    python api_versions.py choose <workspace dir>   # asks on a terminal
-    python api_versions.py default <workspace dir>  # never asks
+    python api_versions.py default <workspace dir>
+    python api_versions.py choose <workspace dir>   # alias of default
 
-Both print the tag to use on stdout: the installed one if it is still
-released, else the newest (CHEMOTION_API_TAG preselects another); `choose`
-lists the released tags on stderr and reads the answer from stdin.
+It prints the tag to use on stdout: CHEMOTION_API_TAG if set, else the
+installed one if it is still released, else the newest. It never asks.
 
 In developer mode (config `developer_mode`) the settings also offer the
 repository's branches; setup_workspace.sh --branch records an installed
@@ -20,9 +22,13 @@ from __future__ import annotations
 
 import os
 import re
+import ssl
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
+from typing import NamedTuple
 
 if __package__:
     from .config import WORKSPACE_DIR
@@ -111,34 +117,128 @@ def default_tag(tags: list[str], current: str) -> str:
     return current if current in tags else tags[0]
 
 
-def choose(tags: list[str], default: str, ask=input, out=sys.stderr) -> str:
-    """Lists `tags` and asks for one (number or tag; empty = `default`)."""
-    print("chemotion_api versions:", file=out)
-    for number, tag in enumerate(tags, 1):
-        print(f"  {number:>2}) {tag}{'  (default)' if tag == default else ''}", file=out)
-    while True:
+class Release(NamedTuple):
+    tag: str      # the release to install
+    eln: str      # the ELN version of its line
+    exact: bool   # False: the line of a lower ELN version
+
+
+def line_of(tag: str) -> str:
+    """The release line of a tag: "v312.1.1" -> "312"; "" when unusable."""
+    match = re.match(r"v(\d{3,})", tag.strip())
+    return match.group(1) if match else ""
+
+
+def eln_of(tag: str) -> str:
+    """The ELN version a tag is made for: "v312.1.1" -> "3.1.2"; "" when the
+    line is not three digits."""
+    line = line_of(tag)
+    return ".".join(line) if len(line) == 3 else ""
+
+
+def eln_key(version: str) -> tuple:
+    """"3.1.2" -> (3, 1, 2); ValueError unless X.Y.Z of digits."""
+    if not re.fullmatch(r"\d+\.\d+\.\d+", version.strip()):
+        raise ValueError(f"not an ELN version: {version!r}")
+    return tuple(int(part) for part in version.strip().split("."))
+
+
+def eln_versions(tags: list[str]) -> list[str]:
+    """The ELN versions that have a release line, newest first."""
+    found = {eln_of(tag) for tag in tags}
+    found.discard("")
+    return sorted(found, key=eln_key, reverse=True)
+
+
+def clean_eln_version(version: str) -> str:
+    """"v4.0.1 (abc)" -> "4.0.1"."""
+    words = version.strip().split()
+    return words[0].removeprefix("v") if words else ""
+
+
+def release_for(eln_version: str, tags: list[str]) -> Release:
+    """The highest release of the line of `eln_version`; without such a line
+    the highest of the nearest lower line (exact=False)."""
+    version = clean_eln_version(eln_version)
+    try:
+        wanted = eln_key(version)
+    except ValueError:
+        raise VersionError(f"“{eln_version}” is not an ELN version like 4.0.1") from None
+    lines: dict[tuple, str] = {}
+    for tag in tags:
+        eln = eln_of(tag)
+        if eln and (eln_key(eln) not in lines or version_key(tag) > version_key(lines[eln_key(eln)])):
+            lines[eln_key(eln)] = tag
+    if wanted in lines:
+        return Release(lines[wanted], version, True)
+    lower = [key for key in lines if key < wanted]
+    if not lower:
+        raise VersionError(f"No chemotionapi release for ELN {version} or an older ELN version")
+    tag = lines[max(lower)]
+    return Release(tag, eln_of(tag), False)
+
+
+def parse_eln_version(page: str) -> str:
+    """The ELN version from its /about page ("Version: v4.0.1" -> "4.0.1"),
+    or ""."""
+    match = re.search(r"Version:\s*v?(\d+(?:\.\d+)*)", page)
+    return match.group(1) if match else ""
+
+
+def server_eln_version(url: str, verify_tls: bool = True, timeout: float = 10) -> str:
+    """The ELN version of the server at `url`, read from its public /about
+    page. VersionError with a short reason."""
+    context = None if verify_tls else ssl._create_unverified_context()
+    try:
+        with urllib.request.urlopen(f"{url.rstrip('/')}/about", timeout=timeout, context=context) as response:
+            page = response.read(500_000).decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        raise VersionError(f"/about answered HTTP {exc.code}") from None
+    except (OSError, ValueError) as exc:
+        reason = getattr(exc, "reason", None) or exc
+        raise VersionError(f"{url} is not reachable ({reason})") from None
+    version = parse_eln_version(page)
+    if not version:
+        raise VersionError("/about names no version")
+    return version
+
+
+def check_installed(eln_version: str, tags: list[str] | None, installed: str) -> str:
+    """A warning when the installed release does not fit the server's ELN
+    version, else "" (also when it cannot be judged: nothing or a branch
+    installed, a version that is no X.Y.Z). `tags` None = the releases are
+    not known (offline)."""
+    if not installed or not line_of(installed):
+        return ""
+    version = clean_eln_version(eln_version)
+    try:
+        wanted = eln_key(version)
+    except ValueError:
+        return ""
+    installed_eln = eln_of(installed)
+    described = f"{installed} (for ELN {installed_eln})" if installed_eln else installed
+    if tags is not None:
         try:
-            answer = ask(f"Version to install [{default}]: ").strip()
-        except EOFError:
-            return default
-        if not answer:
-            return default
-        if answer.isdigit() and 1 <= int(answer) <= len(tags):
-            return tags[int(answer) - 1]
-        if answer in tags:
-            return answer
-        print(f"“{answer}” is none of the versions above.", file=out)
-
-
-def ask_on_stderr(prompt: str) -> str:
-    # input() prompts on stdout, which the installer captures.
-    print(prompt, end="", file=sys.stderr, flush=True)
-    return input()
+            expected = release_for(version, tags)
+        except VersionError:
+            return ""
+        if line_of(installed) == line_of(expected.tag):
+            return ""
+        return (f"Your Chemotion runs ELN {version}, but chemotionapi {described} is installed, "
+                f"so the assistant's code may fail. Install {expected.tag} (Settings \u2192 Chemotion).")
+    if not installed_eln:
+        return ""
+    have = eln_key(installed_eln)
+    if have == wanted or (have < wanted and have[0] == wanted[0]):
+        return ""   # the same line, or possibly the nearest lower one
+    return (f"Your Chemotion runs ELN {version}, but chemotionapi {described} is installed, "
+            f"so the assistant's code may fail. Install a release for ELN {version} or the "
+            f"nearest lower ELN version (Settings \u2192 Chemotion).")
 
 
 def main(argv: list[str]) -> int:
     if len(argv) != 3 or argv[1] not in ("choose", "default"):
-        print("Usage: python api_versions.py choose|default <workspace dir>", file=sys.stderr)
+        print("Usage: python api_versions.py default|choose <workspace dir>", file=sys.stderr)
         return 2
     current = installed_tag(Path(argv[2]))
     try:
@@ -157,8 +257,6 @@ def main(argv: list[str]) -> int:
     except VersionError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
-    if argv[1] == "choose" and sys.stdin.isatty() and not os.environ.get(TAG_ENV):
-        tag = choose(tags, tag, ask=ask_on_stderr)
     print(tag)
     return 0
 

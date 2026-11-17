@@ -40,6 +40,8 @@ ICON_FILE = Path(__file__).with_name("chem-assistent.svg")
 SETUP_WORKSPACE = Path(__file__).with_name("setup_workspace.sh")
 # Fetch, pip install and the API reference of another chemotion_api version.
 SETUP_TIMEOUT_S = 900
+# The URL field paused this long: read the server's ELN version.
+DETECT_DELAY_MS = 800
 
 # The URL offered in the agents' URL field.
 AGENT_URLS = {"api": KI_TOOLBOX_URL, "gemini": GEMINI_URL, "ollama": OLLAMA_URL}
@@ -146,29 +148,41 @@ class SettingsWindow(Gtk.Window):
         # The chemotion_api release in the workspace (setup_workspace.sh, a
         # bash script); the Windows bundle comes with its own.
         installed = api_versions.installed_label()
+        # What the server runs (server_eln_version(), a thread) and the user's own choice.
+        self.eln_detected, self.eln_error, self.eln_url = "", "", ""
+        self.detect_request = 0  # _detect_eln(): the URL its worker answers
+        self.detect_timer = 0
+        self.api_choice: str | None = None  # combo id the user picked; None: the detected / installed one
+        self.api_filling = False
+        self.api_install_text = ""
+        self.api_busy, self.api_tags, self.api_branches, self.api_error = True, [], [], ""
+        self.api_note = Gtk.Label(xalign=0, wrap=True, max_width_chars=60, selectable=True)
+        self.api_note.get_style_context().add_class("dim-label")
         if WINDOWS:
+            self.api_busy = False
             version_label = Gtk.Label(label=installed or "unknown", xalign=0, selectable=True)
             row = self._add_row(grid, row, "chemotion_api version", version_label)
         else:
             self.api_version = Gtk.ComboBoxText(hexpand=True)
-            self.api_version.connect("changed", lambda *_: self._update_api_button())
+            self.api_version.connect("changed", self._on_api_choice)
             self.api_install_button = Gtk.Button(label="Install", sensitive=False)
             self.api_install_button.set_tooltip_text(
-                "Fetch this version (or, in developer mode, the head of this branch) of chemotion_api, "
-                "install it and rebuild the API reference for the assistant. Applies to the next snippet "
-                "and the next conversation.")
+                "Install the newest chemotionapi release for this Chemotion version (in developer mode: "
+                "this release, or the head of this branch) and rebuild the API reference for the assistant. "
+                "Applies to the next snippet and the next conversation.")
             self.api_install_button.connect("clicked", self._on_install_api)
             version_box = Gtk.Box(spacing=8)
             version_box.pack_start(self.api_version, True, True, 0)
             version_box.pack_start(self.api_install_button, False, False, 0)
-            row = self._add_row(grid, row, "chemotion_api version", version_box)
-            self.api_note = Gtk.Label(xalign=0, wrap=True, max_width_chars=60)
-            self.api_note.get_style_context().add_class("dim-label")
-            grid.attach(self.api_note, 1, row, 1, 1)
-            row += 1
-            self.api_busy, self.api_tags, self.api_branches = True, [], []
-            self.api_note.set_text(f"Installed: {installed or 'unknown'}. Loading the released versions...")
+            row = self._add_row(grid, row, "Chemotion version", version_box)
+            self.api_row_label = grid.get_child_at(0, row - 1)  # "chemotion_api version" in developer mode
+        grid.attach(self.api_note, 1, row, 1, 1)
+        row += 1
+        self._update_api_note()
+        if not WINDOWS:
             threading.Thread(target=self._api_tags_worker, daemon=True).start()
+        self.url.connect("changed", lambda *_: self._schedule_detect())
+        self._detect_eln()
 
         grid, row = self._page("AI agent", "The built-in agent against an OpenAI-compatible API, Google "
                                            "Gemini or Ollama, or a CLI agent."), 1
@@ -971,37 +985,171 @@ class SettingsWindow(Gtk.Window):
 
     def _api_tags_done(self, tags: list[str], branches: list[str], error: str) -> bool:
         self.api_busy = False
-        self.api_tags, self.api_branches = tags, branches
-        self._fill_api_versions(error)
+        self.api_tags, self.api_branches, self.api_error = tags, branches, error
+        self._fill_api_versions()
         return False
 
-    def _fill_api_versions(self, error: str = "") -> None:
-        """The released tags, in developer mode also the branches (id "branch:<name>")."""
-        tags, branches = self.api_tags, self.api_branches if self.developer_mode.get_active() else []
-        tag, branch = api_versions.installed_tag(), api_versions.installed_branch()
-        installed = api_versions.installed_label() or "unknown"
-        self.api_version.remove_all()
-        for name in tags:
-            self.api_version.append(name, f"{name} (installed)" if name == tag else name)
-        for name in branches:
-            self.api_version.append(f"branch:{name}", f"branch {name}" + (" (installed)" if name == branch else ""))
-        active = f"branch:{branch}" if branch in branches else tag if tag in tags else (tags[0] if tags else None)
-        self.api_version.set_active_id(active)
-        if error:
-            self.api_note.set_text(f"Installed: {installed}. Cannot list the released versions: {error}")
-        elif not tags:
-            self.api_note.set_text(f"Installed: {installed}. No released version found.")
-        else:
-            more = f" and {len(branches)} branch{'' if len(branches) == 1 else 'es'}" if branches else ""
-            self.api_note.set_text(f"Installed: {installed}. "
-                                   f"{len(tags)} released version{'' if len(tags) == 1 else 's'}{more}.")
+    def _release(self, eln: str) -> "api_versions.Release | None":
+        """The release for ELN version `eln`, None without tags or a line."""
+        try:
+            return api_versions.release_for(eln, self.api_tags) if self.api_tags else None
+        except api_versions.VersionError:
+            return None
+
+    def _fill_api_versions(self) -> None:
+        """Developer mode: the released tags and the branches (id "branch:<name>"). Else the ELN
+        versions with a release (id = ELN version)."""
+        self.api_filling = True
+        try:
+            self.api_version.remove_all()
+            tag, branch = api_versions.installed_tag(), api_versions.installed_branch()
+            tags = self.api_tags
+            if self.developer_mode.get_active():
+                branches = self.api_branches
+                for name in tags:
+                    self.api_version.append(name, f"{name} (installed)" if name == tag else name)
+                for name in branches:
+                    self.api_version.append(f"branch:{name}",
+                                            f"branch {name}" + (" (installed)" if name == branch else ""))
+                active = self.api_choice if self.api_choice in tags or str(self.api_choice).startswith("branch:") \
+                    else f"branch:{branch}" if branch in branches else tag if tag in tags else \
+                    (tags[0] if tags else None)
+            else:
+                ids = api_versions.eln_versions(tags)
+                for eln in ids:
+                    release = self._release(eln)
+                    if release is None:
+                        continue
+                    mark = " (installed)" if release.tag == tag and not branch else ""
+                    self.api_version.append(eln, f"{eln} → chemotionapi {release.tag}{mark}")
+                detected = self._release(self.eln_detected) if self.eln_detected else None
+                installed_eln = api_versions.eln_of(tag) if tag and not branch else ""
+                active = next((choice for choice in (self.api_choice, detected.eln if detected else None,
+                                                     installed_eln, ids[0] if ids else None)
+                               if choice in ids), None)
+            self.api_version.set_active_id(active)
+            self.api_row_label.set_text("chemotion_api version" if self.developer_mode.get_active()
+                                        else "Chemotion version")
+        finally:
+            self.api_filling = False
         self._update_api_button()
+        self._update_api_note()
+
+    def _on_api_choice(self, _combo: Gtk.ComboBoxText) -> None:
+        if not self.api_filling:
+            self.api_choice = self.api_version.get_active_id()
+            self.api_install_text = ""  # the last install's message belongs to the old choice
+        self._update_api_button()
+        self._update_api_note()
+
+    def _selected_ref(self) -> str:
+        """What Install installs: a tag, "branch:<name>" or "" (nothing chosen)."""
+        chosen = self.api_version.get_active_id()
+        if not chosen or self.developer_mode.get_active() or chosen.startswith("branch:"):
+            return chosen or ""
+        release = self._release(chosen)
+        return release.tag if release else ""
 
     def _update_api_button(self) -> None:
-        self.api_install_button.set_sensitive(not self.api_busy and bool(self.api_version.get_active_id()))
+        if WINDOWS:
+            return
+        ref = self._selected_ref()
+        if ref.startswith("branch:"):
+            current = api_versions.installed_branch() == ref.removeprefix("branch:")
+        else:
+            current = ref == api_versions.installed_tag() and not api_versions.installed_branch()
+        self.api_install_button.set_sensitive(not self.api_busy and bool(ref) and not current)
+        self.api_install_button.set_label("Installed" if ref and current else "Install")
+
+    def _update_api_note(self) -> None:
+        installed = api_versions.installed_label() or "unknown"
+        tag = api_versions.installed_tag()
+        lines = []
+        if self.api_install_text:
+            lines.append(self.api_install_text)
+        elif tag and not api_versions.installed_branch() and api_versions.eln_of(tag):
+            lines.append(f"Installed: chemotionapi {tag} (for ELN {api_versions.eln_of(tag)}).")
+        else:
+            lines.append(f"Installed: {installed}.")
+        if self.eln_detected:
+            line = f"Your Chemotion ({self.eln_url}) runs ELN {self.eln_detected}."
+            release = self._release(self.eln_detected)
+            if release is not None and not release.exact:
+                line += (f" There is no release for it yet, the nearest lower one is for ELN {release.eln}.")
+            lines.append(line)
+            warning = ""
+            if not api_versions.installed_branch():
+                try:
+                    warning = api_versions.check_installed(self.eln_detected, self.api_tags or None, tag)
+                except api_versions.VersionError:
+                    warning = ""
+            if warning:
+                warning = warning.replace(" (Settings \u2192 Chemotion)", "")  # we are there
+                lines.append(warning + (" This build ships one release; builds for other versions come later."
+                                        if WINDOWS else ""))
+        elif self.eln_error:
+            lines.append(f"Could not read the Chemotion version: {self.eln_error}")
+        if not WINDOWS:
+            if self.api_busy:
+                lines.append("Loading the released versions...")
+            elif self.api_error:
+                lines.append(f"Cannot list the released versions: {self.api_error}")
+            elif not self.api_tags:
+                lines.append("No released version found.")
+            elif self.developer_mode.get_active():
+                count = len(self.api_branches)
+                more = f" and {count} branch{'' if count == 1 else 'es'}" if count else ""
+                lines.append(f"{len(self.api_tags)} released version{'' if len(self.api_tags) == 1 else 's'}{more}.")
+        self.api_note.set_text("\n".join(lines))
+
+    def _schedule_detect(self) -> None:
+        """The URL field changed: detect the ELN version once typing paused."""
+        if self.detect_timer:
+            GLib.source_remove(self.detect_timer)
+        self.detect_timer = GLib.timeout_add(DETECT_DELAY_MS, self._detect_timeout)
+
+    def _detect_timeout(self) -> bool:
+        self.detect_timer = 0
+        self._detect_eln()
+        return False
+
+    def _detect_eln(self) -> None:
+        """Read the server's ELN version in a thread (a stale answer is dropped)."""
+        url = self.url.get_text().strip().rstrip("/")
+        self.detect_request += 1
+        request, verify = self.detect_request, self.verify_tls.get_active()
+        if not url.lower().startswith(("http://", "https://")) or " " in url:
+            self.eln_detected, self.eln_error, self.eln_url = "", "", ""
+            self._after_detect()
+            return
+
+        def worker() -> None:
+            try:
+                version, error = api_versions.server_eln_version(url, verify), ""
+            except api_versions.VersionError as exc:
+                version, error = "", str(exc)
+            GLib.idle_add(self._detect_done, request, url, version, error)
+
+        threading.Thread(target=worker, name="eln-version", daemon=True).start()
+
+    def _detect_done(self, request: int, url: str, version: str, error: str) -> bool:
+        if request == self.detect_request:  # not the answer to an earlier URL
+            self.eln_detected, self.eln_error, self.eln_url = version, error, url
+            if version:
+                self.api_choice = None  # the detected version is preselected again
+            self._after_detect()
+        return False
+
+    def _after_detect(self) -> None:
+        if WINDOWS:
+            self._update_api_note()
+        elif not self.api_busy:
+            self._fill_api_versions()
+        else:
+            self._update_api_note()  # the list is not there yet; it applies the detection
 
     def _on_install_api(self, _button: Gtk.Button) -> None:
-        ref = self.api_version.get_active_id()
+        ref = self._selected_ref()
         if self.api_busy or not ref:
             return
         self.api_busy = True
@@ -1009,7 +1157,8 @@ class SettingsWindow(Gtk.Window):
         self.api_version.set_sensitive(False)
         self.developer_mode.set_sensitive(False)  # it refills the list
         label = f"branch {ref.removeprefix('branch:')}" if ref.startswith("branch:") else ref
-        self.api_note.set_text(f"Installing chemotion_api {label}, this takes a minute...")
+        self.api_install_text = f"Installing chemotion_api {label}, this takes a minute..."
+        self._update_api_note()
         threading.Thread(target=self._install_api_worker, args=(ref, label), daemon=True).start()
 
     def _install_api_worker(self, ref: str, label: str) -> None:
@@ -1032,8 +1181,8 @@ class SettingsWindow(Gtk.Window):
     def _install_api_done(self, text: str) -> bool:
         self.api_version.set_sensitive(True)
         self.developer_mode.set_sensitive(True)
-        self._api_tags_done(self.api_tags, self.api_branches, "")  # moves "(installed)"
-        self.api_note.set_text(text)
+        self.api_install_text = text
+        self._api_tags_done(self.api_tags, self.api_branches, self.api_error)  # moves "(installed)"
         return False
 
     # --- Test connection ----------------------------------------------------
@@ -1073,6 +1222,8 @@ class SettingsWindow(Gtk.Window):
         self.testing = False
         self.test_button.set_sensitive(True)
         self._set_status(text)
+        if text.startswith("Connection OK"):
+            self._detect_eln()
         return False
 
     def _update_secret_note(self) -> None:

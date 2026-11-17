@@ -7,7 +7,7 @@
 # the app from GitHub, e.g.
 #   curl -fsSL https://raw.githubusercontent.com/StarmanMartin/ChemAssistent/main/install.sh | bash
 # CHEM_ASSISTENT_REPO and CHEM_ASSISTENT_REF choose another repository or branch,
-# CHEMOTION_API_TAG the chemotionapi version (else the script asks).
+# CHEMOTION_API_TAG the chemotionapi version (else the installed one, or the newest).
 set -euo pipefail
 
 APP_NAME="chem-assistent"
@@ -154,10 +154,11 @@ if ! "$venv_python" -c 'import gi; gi.require_version("Gtk", "3.0"); from gi.rep
   exit 1
 fi
 
-# chemotionapi with its skills, and the API reference for the agent. The
-# version is asked for on a terminal (default: the installed one, else the
-# newest release); CHEMOTION_API_TAG chooses it without asking.
-chemotion_tag="$(with_terminal "$venv_python" "$APP_DIR/api_versions.py" choose "$APP_DIR/workspace")"
+# chemotionapi with its skills, and the API reference for the agent: the
+# installed release is kept, a fresh install gets the newest one (the
+# settings' Chemotion tab picks the release that fits the ELN version);
+# CHEMOTION_API_TAG chooses another.
+chemotion_tag="$("$venv_python" "$APP_DIR/api_versions.py" default "$APP_DIR/workspace")"
 "$APP_DIR/setup_workspace.sh" "$APP_DIR" "$venv_python" "$chemotion_tag"
 
 # --- Configuration ----------------------------------------------------------
