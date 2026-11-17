@@ -35,7 +35,9 @@ import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gdk, GLib, GObject, Gtk, Pango  # type: ignore  # noqa: E402
 
-from explorer import PER_PAGE, ExplorerError, ExplorerSource, ExplorerWorker, mention_text  # noqa: E402
+import api_versions  # noqa: E402
+from config import WINDOWS  # noqa: E402
+from explorer import PER_PAGE, ExplorerError, ExplorerProxy, ExplorerWorker, mention_text  # noqa: E402
 
 # TreeStore columns.
 ICON, TEXT, TOOLTIP, KIND, DATA = range(5)
@@ -82,7 +84,7 @@ class ExplorerPanel(Gtk.Box):
     (tests); `deliver` how answers reach the main loop (default GLib.idle_add)."""
 
     def __init__(self, open_url: Callable[[str], None], open_settings: Callable[[], None],
-                 source: ExplorerSource | None = None,
+                 source=None,
                  deliver: Callable[[Callable[[], None]], object] | None = None,
                  mention: Callable[[str], None] | None = None,
                  on_select: Callable[[list[dict]], None] | None = None) -> None:
@@ -92,8 +94,8 @@ class ExplorerPanel(Gtk.Box):
         self.mention = mention  # puts a text into the chat input; None: no "Mention" entry
         self.on_select = on_select  # gets the selection (selection_items()) when it changes
         self.deliver = deliver or GLib.idle_add
-        self.worker = ExplorerWorker(source or ExplorerSource(), self.deliver)
-        self.types: list[dict] = []  # ExplorerSource.types()
+        self.worker = ExplorerWorker(source or ExplorerProxy(), self.deliver)
+        self.types: list[dict] = []  # ExplorerSource.types() (through the proxy)
         self.enabled: list[str] = []  # the type names shown, in the order of self.types
         # Opened collections (collection_key()): their row and the types requested there.
         self.opened: dict[tuple, tuple[Gtk.TreeRowReference, set[str]]] = {}
@@ -105,6 +107,8 @@ class ExplorerPanel(Gtk.Box):
         self.checks: dict[str, Gtk.CheckButton] = {}  # the popover's, per type
         self.started = False
         self.closed = False
+        self.release = ""  # the chemotionapi release the error text suggests
+        self.installing = False
 
         toolbar = Gtk.Box(spacing=6, border_width=6)
         self.status = Gtk.Label(xalign=0)
@@ -141,6 +145,10 @@ class ExplorerPanel(Gtk.Box):
         self.settings_button.connect("clicked", lambda *_: self.open_settings())
         self.settings_button.set_no_show_all(True)
         buttons.pack_start(self.settings_button, False, False, 0)
+        self.change_button = Gtk.Button()
+        self.change_button.connect("clicked", lambda *_: self._change_release())
+        self.change_button.set_no_show_all(True)
+        buttons.pack_start(self.change_button, False, False, 0)
         self.problem.pack_start(buttons, False, False, 0)
         self.problem.set_no_show_all(True)
         self.pack_start(self.problem, False, False, 0)
@@ -354,7 +362,40 @@ class ExplorerPanel(Gtk.Box):
         for child in self.problem.get_children():  # show_all() skips a no_show_all widget itself
             child.show_all()
         self.settings_button.set_visible("settings" in message)
+        self.release = "" if WINDOWS else getattr(message, "release", "")
+        self.change_button.set_label(f"Change to {self.release}")
+        self.change_button.set_sensitive(not self.installing)
+        self.change_button.set_visible(bool(self.release))
         self.problem.show()
+
+    def _change_release(self) -> None:
+        """Installs the suggested chemotionapi release (a thread: it takes a
+        minute), then loads the tree again; the proxy restarts its helper."""
+        release = self.release
+        if self.installing or not release:
+            return
+        self.installing = True
+        self.change_button.set_sensitive(False)
+        self.status.set_text(f"Installing chemotionapi {release}, this takes a minute…")
+
+        def install() -> None:
+            try:
+                ok, text = api_versions.install(release)
+            except Exception as exc:  # the thread must always report back
+                ok, text = False, f"Installing {release} failed: {exc}"
+            self.deliver(lambda: self._install_done(ok, text) and False)
+
+        threading.Thread(target=install, name="explorer-install", daemon=True).start()
+
+    def _install_done(self, ok: bool, text: str) -> None:
+        self.installing = False
+        if self.closed:
+            return
+        self.change_button.set_sensitive(True)
+        self.status.set_text(text)
+        if ok:
+            self.refresh()
+            self.status.set_text(text)
 
     def _add_collection(self, parent: Gtk.TreeIter | None, node: dict) -> None:
         if node["id"] is None:  # "Shared with me"
