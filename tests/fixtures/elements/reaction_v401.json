@@ -1,0 +1,504 @@
+{
+ "can_copy": true,
+ "can_update": true,
+ "description": {
+  "ops": [
+   {
+    "insert": "Stir for **2 h**.\n"
+   }
+  ]
+ },
+ "id": 51,
+ "is_restricted": false,
+ "observation": {
+  "ops": [
+   {
+    "insert": "Colourless oil.\n"
+   }
+  ]
+ },
+ "products": [
+  {
+   "can_copy": true,
+   "can_publish": true,
+   "can_update": true,
+   "decoupled": false,
+   "inventory_sample": false,
+   "external_label": "",
+   "id": 579,
+   "is_restricted": false,
+   "molecular_mass": 0.0,
+   "molecule": {
+    "boiling_point": null,
+    "cano_smiles": "CCOC(=O)c1ccccc1",
+    "cas": [],
+    "density": 0.0,
+    "exact_molecular_weight": 150.06807956,
+    "id": 23,
+    "inchikey": "MTZQAGJQAFMTAQ-UHFFFAOYSA-N",
+    "inchistring": "InChI=1S/C9H10O2/c1-2-11-9(10)8-6-4-3-5-7-8/h3-7H,2H2,1H3",
+    "is_partial": false,
+    "iupac_name": "ethyl benzoate",
+    "melting_point": null,
+    "molecular_weight": 150.1745,
+    "molecule_svg_file": "dcfa407e6c7827cefec402d47292e6002655810a06f9f1360f46acaa7dd966cb85d434a3b3525ee829a8fa49286a6decb11952bea36d290e02105806307806a2.svg",
+    "molfile_version": "V2000",
+    "names": [
+     "ethyl benzoate",
+     "benzoic acid ethyl ester"
+    ],
+    "sum_formular": "C9H10O2",
+    "molecule_names": [
+     {
+      "id": 57,
+      "description": "sum_formular",
+      "name": "C9H10O2",
+      "created_at": "17.11.2026, 14:53:00 +0000",
+      "updated_at": "17.11.2026, 14:53:00 +0000"
+     },
+     {
+      "id": 58,
+      "description": "iupac_name",
+      "name": "ethyl benzoate",
+      "created_at": "17.11.2026, 14:53:00 +0000",
+      "updated_at": "17.11.2026, 14:53:00 +0000"
+     },
+     {
+      "id": 59,
+      "description": "iupac_name",
+      "name": "benzoic acid ethyl ester",
+      "created_at": "17.11.2026, 14:53:00 +0000",
+      "updated_at": "17.11.2026, 14:53:00 +0000"
+     }
+    ]
+   },
+   "sum_formula": "",
+   "type": "sample",
+   "dry_solvent": false,
+   "gas_type": "off",
+   "gas_phase_data": null,
+   "user_labels": [],
+   "weight_percentage": null,
+   "molecule_name_hash": {
+    "label": "ethyl benzoate",
+    "value": 58,
+    "desc": "iupac_name",
+    "mid": 23
+   },
+   "showed_name": "ethyl benzoate",
+   "_contains_residues": false,
+   "boiling_point": "-Infinity...Infinity",
+   "children_count": 0,
+   "density": 0.0,
+   "description": "",
+   "is_top_secret": false,
+   "location": "",
+   "melting_point": "-Infinity...Infinity",
+   "metrics": "mmm",
+   "molarity_unit": "M",
+   "molarity_value": 0.0,
+   "name": "Ethyl benzoate",
+   "parent_id": null,
+   "purity": 1.0,
+   "real_amount_unit": "mol",
+   "real_amount_value": 0.004,
+   "residues": [],
+   "sample_svg_file": null,
+   "short_label": "API-515",
+   "solvent": [],
+   "stereo": {
+    "abs": "any",
+    "rel": "any"
+   },
+   "target_amount_unit": "mol",
+   "target_amount_value": null,
+   "xref": {},
+   "sample_type": "Micromolecule",
+   "created_at": "17.11.2026, 14:53:02 +0000",
+   "updated_at": "17.11.2026, 14:53:02 +0000",
+   "coefficient": 1.0,
+   "equivalent": 0.4884853599999999,
+   "position": 0,
+   "reference": false,
+   "show_label": true,
+   "waste": false,
+   "conversion_rate": null,
+   "weight_percentage_reference": null
+  }
+ ],
+ "purification_solvents": [],
+ "reactants": [
+  {
+   "can_copy": true,
+   "can_publish": true,
+   "can_update": true,
+   "decoupled": false,
+   "inventory_sample": false,
+   "external_label": "",
+   "id": 577,
+   "is_restricted": false,
+   "molecular_mass": 0.0,
+   "molecule": {
+    "boiling_point": null,
+    "cano_smiles": "CCO",
+    "cas": [
+     "64-17-5"
+    ],
+    "density": 0.0,
+    "exact_molecular_weight": 46.041864812,
+    "id": 7,
+    "inchikey": "LFQSCWFLJHTTHZ-UHFFFAOYSA-N",
+    "inchistring": "InChI=1S/C2H6O/c1-2-3/h3H,2H2,1H3",
+    "is_partial": false,
+    "iupac_name": "ethanol",
+    "melting_point": null,
+    "molecular_weight": 46.068439999999995,
+    "molecule_svg_file": "900b4a9c25b9c4be0531bd9fa2804aa833d58a007cd468ac9faabdc87e316c2dc9342d57ed21ac104c10ccce5cc1b2f9b40df4d37bb4e360ef47966666090a3a.svg",
+    "molfile_version": "V2000",
+    "names": [
+     "ethanol"
+    ],
+    "sum_formular": "C2H6O",
+    "molecule_names": [
+     {
+      "id": 15,
+      "description": "sum_formular",
+      "name": "C2H6O",
+      "created_at": "16.11.2026, 10:16:47 +0000",
+      "updated_at": "16.11.2026, 10:16:47 +0000"
+     },
+     {
+      "id": 16,
+      "description": "iupac_name",
+      "name": "ethanol",
+      "created_at": "16.11.2026, 10:16:48 +0000",
+      "updated_at": "16.11.2026, 10:16:48 +0000"
+     },
+     {
+      "id": 49,
+      "description": "defined by user 7",
+      "name": "API test name 49984b",
+      "created_at": "16.11.2026, 10:19:53 +0000",
+      "updated_at": "16.11.2026, 10:19:53 +0000"
+     }
+    ]
+   },
+   "sum_formula": "",
+   "type": "sample",
+   "dry_solvent": false,
+   "gas_type": "off",
+   "gas_phase_data": null,
+   "user_labels": [],
+   "weight_percentage": null,
+   "molecule_name_hash": {
+    "label": "ethanol",
+    "value": 16,
+    "desc": "iupac_name",
+    "mid": 7
+   },
+   "showed_name": "ethanol",
+   "_contains_residues": false,
+   "boiling_point": "-Infinity...Infinity",
+   "children_count": 0,
+   "density": 0.0,
+   "description": "",
+   "is_top_secret": false,
+   "location": "",
+   "melting_point": "-Infinity...Infinity",
+   "metrics": "mmmm",
+   "molarity_unit": "M",
+   "molarity_value": 0.0,
+   "name": "Ethanol",
+   "parent_id": 574,
+   "purity": 1.0,
+   "real_amount_unit": "mol",
+   "real_amount_value": null,
+   "residues": [],
+   "sample_svg_file": null,
+   "short_label": "reactant",
+   "solvent": [],
+   "stereo": {
+    "abs": "any",
+    "rel": "any"
+   },
+   "target_amount_unit": "mol",
+   "target_amount_value": 0.01637715406660294,
+   "xref": {
+    "inventory_label": null
+   },
+   "sample_type": "Micromolecule",
+   "created_at": "17.11.2026, 14:53:01 +0000",
+   "updated_at": "17.11.2026, 14:53:02 +0000",
+   "coefficient": 1.0,
+   "equivalent": 2.0,
+   "position": 0,
+   "reference": false,
+   "show_label": false,
+   "waste": false,
+   "conversion_rate": null,
+   "weight_percentage_reference": null
+  }
+ ],
+ "reactant_sbmm_samples": [],
+ "role": "parts",
+ "solvents": [
+  {
+   "can_copy": true,
+   "can_publish": true,
+   "can_update": true,
+   "decoupled": false,
+   "inventory_sample": false,
+   "external_label": "Toluene",
+   "id": 578,
+   "is_restricted": false,
+   "molecular_mass": 0.0,
+   "molecule": {
+    "boiling_point": null,
+    "cano_smiles": "Cc1ccccc1",
+    "cas": [],
+    "density": 0.0,
+    "exact_molecular_weight": 92.062600256,
+    "id": 24,
+    "inchikey": "YXFVVABEGXRONW-UHFFFAOYSA-N",
+    "inchistring": "InChI=1S/C7H8/c1-7-5-3-2-4-6-7/h2-6H,1H3",
+    "is_partial": false,
+    "iupac_name": "toluene",
+    "melting_point": null,
+    "molecular_weight": 92.13842000000001,
+    "molecule_svg_file": "a64290668c2fae6a4cdd847e73569a29594e8d691cb87f141d2f42be8e82f6102add1973a131b9deaa54857112df1239fba14cceab8a2f7b283b0947861c0923.svg",
+    "molfile_version": "V2000",
+    "names": [
+     "toluene",
+     "methylbenzene"
+    ],
+    "sum_formular": "C7H8",
+    "molecule_names": [
+     {
+      "id": 60,
+      "description": "sum_formular",
+      "name": "C7H8",
+      "created_at": "17.11.2026, 14:53:01 +0000",
+      "updated_at": "17.11.2026, 14:53:01 +0000"
+     },
+     {
+      "id": 61,
+      "description": "iupac_name",
+      "name": "toluene",
+      "created_at": "17.11.2026, 14:53:01 +0000",
+      "updated_at": "17.11.2026, 14:53:01 +0000"
+     },
+     {
+      "id": 62,
+      "description": "iupac_name",
+      "name": "methylbenzene",
+      "created_at": "17.11.2026, 14:53:01 +0000",
+      "updated_at": "17.11.2026, 14:53:01 +0000"
+     }
+    ]
+   },
+   "sum_formula": "",
+   "type": "sample",
+   "dry_solvent": false,
+   "gas_type": "off",
+   "gas_phase_data": null,
+   "user_labels": [],
+   "weight_percentage": null,
+   "molecule_name_hash": {
+    "label": "toluene",
+    "value": 61,
+    "desc": "iupac_name",
+    "mid": 24
+   },
+   "showed_name": "toluene",
+   "_contains_residues": false,
+   "boiling_point": "-Infinity...Infinity",
+   "children_count": 0,
+   "density": 0.87,
+   "description": "",
+   "is_top_secret": false,
+   "location": "",
+   "melting_point": "-Infinity...Infinity",
+   "metrics": "mmmm",
+   "molarity_unit": "M",
+   "molarity_value": 0.0,
+   "name": null,
+   "parent_id": null,
+   "purity": 1.0,
+   "real_amount_unit": "l",
+   "real_amount_value": null,
+   "residues": [],
+   "sample_svg_file": null,
+   "short_label": "solvent",
+   "solvent": [],
+   "stereo": {
+    "abs": "any",
+    "rel": "any"
+   },
+   "target_amount_unit": "l",
+   "target_amount_value": 0.0,
+   "xref": {},
+   "sample_type": "Micromolecule",
+   "created_at": "17.11.2026, 14:53:02 +0000",
+   "updated_at": "17.11.2026, 14:53:02 +0000",
+   "coefficient": 1.0,
+   "equivalent": null,
+   "position": 0,
+   "reference": false,
+   "show_label": false,
+   "waste": false,
+   "conversion_rate": null,
+   "weight_percentage_reference": null
+  }
+ ],
+ "starting_materials": [
+  {
+   "can_copy": true,
+   "can_publish": true,
+   "can_update": true,
+   "decoupled": false,
+   "inventory_sample": false,
+   "external_label": "",
+   "id": 576,
+   "is_restricted": false,
+   "molecular_mass": 0.0,
+   "molecule": {
+    "boiling_point": null,
+    "cano_smiles": "OC(=O)c1ccccc1",
+    "cas": [],
+    "density": 0.0,
+    "exact_molecular_weight": 122.036779432,
+    "id": 22,
+    "inchikey": "WPYMKLBDIGXBTP-UHFFFAOYSA-N",
+    "inchistring": "InChI=1S/C7H6O2/c8-7(9)6-4-2-1-3-5-6/h1-5H,(H,8,9)",
+    "is_partial": false,
+    "iupac_name": "benzoic acid",
+    "melting_point": null,
+    "molecular_weight": 122.12133999999999,
+    "molecule_svg_file": "1745a95b74a3a88552770286ff7389485c2f4c2edfe88008087806deb07145ee4eba67141f6b357252064e583482834b0473c5faa27dff5dc2cddca744d324b5.svg",
+    "molfile_version": "V2000",
+    "names": [
+     "benzoic acid"
+    ],
+    "sum_formular": "C7H6O2",
+    "molecule_names": [
+     {
+      "id": 55,
+      "description": "sum_formular",
+      "name": "C7H6O2",
+      "created_at": "17.11.2026, 14:33:48 +0000",
+      "updated_at": "17.11.2026, 14:33:48 +0000"
+     },
+     {
+      "id": 56,
+      "description": "iupac_name",
+      "name": "benzoic acid",
+      "created_at": "17.11.2026, 14:33:49 +0000",
+      "updated_at": "17.11.2026, 14:33:49 +0000"
+     }
+    ]
+   },
+   "sum_formula": "",
+   "type": "sample",
+   "dry_solvent": false,
+   "gas_type": "off",
+   "gas_phase_data": null,
+   "user_labels": [],
+   "weight_percentage": null,
+   "molecule_name_hash": {
+    "label": "benzoic acid",
+    "value": 56,
+    "desc": "iupac_name",
+    "mid": 22
+   },
+   "showed_name": "benzoic acid",
+   "_contains_residues": false,
+   "boiling_point": "-Infinity...Infinity",
+   "children_count": 0,
+   "density": 0.0,
+   "description": "",
+   "is_top_secret": false,
+   "location": "",
+   "melting_point": "-Infinity...Infinity",
+   "metrics": "mmmm",
+   "molarity_unit": "M",
+   "molarity_value": 0.0,
+   "name": "Benzoic acid",
+   "parent_id": 573,
+   "purity": 1.0,
+   "real_amount_unit": "g",
+   "real_amount_value": null,
+   "residues": [],
+   "sample_svg_file": null,
+   "short_label": "API-511-1",
+   "solvent": [],
+   "stereo": {
+    "abs": "any",
+    "rel": "any"
+   },
+   "target_amount_unit": "g",
+   "target_amount_value": 1.0,
+   "xref": {
+    "inventory_label": null
+   },
+   "sample_type": "Micromolecule",
+   "created_at": "17.11.2026, 14:53:01 +0000",
+   "updated_at": "17.11.2026, 14:53:02 +0000",
+   "coefficient": 1.0,
+   "equivalent": 1.0,
+   "position": 0,
+   "reference": true,
+   "show_label": false,
+   "waste": false,
+   "conversion_rate": null,
+   "weight_percentage_reference": null
+  }
+ ],
+ "type": "reaction",
+ "user_labels": [],
+ "conditions": "Reflux\nInert atmosphere",
+ "ph_operator": "=",
+ "ph_value": null,
+ "dangerous_products": [
+  "Mutagenic"
+ ],
+ "duration": "2 Hour(s)",
+ "name": "Esterification M7",
+ "purification": [
+  "TLC",
+  "Filtration"
+ ],
+ "reaction_svg_file": "5784d256800222748bf21eae516684b3f01923fb36b7888af91d71db6d9199ff.svg",
+ "rf_value": "0.45",
+ "rxno": "namerxn:1.7.9",
+ "reaction_type": "standard",
+ "short_label": "API-R51",
+ "solvent": "",
+ "status": "Running",
+ "temperature": {
+  "data": [
+   {
+    "time": "00:30:00",
+    "value": "80"
+   }
+  ],
+  "userText": "",
+  "valueUnit": "°C"
+ },
+ "timestamp_start": "",
+ "timestamp_stop": "",
+ "tlc_description": "",
+ "tlc_solvents": "EtOAc/Hex 1:4",
+ "variations": [],
+ "vessel_size": {
+  "unit": "ml",
+  "amount": 50.0
+ },
+ "volume": null,
+ "use_reaction_volume": false,
+ "lock_reaction_volume": false,
+ "concentration_mode": "solvents_only",
+ "gaseous": false,
+ "weight_percentage": false,
+ "created_at": "17.11.2026, 14:53:01 +0000",
+ "updated_at": "17.11.2026, 14:53:54 +0000"
+}

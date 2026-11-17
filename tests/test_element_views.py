@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 import element_views
-from element_views import delta_text, fmt_number, sample_view, view
+from element_views import delta_markup, delta_text, fmt_number, sample_view, view
 
 FIXTURES = Path(__file__).with_name("fixtures") / "elements"
 
@@ -97,7 +97,8 @@ def test_sample_v401_values_and_units():
     assert section(model, "Solvents") == {"title": "Solvents", "kind": "table", "columns": ["Label", "Ratio"],
                                           "rows": [["Water", "1"]]}
     assert section(model, "Description") == {"title": "Description", "kind": "text",
-                                             "text": "Recrystallised from water.\nSecond line."}
+                                             "text": "Recrystallised from water.\nSecond line.",
+                                             "markup": "Recrystallised from water.\nSecond line."}
     ident = rows(model, "Chemical identifiers")
     assert ident["InChIKey"][0] == "WPYMKLBDIGXBTP-UHFFFAOYSA-N" and ident["Canonical SMILES"][0] == "OC(=O)c1ccccc1"
     assert section(model, "Elemental composition")["rows"][0] == ["C", "68.85 %", ""]
@@ -180,7 +181,7 @@ def test_image_limit_note():
 
 
 def test_unsupported_types_give_the_stub():
-    assert view("reaction", {"id": 9, "name": "R"}) == {"type": "reaction", "id": 9, "unsupported": True}
+    assert view("wellplate", {"id": 9, "name": "R"}) == {"type": "wellplate", "id": 9, "unsupported": True}
     assert view("my_generic", {}) == {"type": "my_generic", "id": None, "unsupported": True}
     assert "sample" in element_views.SUPPORTED
 
@@ -271,6 +272,251 @@ def test_details_through_the_real_helper(chemotion, test_collection, instance, c
         node = next(n for n in proxy.collections() if n["label"] == "AIExamples")["children"][0]
         item = next(i for i in proxy.page(node, "sample")["items"] if i["id"] == sample.id)
         assert item["updated_at"]
-        assert proxy.details("reaction", 1) == {"type": "reaction", "id": 1, "unsupported": True}
+        assert proxy.details("wellplate", 1) == {"type": "wellplate", "id": 1, "unsupported": True}
     finally:
         proxy.close()
+
+
+# -- shared builders -------------------------------------------------------------
+
+def test_fields_table_text_and_image_section():
+    assert element_views.fields("T", []) is None
+    assert element_views.fields("T", [("A", "", "g"), ("B", None), ("C", 2.5, "g"), None]) == {
+        "title": "T", "kind": "fields", "rows": [{"label": "C", "value": "2.5", "unit": "g"}]}
+    assert element_views.table("T", ["a", "b"], [["", ""], ["x", 3]], [None, {"type": "sample", "id": 1}]) == {
+        "title": "T", "kind": "table", "columns": ["a", "b"], "rows": [["x", "3"]],
+        "targets": [{"type": "sample", "id": 1}]}
+    assert "targets" not in element_views.table("T", ["a"], [["x"]], [None])
+    assert element_views.table("T", ["a"], [[""]]) is None
+    assert element_views.text("T", "") is None and element_views.text("T", {"ops": [{"insert": "\n"}]}) is None
+    assert element_views.text("T", "a <b>") == {"title": "T", "kind": "text", "text": "a <b>",
+                                               "markup": "a &lt;b&gt;"}
+    image = {"mime": "image/svg+xml", "data": "<svg/>"}
+    assert element_views.image_section("Scheme", image) == {"title": "Scheme", "kind": "image", "image": image}
+    assert element_views.image_section("Scheme", None) is None
+    assert element_views.image_section("Scheme", {"mime": "image/png", "data": ""}) is None
+
+
+def pango_ok(markup: str) -> bool:
+    from xml.etree import ElementTree
+
+    try:
+        ElementTree.fromstring(f"<span>{markup}</span>")
+    except ElementTree.ParseError:
+        return False
+    return True
+
+
+def test_delta_markup_inline_attributes_and_escaping():
+    delta = {"ops": [{"insert": "a<b> & "}, {"insert": "bold", "attributes": {"bold": True}},
+                     {"insert": " "}, {"insert": "both", "attributes": {"bold": True, "italic": True}},
+                     {"insert": " "}, {"insert": "u", "attributes": {"underline": True, "strike": True}},
+                     {"insert": "2", "attributes": {"script": "sub"}}, {"insert": "3", "attributes": {"script": "super"}},
+                     {"insert": "x", "attributes": {"code": True}},
+                     {"insert": "\n"}]}
+    markup = delta_markup(delta)
+    assert markup == ("a&lt;b&gt; &amp; <b>bold</b> <b><i>both</i></b> <u><s>u</s></u><sub>2</sub><sup>3</sup>"
+                      "<tt>x</tt>")
+    assert pango_ok(markup)
+    assert delta_markup(json.dumps(delta)) == markup  # JSON text of a delta
+    assert delta_markup("plain <text> ") == "plain &lt;text&gt;" and delta_markup(None) == ""
+    assert delta_markup('{"ops": broken') == "{&quot;ops&quot;: broken".replace("&quot;", '"')
+    assert delta_markup({"ops": []}) == "" and delta_markup(5) == "5" and delta_markup([1]) == ""
+
+
+def test_delta_markup_links_only_for_safe_schemes():
+    ok = delta_markup({"ops": [{"insert": "ELN", "attributes": {"link": 'https://x.org/?a=1&b="2"'}}, {"insert": "\n"}]})
+    assert ok == '<a href="https://x.org/?a=1&amp;b=&quot;2&quot;">ELN</a>' and pango_ok(ok)
+    bad = delta_markup({"ops": [{"insert": "x", "attributes": {"link": "javascript:alert(1)"}}, {"insert": "\n"}]})
+    assert bad == "x"
+
+
+def test_delta_markup_blocks():
+    delta = {"ops": [
+        {"insert": "Title"}, {"insert": "\n", "attributes": {"header": 1}},
+        {"insert": "para one\n\npara two\n"},
+        {"insert": "first"}, {"insert": "\n", "attributes": {"list": "bullet"}},
+        {"insert": "nested"}, {"insert": "\n", "attributes": {"list": "bullet", "indent": 1}},
+        {"insert": "one"}, {"insert": "\n", "attributes": {"list": "ordered"}},
+        {"insert": "two"}, {"insert": "\n", "attributes": {"list": "ordered"}},
+        {"insert": {"image": "x.png"}}, {"insert": "text\n"},
+        {"insert": "again"}, {"insert": "\n", "attributes": {"list": "ordered"}},
+        {"insert": "\n\n"}]}
+    markup = delta_markup(delta)
+    assert markup.split("\n") == ["<b>Title</b>", "para one", "", "para two", "• first", "    • nested",
+                                  "1. one", "2. two", "text", "1. again"]
+    assert pango_ok(markup)
+
+
+def test_delta_markup_never_yields_broken_markup():
+    nasty = {"ops": [{"insert": "<<&>>", "attributes": {"bold": True, "link": "mailto:a@b.c?x=<y>"}},
+                     {"insert": "\n"}, {"insert": 7}, {"insert": None}, "bare", {"attributes": {}}]}
+    assert pango_ok(delta_markup(nasty))
+
+
+# -- reaction ------------------------------------------------------------------------
+
+SCHEME = {"mime": "image/svg+xml", "data": "<svg>scheme</svg>"}
+
+
+def test_reaction_v401_header_materials_and_order():
+    model = view("reaction", load("reaction_v401.json"), {"scheme": SCHEME}, "https://eln/x")
+    assert model["type"] == "reaction" and model["id"] == 51 and model["url"] == "https://eln/x"
+    assert model["title"] == "Esterification M7" and model["subtitle"] == "API-R51 · Running"
+    assert model["image"] == SCHEME and model["notes"] == []
+    assert titles(model) == ["Starting materials", "Reactants", "Solvents", "Products", "Conditions", "Reaction",
+                             "Description", "Purification",
+                             "Additional information for publication and purification details", "Safety",
+                             "TLC-Control"]
+    start = section(model, "Starting materials")
+    assert start["columns"] == ["Label", "Name", "Ref", "T/R", "Mass", "Amount", "Equiv."]
+    assert start["rows"] == [["API-511-1", "Benzoic acid", "yes", "T", "1000 mg", "8.1886 mmol", "1"]]
+    assert start["targets"] == [{"type": "sample", "id": 576}]
+    reactant = section(model, "Reactants")
+    assert reactant["rows"][0][:2] == ["reactant", "Ethanol"] and reactant["rows"][0][-1] == "2"
+    assert reactant["rows"][0][3] == "754.4699 mg"  # the target amount is 16.377 mmol
+    product = section(model, "Products")
+    assert product["columns"][-1] == "Yield" and product["rows"][0][-3:] == ["600.698 mg", "4 mmol", "49 %"]
+    assert product["rows"][0][2] == "R" and product["targets"] == [{"type": "sample", "id": 579}]
+    solvent = section(model, "Solvents")
+    assert solvent["columns"] == ["Label", "Name"] and solvent["rows"] == [["solvent", "Toluene"]]
+    assert section(model, "Conditions")["text"] == "Reflux\nInert atmosphere"
+    reaction = rows(model, "Reaction")
+    assert reaction["Status"] == ("Running", "") and reaction["Temperature"] == ("80", "°C")
+    assert reaction["Time (duration)"] == ("2 Hour(s)", "") and reaction["Vessel size"] == ("50", "ml")
+    assert reaction["Type (Name Reaction)"][0] == "namerxn:1.7.9" and reaction["Role"][0] == "parts"
+    assert "pH" not in reaction and "Start" not in reaction
+    assert rows(model, "Purification") == {"Purification": ("TLC, Filtration", "")}
+    assert rows(model, "Safety") == {"Dangerous products": ("Mutagenic", "")}
+    assert rows(model, "TLC-Control") == {"Solvents (parts)": ("EtOAc/Hex 1:4", ""), "Rf-Value": ("0.45", "")}
+    assert section(model, "Description")["markup"] == "Stir for **2 h**."
+
+
+def test_reaction_v312():
+    model = view("reaction", load("reaction_v312.json"), {"scheme": SCHEME})
+    assert model["title"] == "Esterification v312" and model["subtitle"] == "TST-R7 · Done"
+    assert model["image"] == SCHEME
+    assert titles(model) == ["Starting materials", "Reactants", "Solvents", "Products", "Conditions", "Reaction",
+                             "Description", "Purification"]  # no dangerous products, TLC, observation
+    reaction = rows(model, "Reaction")
+    assert reaction["Temperature"] == ("25 ~ 80", "°C") and "Vessel size" not in reaction
+    solvent = section(model, "Solvents")  # a solvent carries its amount in the old line
+    assert solvent["rows"][0][1] == "Toluene" and "10 ml" in solvent["rows"][0]
+    assert section(model, "Products")["rows"][0][-1] == "50 %"
+    assert section(model, "Description")["markup"] == "Stirred for <b>2 h</b>."
+    assert rows(model, "Purification") == {"Purification": ("TLC", "")}
+
+
+def test_reaction_temperature_ph_and_purification_forms():
+    data = load("reaction_v312.json")
+    data["temperature"] = {"valueUnit": "°F", "userText": "reflux", "data": []}
+    data.update(ph_value=7.25, ph_operator="<", purification=["TLC", "HPLC"], dangerous_products="Mutagenic",
+                timestamp_start="2026-05-05 10:00", rf_value=0.5)
+    reaction = rows(view("reaction", data), "Reaction")
+    assert reaction["Temperature"] == ("reflux", "") and reaction["pH"] == ("< 7.25", "")
+    assert reaction["Start"][0] == "2026-05-05 10:00"
+    data["temperature"] = {"valueUnit": "°F", "userText": "21 ~ 25", "data": []}
+    assert rows(view("reaction", data), "Reaction")["Temperature"] == ("21 ~ 25", "°F")
+    data["temperature"] = {"valueUnit": "K", "userText": "", "data": [{"value": "300"}, {"value": "300"}]}
+    assert rows(view("reaction", data), "Reaction")["Temperature"] == ("300", "K")
+    model = view("reaction", data)
+    assert rows(model, "Purification") == {"Purification": ("TLC, HPLC", "")}
+    assert rows(model, "Safety") == {"Dangerous products": ("Mutagenic", "")}
+    assert rows(model, "TLC-Control") == {"Rf-Value": ("0.5", "")}
+
+
+def test_reaction_empty_and_odd_values_do_not_raise():
+    model = view("reaction", {"id": 1, "short_label": "R-1", "temperature": None, "vessel_size": None,
+                              "starting_materials": [{"id": "uuid", "short_label": "x"}, "junk", {}],
+                              "products": None, "variations": [1, 2], "status": None})
+    assert model["title"] == "R-1" and model["subtitle"] == "R-1" and model["image"] is None
+    assert titles(model) == ["Starting materials"]
+    assert "targets" not in section(model, "Starting materials")  # a new sample has no numeric id yet
+    assert model["notes"] == ["The reaction has 2 variations; they are not shown yet."]
+    empty = view("reaction", {"id": 2})
+    assert empty["sections"] == [] and empty["title"] == ""
+
+
+def test_images_reach_the_view_and_big_ones_are_left_out():
+    data = load("reaction_v312.json")
+    assert element_views.IMAGE_REFS["reaction"](data) == {"scheme": "/images/reactions/aa11.svg"}
+    assert element_views.IMAGE_REFS["reaction"]({}) == {}
+    big = {"mime": "image/svg+xml", "data": "x" * (element_views.MAX_IMAGE_BYTES + 1)}
+    model = view("reaction", data, {"scheme": big})
+    assert model["image"] is None and model["notes"] == ["The scheme image is larger than 2 MB and is not shown."]
+    assert element_views.IMAGE_REFS["sample"]({"molecule": {"molecule_svg_file": "m.svg"}}) == {
+        "image": "/images/molecules/m.svg"}
+    assert element_views.IMAGE_REFS["sample"]({"sample_svg_file": "s.svg"}) == {"image": "/images/samples/s.svg"}
+    assert view("sample", load("sample_v401.json"), {"image": SCHEME})["image"] == SCHEME
+
+
+def test_supported_follows_the_adapters(monkeypatch):
+    assert "reaction" in element_views.SUPPORTED and "wellplate" not in element_views.SUPPORTED
+    monkeypatch.setitem(element_views.ADAPTERS, "wellplate", lambda data, images, url: {"type": "wellplate"})
+    assert "wellplate" in element_views.SUPPORTED and view("wellplate", {}) == {"type": "wellplate"}
+
+
+@pytest.mark.chemotion
+def test_reaction_details_through_the_real_helper(chemotion, test_collection, instance, cleanup_samples):
+    import requests
+    from chemotion_api.elements.utils import QuantityUnit
+
+    from explorer import ExplorerProxy
+
+    collection = instance.get_root_collection().get_collection(test_collection)
+    acid = collection.new_sample_smiles("OC(=O)c1ccccc1")
+    acid.save()
+    alcohol = collection.new_sample_smiles("CCO")
+    alcohol.save()
+    ester = collection.new_sample_smiles("CCOC(=O)c1ccccc1")
+    ester.save()
+    reaction = collection.new_reaction()
+    reaction.properties["name"] = "Details test reaction"
+    reaction.starting_materials.append(acid)
+    reaction.reactants.append(alcohol)
+    reaction.products.append(ester)
+    reaction.solvents.append(collection.new_solvent("Toluene"))
+    reaction.save()
+    reaction = instance.get_reaction(reaction.id)
+    reaction.reference_sample = reaction.starting_materials[0]
+    reaction.starting_materials[0].set_amount(1.0, QuantityUnit.Gram)
+    reaction.reactants[0].set_amount(2, QuantityUnit.Equivalent)
+    reaction.products[0].set_amount(0.004, QuantityUnit.Mole)
+    reaction.properties["temperature"].add_time_point(0, 30, 0, 80)
+    reaction.properties["status"] = "Running"
+    reaction.properties["purification"] = ["TLC"]
+    reaction.properties["description"] = "Stir for 2 h."
+    reaction.save(load_after_save=True)
+    reaction = instance.get_reaction(reaction.id)
+    material_ids = [m["id"] for role in ("starting_materials", "reactants", "products", "solvents")
+                    for m in reaction.json_data[role]]
+    cleanup_samples.extend([acid.id, alcohol.id, ester.id])
+
+    login = SimpleNamespace(verify_tls=True, explorer_types=None, **chemotion)
+    proxy = ExplorerProxy(load_config=lambda: login, save_setting=lambda k, v: None)
+    try:
+        model = proxy.details("reaction", reaction.id, collection.id)
+        assert model["title"] == "Details test reaction" and model["id"] == reaction.id
+        assert model["url"] == f"{chemotion['url']}/mydb/collection/{collection.id}/reaction/{reaction.id}"
+        assert model["image"] and model["image"]["mime"] == "image/svg+xml" and "<svg" in model["image"]["data"]
+        start = section(model, "Starting materials")
+        assert start["rows"][0][1].lower() == "benzoic acid" and start["rows"][0][4] == "1000 mg"
+        assert start["targets"][0]["id"] in material_ids
+        assert section(model, "Products")["rows"][0][-1].endswith(" %")
+        assert section(model, "Solvents")["rows"][0][1] == "Toluene"
+        assert rows(model, "Reaction")["Temperature"] == ("80", "°C")
+        assert section(model, "Description")["text"] == "Stir for 2 h."
+        # the material's own sample opens through the same helper
+        sample = proxy.details("sample", start["targets"][0]["id"], collection.id)
+        assert sample["title"].lower() == "benzoic acid" and sample["type"] == "sample"
+    finally:
+        proxy.close()
+        # reactions (and their material samples) go with the ELN's "delete selection"
+        state = {"reaction": {"checkedAll": False, "checkedIds": [reaction.id], "uncheckedIds": []},
+                 "sample": {"checkedAll": False, "checkedIds": material_ids, "uncheckedIds": []},
+                 "currentCollection": {"id": collection.id}, "options": {"deleteSubsamples": True}, "selecteds": []}
+        try:
+            requests.delete(f"{instance.host_url}/api/v1/ui_state/", json=state, timeout=60,
+                            headers={"Authorization": f"Bearer {instance.token}"}).raise_for_status()
+        except Exception:  # the cleanup must not hide the test's own failure
+            pass

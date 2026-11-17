@@ -308,7 +308,7 @@ def test_details_goes_to_the_helper_but_a_stub_does_not(made):
     assert result["method"] == "details" and result["args"] == ["sample", 7, 3]
     assert p.details("sample", 7)["args"] == ["sample", 7, None]
     pid = result["pid"]
-    assert p.details("reaction", 4) == {"type": "reaction", "id": 4, "unsupported": True}
+    assert p.details("wellplate", 4) == {"type": "wellplate", "id": 4, "unsupported": True}
     assert p.details("sample", 8)["pid"] == pid  # the stub started no new helper
 
 
