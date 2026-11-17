@@ -76,6 +76,7 @@ try:  # desktop notifications (finished background jobs); not on Windows
 except (ValueError, ImportError):
     Notify = None
 
+import api_versions  # noqa: E402
 import app_control  # noqa: E402
 import history  # noqa: E402
 import hotkey  # noqa: E402
@@ -116,6 +117,9 @@ DARK_UI_ICON_FILE = HERE / f"{PANEL_ICON}.svg"
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 # _grow(then=...): how long to wait for the window's new size at most.
 GROW_WAIT_MS = 1000
+# The version warning waits for a running turn to end: every VERSION_NOTE_RETRY_MS, this many times.
+VERSION_NOTE_RETRY_MS = 1000
+VERSION_NOTE_TRIES = 120
 # Continuing a conversation shows only its end: GTK lays out every wrapped
 # label again at each width change, and a long history froze the window for
 # seconds. About REPLAY_CHARS of text (at most REPLAY_ITEMS messages and
@@ -2551,6 +2555,7 @@ class AssistantWindow(Gtk.Window):
                     self.training_models.append(config.ai_model)
         self.stack.add_named(self._build_conversation(config.ai_model), "conversation")
         self.app.load_models(config)
+        self._check_chemotion_version(config, conversation_id)
         self.stack.show_all()
         self.stack.set_visible_child_name("conversation")
         self.expanded = True
@@ -2586,6 +2591,22 @@ class AssistantWindow(Gtk.Window):
         self.loading = True
         self.chat.set_busy(True, "Loading the conversation…")
         self._grow(lambda: self._show_saved(problem))
+
+    def _check_chemotion_version(self, config: Config, conversation_id: str) -> None:
+        """Warn when the installed chemotionapi does not fit the server's ELN version (in a thread;
+        nothing is shown when the server or the release list cannot be reached)."""
+        def show(text: str, tries: int = 0) -> bool:
+            if self.closed or self.chat is None or self.conversation_id != conversation_id:
+                return False
+            if self.agent is not None and self.agent.busy and tries < VERSION_NOTE_TRIES:
+                # A note would cut a streamed answer in two: wait for the turn to end.
+                GLib.timeout_add(VERSION_NOTE_RETRY_MS, show, text, tries + 1)
+                return False
+            self.chat.add_note(text, "dialog-warning-symbolic", "request-error",
+                               actions=(("Open settings", open_settings),))
+            return False
+
+        self.app.check_chemotion_version(config, lambda text: GLib.idle_add(show, text))
 
     def _jupyter_note(self, problem: str | None) -> None:
         if problem:
@@ -2983,6 +3004,9 @@ class ChemAssistentApp:
         self.menu: Gtk.Menu | None = None
         self.job_items: list[Gtk.MenuItem] = []  # the menu's entries for jobs
         self.notifications: list = []  # shown notifications (their actions need them alive)
+        # The version check at a conversation's start: (url, installed tag) -> warning text ("" = fits).
+        self.version_checks: dict[tuple[str, str], str] = {}
+        self.version_lock = threading.Lock()
 
         provider = Gtk.CssProvider()
         provider.load_from_data(CSS)
@@ -3063,6 +3087,43 @@ class ChemAssistentApp:
         self.window = AssistantWindow(self)
         self.window.open_prompt()
         return False
+
+    def check_chemotion_version(self, config: Config, show) -> None:
+        """Compare the server's ELN version with the installed chemotionapi in a thread and call
+        `show(text)` (from that thread) for a warning. Once per (url, installed tag): later
+        conversations reuse the text, also an empty one; a failed reading of the server's version
+        is not cached (it may come up later)."""
+        if not config.url:
+            return
+        key = (config.url, api_versions.installed_tag())
+        with self.version_lock:
+            cached = self.version_checks.get(key)
+        if cached is not None:
+            if cached:
+                show(cached)
+            return
+
+        def worker() -> None:
+            try:
+                version = api_versions.server_eln_version(config.url, config.verify_tls)
+            except Exception as exc:  # unreachable, no version on the page: nothing to say
+                LOG.info("Chemotion version not read: %s", exc)
+                return
+            try:
+                tags = api_versions.list_tags()
+            except Exception:  # offline: judged without the release list
+                tags = None
+            try:
+                text = api_versions.check_installed(version, tags, key[1])
+            except Exception as exc:
+                LOG.info("Chemotion version not checked: %s", exc)
+                return
+            with self.version_lock:
+                self.version_checks[key] = text
+            if text:
+                show(text)
+
+        threading.Thread(target=worker, name="chemotion-version", daemon=True).start()
 
     def load_models(self, config: Config, again: bool = False) -> None:
         """Load the model list in a thread (the KI-Toolbox needs ~15 s for it).
