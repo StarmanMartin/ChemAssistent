@@ -35,8 +35,10 @@ from details_logic import (  # noqa: E402
 )
 import history  # noqa: E402
 from explorer import detail_rows  # noqa: E402
+from jupyter import MAX_TRANSFER_BYTES  # noqa: E402
 
 MAX_DETAIL_ITEMS = 20
+MAX_PREVIEWS = 100  # cached preview images per panel (each up to MAX_PREVIEW_BYTES)
 MAX_IMAGE_HEIGHT = 300
 ELEMENT = "element"  # the describe() kind of an element row (explorer_view.ELEMENT)
 EMPTY_HINT = "Select elements or collections in the Explorer to see their details here."
@@ -391,6 +393,8 @@ class DetailsPanel(Gtk.Box):
             return
 
         def done(image) -> None:
+            if len(self.previews) >= MAX_PREVIEWS:
+                self.previews.clear()
             self.previews[key] = image or None
             if image and number == self.counter:
                 show(image)
@@ -565,6 +569,11 @@ class DetailsPanel(Gtk.Box):
             jupyter = targets.get("jupyter")
             if not jupyter:
                 say("JupyterLab is not available in this conversation.")
+                return
+            size = file.get("size")
+            if isinstance(size, int) and size > MAX_TRANSFER_BYTES:
+                say(f"{file.get('name')} is {human_size(size)}: too large for JupyterLab "
+                    f"(at most {MAX_TRANSFER_BYTES >> 20} MB). Use “Download to…” instead.")
                 return
             path = jupyter_path(jupyter[0], item, analysis, file)
         else:

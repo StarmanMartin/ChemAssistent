@@ -57,6 +57,8 @@ except ImportError:  # pragma: no cover - before element_views has them
     MAX_DOWNLOAD_BYTES = 50_000_000
 
 MAX_NAME_CHARS = 120
+WINDOWS_RESERVED = frozenset({"CON", "PRN", "AUX", "NUL", *(f"COM{n}" for n in range(1, 10)),
+                              *(f"LPT{n}" for n in range(1, 10))})
 JUPYTER_SUBFOLDER = "chemotion"
 
 
@@ -115,6 +117,9 @@ def sanitize_name(name: str, fallback: str = "file") -> str:
             text = stem[: MAX_NAME_CHARS - len(ext) - 1] + "." + ext
         else:
             text = text[:MAX_NAME_CHARS]
+    # Windows device names (also with an extension: "nul.txt") are no files there.
+    if text.split(".", 1)[0].strip().upper() in WINDOWS_RESERVED:
+        text = "_" + text
     return text or fallback
 
 

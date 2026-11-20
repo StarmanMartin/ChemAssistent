@@ -103,6 +103,13 @@ def downloads_dir(conversation_id: str) -> Path:
     return DOWNLOADS_DIR / Path(conversation_id).name
 
 
+def drop_unsaved_downloads(conversation_id: str) -> None:
+    """The downloads of a conversation that was never saved (e.g. an empty one only
+    browsed in the Explorer): no pruning or deleting reaches them later."""
+    if not _path(conversation_id).exists():
+        shutil.rmtree(downloads_dir(conversation_id), ignore_errors=True)
+
+
 def _remove(path: Path) -> None:
     path.unlink(missing_ok=True)
     shutil.rmtree(exchange_dir(path.stem), ignore_errors=True)

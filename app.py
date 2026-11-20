@@ -2930,6 +2930,8 @@ class AssistantWindow(Gtk.Window):
             # A turn still running is saved as far as it got; restore() answers its open calls.
             self._save_history()
             self.agent.cancel()
+        if self.conversation_id is not None:
+            history.drop_unsaved_downloads(self.conversation_id)
         if self.layout_timer:
             GLib.source_remove(self.layout_timer)
             self.layout_timer = 0

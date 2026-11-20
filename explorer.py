@@ -441,9 +441,14 @@ class ExplorerSource:
                 length = response.headers.get("Content-Length")
                 if length and length.isdigit() and int(length) > limit:
                     raise too_large
-                content = b"".join(response.iter_content(DOWNLOAD_CHUNK))
-                if len(content) > limit:
-                    raise too_large
+                parts: list[bytes] = []
+                read = 0
+                for chunk in response.iter_content(DOWNLOAD_CHUNK):  # no Content-Length: counted
+                    read += len(chunk)
+                    if read > limit:
+                        raise too_large
+                    parts.append(chunk)
+                content = b"".join(parts)
                 try:
                     return _image_of("image", content, response.headers)
                 except ValueError:  # a PDF or another type the panel cannot show
@@ -470,7 +475,10 @@ class ExplorerSource:
 
         def work(instance):
             response = instance._con.get(f"/api/v1/attachments/{attachment_id}", stream=True)
-            partial = f"{path}.part"
+            # A dotfile: JupyterBridge.sync_up() skips it, so a half-written download in the
+            # exchange folder (or one left by a killed helper) never goes to JupyterLab.
+            folder, name = os.path.split(os.path.abspath(path))
+            partial = os.path.join(folder, f".{name}.part")
             try:
                 if response.status_code == 401:
                     raise PermissionError("401")
@@ -482,8 +490,15 @@ class ExplorerSource:
                 try:
                     os.makedirs(os.path.dirname(os.path.abspath(path)), mode=0o700, exist_ok=True)
                     size = 0
+                    chunks = response.iter_content(DOWNLOAD_CHUNK)
                     with os.fdopen(os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb") as out:
-                        for chunk in response.iter_content(DOWNLOAD_CHUNK):
+                        while True:
+                            try:
+                                chunk = next(chunks)
+                            except StopIteration:
+                                break
+                            except Exception as exc:  # requests' errors are OSErrors too: no "Could not write"
+                                raise ExplorerError(f"The download broke off: {exc}") from None
                             size += len(chunk)
                             if max_bytes is not None and size > max_bytes:
                                 raise over(size)
@@ -896,31 +911,43 @@ class ExplorerWorker:
         self.generation = 0
         self.closed = False
 
+    # Requests a refresh of the tab must not drop: the user started them (the Details
+    # panel waits for their answer to open/sync the file).
+    KEEP_METHODS = ("download",)
+
     def request(self, method: str, args: tuple, on_done: Callable[[Any], None],
                 on_error: Callable[[str], None]) -> None:
         """Queues `source.<method>(*args)`."""
         with self._lock:
             if self.closed:
                 return
-            self._queue.put((self.generation, method, args, on_done, on_error))
+            generation = None if method in self.KEEP_METHODS else self.generation
+            self._queue.put((generation, method, args, on_done, on_error))
             if self._thread is None:
                 self._thread = threading.Thread(target=self._run, name="explorer", daemon=True)
                 self._thread.start()
 
     def reset(self) -> None:
-        """Drops the queued requests; answers of running ones are dropped too."""
+        """Drops the queued requests; answers of running ones are dropped too
+        (not those of KEEP_METHODS)."""
         with self._lock:
             self.generation += 1
+            kept = []
             while True:
                 try:
-                    self._queue.get_nowait()
+                    job = self._queue.get_nowait()
                 except queue.Empty:
                     break
+                if job is not None and job[0] is None and not self.closed:
+                    kept.append(job)
+            for job in kept:
+                self._queue.put(job)
 
     def close(self) -> None:
+        with self._lock:
+            self.closed = True  # first: reset() keeps no download then
         self.reset()
         with self._lock:
-            self.closed = True
             self._queue.put(None)
         close = getattr(self.source, "close", None)
         if close is not None:
@@ -932,7 +959,7 @@ class ExplorerWorker:
             if job is None:
                 return
             generation, method, args, on_done, on_error = job
-            if generation != self.generation:
+            if self.closed or (generation is not None and generation != self.generation):
                 continue
             try:
                 result = getattr(self.source, method)(*args)
@@ -945,7 +972,7 @@ class ExplorerWorker:
 
     def _send(self, generation: int, callback: Callable[[Any], None], value: Any) -> None:
         def call() -> bool:
-            if generation == self.generation and not self.closed:
+            if (generation is None or generation == self.generation) and not self.closed:
                 callback(value)
             return False  # GLib.idle_add: once
 
