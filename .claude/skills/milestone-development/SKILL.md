@@ -27,7 +27,7 @@ all product, release and security decisions.
 - Report after each milestone: name, features, tests/verification, review findings + fixes,
   branch/merge status, risks.
 
-## Roadmap: `docs/milestones.md`
+## Roadmap: `../../../dev/milestones.md`
 
 - Take the first milestone with status `planned` (or the one the owner names). If none is defined
   or it is vague, draft goal, work packages and acceptance criteria with the owner first.
@@ -72,7 +72,7 @@ all product, release and security decisions.
 3. **Orchestrator-owned shared files** — workers list the edits they need in their report, you
    apply them: `CLAUDE.md` (must describe every change), `README.md`, `install.sh`
    (`APP_FILES`/`APP_DIRS`), `windows/chem-assistent.spec` (`datas`), `setup.py`
-   (`PACKAGE_MODULES`), `requirements.txt`, `docs/milestones.md`.
+   (`PACKAGE_MODULES`), `requirements.txt`, `../../../dev/milestones.md`.
 4. Brief = the worker's entire context. Include: absolute worktree path ("work only there, never
    touch the main checkout"), "read CLAUDE.md", binding design sections by path, exact scope,
    file ownership and what the other worker does, "do not commit", tests:
@@ -123,6 +123,6 @@ OK, merge, mark the milestone `done (#PR)`, remove the worktrees
 - Chemotion test data only in `AIExamples/ChemAssistent tests`, deleted again afterwards.
 - The `.venv`/`workspace` symlinks show as untracked (`.gitignore`'s `.venv/` does not match a
   symlink): commit worker changes with explicit `git add <files>`, never `git add -A`.
-- Scratchpad files vanish on reboot; keep decisions in `dev/` or `docs/milestones.md`.
+- Scratchpad files vanish on reboot; keep decisions in `dev/` or `../../../dev/milestones.md`.
 - If a worker is blocked (quota, tooling), ask the owner whether to finish the round yourself and
   report it as an exception.
