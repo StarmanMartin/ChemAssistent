@@ -298,6 +298,7 @@ def state_dir(tmp_path, monkeypatch) -> Path:
     (root / "history").mkdir(parents=True)
     monkeypatch.setattr(history, "HISTORY_DIR", root / "history")
     monkeypatch.setattr(history, "EXCHANGE_DIR", root / "exchange")
+    monkeypatch.setattr(history, "DOWNLOADS_DIR", root / "downloads")  # clear() removes it
     monkeypatch.setattr(jobs, "JOBS_FILE", root / "jobs.json")
     return root
 

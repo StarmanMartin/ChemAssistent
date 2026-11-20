@@ -19,6 +19,8 @@ else:
 
 
 HISTORY_DIR = STATE_DIR / "history"
+# Files the Details panel downloaded for "Open" (M9), one folder per conversation.
+DOWNLOADS_DIR = STATE_DIR / "downloads"
 # Older conversations are deleted when a new one is saved.
 MAX_CONVERSATIONS = 200
 MAX_TITLE_CHARS = 80
@@ -97,9 +99,21 @@ def exchange_dir(conversation_id: str) -> Path:
     return EXCHANGE_DIR / Path(conversation_id).name
 
 
+def downloads_dir(conversation_id: str) -> Path:
+    return DOWNLOADS_DIR / Path(conversation_id).name
+
+
+def drop_unsaved_downloads(conversation_id: str) -> None:
+    """The downloads of a conversation that was never saved (e.g. an empty one only
+    browsed in the Explorer): no pruning or deleting reaches them later."""
+    if not _path(conversation_id).exists():
+        shutil.rmtree(downloads_dir(conversation_id), ignore_errors=True)
+
+
 def _remove(path: Path) -> None:
     path.unlink(missing_ok=True)
     shutil.rmtree(exchange_dir(path.stem), ignore_errors=True)
+    shutil.rmtree(downloads_dir(path.stem), ignore_errors=True)
 
 
 def delete(conversation_id: str) -> None:
@@ -114,6 +128,7 @@ def clear() -> int:
         deleted += 1
     # Also the folders of conversations that were never saved.
     shutil.rmtree(EXCHANGE_DIR, ignore_errors=True)
+    shutil.rmtree(DOWNLOADS_DIR, ignore_errors=True)
     return deleted
 
 

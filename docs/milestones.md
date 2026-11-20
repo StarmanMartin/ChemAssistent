@@ -186,24 +186,19 @@ class definition, without code per class: layers in order, fields with label, va
 **Open owner decisions:** –
 
 ## M9 – Element details: analyses and datasets
-**Status:** planned
+**Status:** in progress
 **Goal:** the analyses of an element and their datasets and files are reachable from its view:
 see what was measured, preview images and spectra, and open or hand files to the assistant.
 **Reference:** `chemotion_ELN/app/javascript/src/apps/mydb/elements/details/analyses/`; chemotion_api `Analyses`, `Dataset`, attachments (`preview_image()`, `load_image()`, downloads; both lines).
 **Work packages:**
 - WP9.1 Analyses section in every element view (`element_views.py`, helper): analyses in order with kind (CHMO term label), status, description (rich text), and their datasets (name, instrument, metadata fields), each dataset's attachments (name, size, type)
 - WP9.2 Previews: the analysis/attachment preview images (size-limited, loaded on expand, cached)
-- WP9.3 Open a file: download through the helper into a per-conversation folder (the exchange folder when JupyterLab is on, else a temp folder under `STATE_DIR`), then open it with the system viewer; "Mention in message" for an analysis/dataset/file (so the agent can read the file via its roots or the exchange folder)
-- WP9.4 Limits: large files only on request with their size shown; nothing uploaded or changed
+- WP9.3 Files: a dropdown per file — "Download to JupyterLab" (into the conversation's exchange folder `chemotion/<element>/<analysis>/`, then synced to JupyterLab; only with JupyterLab on), "Download to…" (a folder/file the user chooses), "Open" (temp folder under `STATE_DIR`, system viewer); downloads go through the helper; "Mention in message" for an analysis or file inserts its reference (ids), like M6 — the assistant fetches it itself
+- WP9.4 Limits: previews up to 5 MB (larger: "too large"), files up to 50 MB at once, larger ones ask first with their size; nothing uploaded to the ELN or changed
 **Acceptance criteria:**
 - A sample with analyses shows them with their datasets and file names; previews appear on expand; a file opens after one click.
 - Files the user opened can be read by the assistant when mentioned (they are inside its roots).
 - Works with both chemotionapi lines; read only.
 - `pytest tests/` passes; tests create an analysis with a small dataset on the test instance and delete it afterwards.
 **Issues:** –
-**Open owner decisions:**
-- Where downloaded files go: the conversation's exchange folder (visible to JupyterLab) or a separate download folder?
-  -  Answer: Make a dropdown (1 - download to JupyterLab 2 - download to ...)
-- A size limit for automatic previews and downloads (e.g. 20 MB)?
-  -  Answer: yes 20MB is fine 
-
+**Open owner decisions:** – (2026-11-17: a dropdown per file: download to JupyterLab / download to a chosen place (+ open); previews 5 MB, files 50 MB)
