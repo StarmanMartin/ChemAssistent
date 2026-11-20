@@ -701,6 +701,20 @@ chemotion_api bugs only with `ChemAssistent(..., report_bugs=True)`: the agent
 then has the developer mode's `report_api_bug` and creates public GitHub
 issues with the config's `github_token` (without one it saves drafts).
 
+`chemotion_api` comes from pip, and its release line must match your ELN:
+release `XYZ.a.b` is made for ELN X.Y.Z (the version on the ELN's `/about`
+page). A plain install takes the newest line, so pin it for an older server:
+
+```sh
+pip install . "chemotion-api==312.*"   # ELN 3.1.2
+pip install . "chemotion-api==401.*"   # ELN 4.0.1
+```
+
+`ChemAssistent(...)` compares the two (the server's public `/about` page, the
+release list via `git ls-remote` when git is there) and on a mismatch issues a
+`chemassistent.ChemotionVersionWarning` naming the pip command; the text is
+also in `assistant.version_warning`. `check_version=False` skips the check.
+
 The package includes a short API reference. To use a full generated workspace,
 set `CHEMASSISTENT_WORKSPACE` to its path before importing the package.
 Otherwise, a source checkout's or a Linux desktop install's workspace is used

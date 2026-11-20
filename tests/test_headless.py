@@ -18,6 +18,16 @@ from chemassistent import AgentError, ChemAssistent, Config
 ROOT = Path(__file__).resolve().parent.parent
 
 
+@pytest.fixture(autouse=True)
+def no_version_check(monkeypatch):
+    """No test reaches a real /about page or git; the version tests patch these again."""
+    def offline(*args, **kwargs):
+        raise headless.api_versions.VersionError("offline in tests")
+
+    monkeypatch.setattr(headless, "_version_checks", {})
+    monkeypatch.setattr(headless.api_versions, "server_eln_version", offline)
+
+
 @pytest.fixture
 def config(fake_ai):
     return Config(url="http://example.invalid", user="test", password="test",
@@ -295,3 +305,45 @@ def test_jupyter_conversation_shares_the_exchange_folder(fake_ai, config, runner
     assert json.loads(runner.inputs[0])["exchange"] == str(conv.exchange)
     assert (conv.exchange / "chemotion_result_1.json").read_text(encoding="utf-8").strip() == "42"
     assert "chemotion_result_1.json" in tool_answers(conv)[0]
+
+
+def _versions(monkeypatch, eln, tags, installed="v401.1.1"):
+    """The server runs ELN `eln`, git lists `tags`, pip installed `installed`."""
+    monkeypatch.setattr(headless, "_version_checks", {})
+    monkeypatch.setattr(headless, "installed_release", lambda: installed)
+    monkeypatch.setattr(headless.api_versions, "server_eln_version", lambda url, verify: eln)
+    monkeypatch.setattr(headless.api_versions, "list_tags", lambda timeout: tags)
+
+
+def test_version_mismatch_warns_with_pip_advice(config, monkeypatch):
+    _versions(monkeypatch, "3.1.2", ["v401.1.1", "v312.1.1"])
+    with pytest.warns(headless.ChemotionVersionWarning, match="ELN 3.1.2") as caught:
+        assistant = ChemAssistent(config)
+    assert 'Install v312.1.1 with pip install "chemotion-api==312.*".' in assistant.version_warning
+    assert "Settings" not in str(caught[0].message)
+
+
+def test_matching_version_or_no_check_stays_quiet(config, monkeypatch, recwarn):
+    _versions(monkeypatch, "4.0.1", ["v401.1.1", "v312.1.1"])
+    assert ChemAssistent(config).version_warning == ""
+    _versions(monkeypatch, "3.1.2", ["v401.1.1", "v312.1.1"])
+    assert ChemAssistent(config, check_version=False).version_warning == ""
+    assert not [w for w in recwarn if issubclass(w.category, headless.ChemotionVersionWarning)]
+
+
+def test_version_check_without_git_or_server(config, monkeypatch):
+    def no_git(timeout):
+        raise FileNotFoundError("git")
+
+    _versions(monkeypatch, "3.1.2", None)
+    monkeypatch.setattr(headless.api_versions, "list_tags", no_git)
+    # Offline: judged by the line alone; 401 is newer than ELN 3.1.2.
+    with pytest.warns(headless.ChemotionVersionWarning, match="pip install"):
+        ChemAssistent(config)
+
+    def unreachable(url, verify):
+        raise headless.api_versions.VersionError("no /about")
+
+    _versions(monkeypatch, "", None)
+    monkeypatch.setattr(headless.api_versions, "server_eln_version", unreachable)
+    assert ChemAssistent(config).version_warning == ""

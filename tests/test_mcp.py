@@ -426,3 +426,15 @@ def test_bridge_program_sends_a_page_image_over_stdio(tmp_path):
     content = answers[2]["result"]["content"]
     assert [block["type"] for block in content] == ["text", "image"]
     assert documents.image_size(base64.b64decode(content[1]["data"])) is not None
+
+
+def test_bridge_saves_and_removes_lessons(lessons_file):
+    """The CLI prompt's lessons section asks for save_lesson: the bridge offers it."""
+    bridge = mcp_bridge.Bridge({"session": "s"})
+    assert "save_lesson" in [tool["name"] for tool in bridge.tools]
+    text = bridge.dispatch("save_lesson", {"key": "get-samples", "topic": "chemotion_api",
+                                           "text": "get_samples() pages; iterate the result."})
+    assert text.startswith("Lesson ")
+    assert "## get-samples" in lessons_file.read_text(encoding="utf-8")
+    assert bridge.dispatch("save_lesson", {"key": "get-samples", "remove": True}).startswith("Lesson ")
+    assert "## get-samples" not in lessons_file.read_text(encoding="utf-8")

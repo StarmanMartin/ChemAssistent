@@ -10,13 +10,14 @@ import sys
 import tempfile
 import threading
 import uuid
+import warnings
 from collections.abc import Callable
 from pathlib import Path
 
 from .agent import Agent, AgentError, FAILED_TEXT, RAN_TEXT, clip
 from .config import (AI_TOKEN_ENV, WINDOWS, Config, agent_of, ai_token, jupyter_problem, load_config,
                      read_raw_config)
-from . import workspace
+from . import api_versions, workspace
 
 
 # Started by path, not with -m: -m puts the caller's cwd first on sys.path,
@@ -25,6 +26,54 @@ from . import workspace
 RUNNER = Path(__file__).resolve().with_name("chemotion_runner.py")
 # How much of the runner's stderr a crash report keeps.
 MAX_CRASH_CHARS = 3000
+# The install hint of a version warning when the release is not known: the
+# package's chemotion_api comes from pip.
+PIP_ADVICE = (' with pip (release line XYZ is made for ELN X.Y.Z: pip install '
+              '"chemotion-api==401.*" for 4.0.1, "chemotion-api==312.*" for 3.1.2)')
+# Version checks already made in this process: (url, installed release) -> warning.
+_version_checks: dict[tuple[str, str], str] = {}
+
+
+class ChemotionVersionWarning(UserWarning):
+    """The installed chemotion_api is not made for the server's ELN version."""
+
+
+def installed_release() -> str:
+    """The pip-installed chemotion_api as a release tag ("v401.1.1"), or ""."""
+    from importlib import metadata
+
+    try:
+        return "v" + metadata.version("chemotion-api")
+    except metadata.PackageNotFoundError:
+        return ""
+
+
+def version_warning(config: Config) -> str:
+    """The warning when the installed chemotion_api does not fit the ELN
+    version of `config.url` (its public /about page), else "" (also when the
+    server or the release list cannot be read). Cached per process."""
+    installed = installed_release()
+    key = (config.url, installed)
+    if key in _version_checks:
+        return _version_checks[key]
+    try:
+        eln = api_versions.server_eln_version(config.url, config.verify_tls)
+    except Exception:  # unreachable, no /about: nothing to judge, not cached
+        return ""
+    try:
+        tags = api_versions.list_tags(timeout=15)
+    except Exception:  # no git, offline: check_installed judges by the line alone
+        tags = None
+    advice = PIP_ADVICE
+    if tags is not None:
+        try:
+            line = api_versions.line_of(api_versions.release_for(api_versions.clean_eln_version(eln), tags).tag)
+            advice = f' with pip install "chemotion-api=={line}.*"'
+        except api_versions.VersionError:
+            pass  # no release for it: check_installed says nothing either
+    text = api_versions.check_installed(eln, tags, installed, advice)
+    _version_checks[key] = text
+    return text
 
 
 def _kill_tree(process: subprocess.Popen) -> None:
@@ -87,11 +136,15 @@ class ChemAssistent:
     conversation has its own notebook and kernel and an exchange folder
     below ``exchange_dir`` (default: a new temporary folder, kept), see
     ``Conversation.exchange``. There are no background jobs.
+    ``check_version``: compare the installed chemotion_api with the server's
+    ELN version (public /about page, the release list via git) and warn
+    with a ChemotionVersionWarning on a mismatch (also in ``version_warning``).
     """
 
     def __init__(self, config: Config | str = "", *,
                  approve: Callable[[str, str], bool] | None = None, report_bugs: bool = False,
-                 jupyter: bool = False, exchange_dir: str | os.PathLike | None = None) -> None:
+                 jupyter: bool = False, exchange_dir: str | os.PathLike | None = None,
+                 check_version: bool = True) -> None:
         if config == "":
             config = saved_config()
         if not isinstance(config, Config):
@@ -109,6 +162,9 @@ class ChemAssistent:
             exchange_dir = Path(exchange_dir) if exchange_dir else Path(tempfile.mkdtemp(prefix="chemassistent-"))
         self.jupyter = jupyter
         self.exchange_dir = Path(exchange_dir).expanduser().resolve() if jupyter else None
+        self.version_warning = version_warning(config) if check_version else ""
+        if self.version_warning:
+            warnings.warn(self.version_warning, ChemotionVersionWarning, stacklevel=2)
         self.conversations = Conversations(self)
 
 

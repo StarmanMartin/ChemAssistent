@@ -1,12 +1,13 @@
 """The tools of CLI agents (Claude Code, Codex): a stdio MCP server the CLI
 starts (no GTK, standard library only).
 
-It offers the built-in agent's five tools (and in developer mode
-`report_api_bug`, issues.py) and nothing else (the CLIs' own
+It offers the built-in agent's tools without JupyterLab (and in developer
+mode `report_api_bug`, issues.py) and nothing else (the CLIs' own
 tools are switched off, cli_agent.py): read-only `read_file`, `grep` and
 `list_files` (agent.py's, confined to the workspace and the attachments),
 `view_page` (a PDF page or picture as an MCP image block; off with
-`vision: false` in the session file), and
+`vision: false` in the session file), `save_lesson` (lessons.py: the
+system prompt's lessons section asks for it, as for the built-in agent), and
 `execute_python`, which goes over ipc.py to the running app as
 {"type": "execute", "session", "purpose", "code"}. The app shows it as a card
 in the result panel like a call of the built-in agent (auto-run mode
@@ -41,9 +42,10 @@ from pathlib import Path
 
 import ipc
 import issues
+import lessons
 from agent import (MAX_READ_LINES, MCP_ADMIN_NAMES, MCP_ADMIN_TOOLS, MCP_TOOL_PREFIX, READ_ONLY_TOOLS,
-                   REPORT_API_BUG_TOOL, VIEW_PAGE_TOOL, AgentError, execute_python_tool, grep, list_files,
-                   mcp_server_entry, read_file, tool_summary, view_page)
+                   REPORT_API_BUG_TOOL, SAVE_LESSON_TOOL, VIEW_PAGE_TOOL, AgentError, execute_python_tool, grep,
+                   list_files, mcp_server_entry, read_file, tool_summary, view_page)
 from config import load_config
 
 
@@ -71,6 +73,8 @@ class Bridge:
         self.vision = data.get("vision", True) is not False
         if self.vision:
             self.tools.append(mcp_tool(VIEW_PAGE_TOOL, True))
+        # The prompt's LESSONS_PROMPT (workspace.system_prompt, not headless) asks for it.
+        self.tools.append(mcp_tool(SAVE_LESSON_TOOL, False))
         self.developer = bool(data.get("developer"))
         self.model = str(data.get("model") or "")
         if self.developer:
@@ -165,6 +169,11 @@ class Bridge:
         if name in MCP_ADMIN_NAMES:
             raise AgentError("MCP servers can only be added or removed in a turn whose message starts with /mcp; "
                              "tell the user to write one.")
+        if name == "save_lesson":
+            key = str(arguments.get("key") or "")
+            if arguments.get("remove"):
+                return lessons.remove_lesson(key)
+            return lessons.save_lesson(key, str(arguments.get("topic") or ""), str(arguments.get("text") or ""))
         if name == "report_api_bug" and self.developer:
             # Fresh settings (URL, GitHub token); load_config() raises ValueError while incomplete.
             return issues.report(load_config(), self.model, str(arguments.get("title") or ""),

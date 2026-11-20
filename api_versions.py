@@ -206,11 +206,15 @@ def server_eln_version(url: str, verify_tls: bool = True, timeout: float = 10) -
     return version
 
 
-def check_installed(eln_version: str, tags: list[str] | None, installed: str) -> str:
+SETTINGS_ADVICE = " (Settings \u2192 Chemotion)"
+
+
+def check_installed(eln_version: str, tags: list[str] | None, installed: str,
+                    advice: str = SETTINGS_ADVICE) -> str:
     """A warning when the installed release does not fit the server's ELN
     version, else "" (also when it cannot be judged: nothing or a branch
     installed, a version that is no X.Y.Z). `tags` None = the releases are
-    not known (offline)."""
+    not known (offline). `advice` ends the install hint (headless.py: pip)."""
     if not installed or not line_of(installed):
         return ""
     version = clean_eln_version(eln_version)
@@ -228,7 +232,7 @@ def check_installed(eln_version: str, tags: list[str] | None, installed: str) ->
         if line_of(installed) == line_of(expected.tag):
             return ""
         return (f"Your Chemotion runs ELN {version}, but chemotionapi {described} is installed, "
-                f"so the assistant's code may fail. Install {expected.tag} (Settings \u2192 Chemotion).")
+                f"so the assistant's code may fail. Install {expected.tag}{advice}.")
     if not installed_eln:
         return ""
     have = eln_key(installed_eln)
@@ -236,7 +240,7 @@ def check_installed(eln_version: str, tags: list[str] | None, installed: str) ->
         return ""   # the same line, or possibly the nearest lower one
     return (f"Your Chemotion runs ELN {version}, but chemotionapi {described} is installed, "
             f"so the assistant's code may fail. Install a release for ELN {version} or the "
-            f"nearest lower ELN version (Settings \u2192 Chemotion).")
+            f"nearest lower ELN version{advice}.")
 
 
 def install(ref: str, timeout: float = SETUP_TIMEOUT_S, script: Path | None = None) -> tuple[bool, str]:
